@@ -45,6 +45,10 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
     let focus_label = match app.focus {
         Focus::Dashboard => "DASHBOARD",
         Focus::FirstRun => "WELCOME",
+        // Copy mode is a modal sublayer of the Detail focus; surface it in the
+        // badge so the changed keymap (h/j/k/l cursor, V select, y yank) is
+        // obvious at a glance.
+        Focus::Detail if app.copy_mode.active => "COPY",
         Focus::Detail => "DETAIL",
         Focus::RepoPicker => "REPOS",
         Focus::Help => "HELP",
@@ -68,8 +72,11 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
             "j/k nav  Enter detail  i toggle  r refresh  c checkout  p repos  ? help  q quit"
         }
         Focus::FirstRun => "Space toggle  Enter confirm  a add  Esc skip",
+        Focus::Detail if app.copy_mode.active => {
+            "h/j/k/l move  V select  y yank  Esc exit"
+        }
         Focus::Detail => {
-            "j/k scroll  Tab section  n/N unresolved  c checkout  o browser  y copy  Esc back"
+            "j/k scroll  v copy mode  Tab section  n/N unresolved  c checkout  o browser  y URL  Esc back"
         }
         Focus::RepoPicker => "j/k nav  a add  d delete  Enter select  Esc close",
         Focus::Help => "? / Esc / q close help",

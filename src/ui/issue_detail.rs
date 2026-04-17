@@ -207,12 +207,22 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let (content_lines, _section_anchors) =
         build_content(detail, app.pr_detail_comments_expanded, p, app.config.show_ascii_glyphs);
 
+    // Cache viewport rect for copy-mode (auto-scroll) and mouse mapping.
+    app.pr_detail_viewport.set(area);
+
     let scroll = app.pr_detail_scroll;
 
-    let widget = Paragraph::new(content_lines)
-        .style(Style::default().bg(p.background).fg(p.foreground))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    let widget = if app.copy_mode.active {
+        let overlaid = crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p);
+        Paragraph::new(overlaid)
+            .style(Style::default().bg(p.background).fg(p.foreground))
+            .scroll((scroll, app.copy_mode.h_scroll))
+    } else {
+        Paragraph::new(content_lines)
+            .style(Style::default().bg(p.background).fg(p.foreground))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0))
+    };
 
     f.render_widget(widget, area);
 }

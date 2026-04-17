@@ -150,6 +150,16 @@ pub struct App {
     pub pr_detail_unresolved_idx: usize,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
     pub detail_pending_g: bool,
+    /// Copy-mode state for the PR/issue detail view. Inactive until the user
+    /// presses `v`. When active, normal detail key bindings are suppressed in
+    /// favour of cursor movement, selection, and yank.
+    pub copy_mode: crate::ui::copy_mode::CopyMode,
+    /// Cached PR-detail viewport rect, written by the renderer each frame so
+    /// key and mouse handlers can map screen coordinates to content positions
+    /// (and auto-scroll the copy-mode cursor) without taking a `&mut` through
+    /// the whole UI layer. Interior mutability via `Cell` keeps the existing
+    /// `&App` render signatures intact.
+    pub pr_detail_viewport: std::cell::Cell<ratatui::layout::Rect>,
 
     // ── Repo picker state ─────────────────────────────────────────────────────
     /// Index of the currently highlighted repo in the picker list.
@@ -237,6 +247,8 @@ impl App {
             pr_detail_unresolved_anchors: Vec::new(),
             pr_detail_unresolved_idx: 0,
             detail_pending_g: false,
+            copy_mode: crate::ui::copy_mode::CopyMode::default(),
+            pr_detail_viewport: std::cell::Cell::new(ratatui::layout::Rect::default()),
             repo_picker_list_cursor: 0,
             repo_picker_input: String::new(),
             repo_picker_mode: RepoPickerMode::List,
@@ -520,9 +532,8 @@ impl App {
                 // no explicit handling is required for resize events.
                 debug!("terminal resized to {w}x{h}");
             }
-            Action::Mouse(_) => {
-                // Mouse support is planned for Phase 3.
-                debug!("mouse event received (not yet handled)");
+            Action::Mouse(m) => {
+                self.handle_mouse(m);
             }
             Action::NextTab => {
                 self.tabs.next();
@@ -833,6 +844,12 @@ impl App {
     /// Key handler for the PR/issue detail focus.
     #[allow(clippy::too_many_lines)]
     fn handle_key_detail(&mut self, key: crossterm::event::KeyEvent) {
+        // When copy mode is active, it owns the entire keymap for this focus.
+        if self.copy_mode.active {
+            self.handle_key_detail_copy_mode(key);
+            return;
+        }
+
         // Tab/Shift+Tab are consumed here for section navigation,
         // not forwarded to the global tab-switch handler.
         if key.modifiers == KeyModifiers::SHIFT && key.code == KeyCode::BackTab {
@@ -954,6 +971,12 @@ impl App {
                 self.detail_pending_g = false;
                 self.handle_action(Action::CheckoutBranch);
             }
+            KeyCode::Char('v') => {
+                self.detail_pending_g = false;
+                // Enter copy mode at the top of the current viewport so the
+                // block cursor lands somewhere the user can already see.
+                self.copy_mode.enter(self.pr_detail_scroll as usize, 0);
+            }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
                 // Re-fetch the current detail. As in `open_detail_for_selection`,
@@ -984,6 +1007,240 @@ impl App {
             _ => {
                 self.detail_pending_g = false;
             }
+        }
+    }
+
+    /// Key handler active only while `self.copy_mode.active` is `true`.
+    ///
+    /// The copy-mode keymap is a separate modal layer: it owns `h`/`j`/`k`/`l`
+    /// and arrows for cursor movement, `V` to toggle the selection anchor,
+    /// `y` to yank the selection, and `Esc` to exit without copying.
+    ///
+    /// Any key not listed here is intentionally swallowed so the user cannot
+    /// accidentally trigger destructive actions (like checkout) while trying
+    /// to copy text.
+    fn handle_key_detail_copy_mode(&mut self, key: crossterm::event::KeyEvent) {
+        let lines = self.current_detail_lines();
+        match key.code {
+            KeyCode::Esc => {
+                self.copy_mode.exit();
+            }
+            KeyCode::Char('q') => {
+                self.copy_mode.exit();
+                self.running = false;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.copy_mode.move_cursor(-1, 0, &lines);
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.copy_mode.move_cursor(1, 0, &lines);
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.copy_mode.move_cursor(0, 1, &lines);
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.copy_mode.move_cursor(0, -1, &lines);
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('g') => {
+                self.copy_mode.jump_top();
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('G') => {
+                self.copy_mode.jump_bottom(&lines);
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('V' | 'v') => {
+                self.copy_mode.toggle_selection();
+            }
+            KeyCode::Char('y') => {
+                if let Some(text) = self.copy_mode.selected_text(&lines) {
+                    match crate::actions_util::copy_to_clipboard(&text) {
+                        Ok(()) => {
+                            let len = text.chars().count();
+                            self.show_flash(
+                                format!("Copied {len} chars"),
+                                std::time::Duration::from_secs(2),
+                            );
+                        }
+                        Err(e) => {
+                            self.show_flash(
+                                format!("Copy failed: {e}"),
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                    }
+                    self.copy_mode.exit();
+                } else {
+                    self.show_flash(
+                        "No selection (press V to start)",
+                        std::time::Duration::from_secs(2),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Route a raw mouse event to the focused panel.
+    ///
+    /// Wheel events always scroll (regardless of copy mode). A left-button
+    /// press inside the detail viewport enters copy mode and drops the cursor
+    /// at the clicked cell; subsequent drag events extend the selection.
+    fn handle_mouse(&mut self, m: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        match self.focus {
+            Focus::Detail => match m.kind {
+                MouseEventKind::ScrollUp => {
+                    self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(3);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.pr_detail_scroll = self.pr_detail_scroll.saturating_add(3);
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row) {
+                        // A fresh left-click starts a new cursor position with
+                        // no active selection. The drag handler will set an
+                        // anchor on the first drag event.
+                        self.copy_mode.enter(row, col);
+                    }
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if !self.copy_mode.active {
+                        return;
+                    }
+                    if self.copy_mode.anchor.is_none() {
+                        self.copy_mode.anchor = Some(self.copy_mode.cursor);
+                    }
+                    if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row) {
+                        let lines = self.current_detail_lines();
+                        let last_row = lines.len().saturating_sub(1);
+                        self.copy_mode.cursor = crate::ui::copy_mode::Pos {
+                            row: row.min(last_row),
+                            col,
+                        };
+                        self.ensure_cursor_visible(&lines);
+                    }
+                }
+                _ => {}
+            },
+            Focus::Dashboard => match m.kind {
+                MouseEventKind::ScrollUp => {
+                    self.move_dashboard_selection(-1);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.move_dashboard_selection(1);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Map a (column, row) mouse position to a logical (row, col) position
+    /// within the currently rendered detail lines. Returns `None` when the
+    /// event is outside the viewport (including the status bar or tab bar).
+    ///
+    /// The column mapping uses display cells, not characters: wide characters
+    /// (CJK / emoji) will round to the nearest cell boundary. For an MVP copy
+    /// mode this is acceptable; a follow-up can refine with a proper
+    /// display-to-char column walk.
+    fn mouse_to_content_pos(&self, col: u16, row: u16) -> Option<(usize, usize)> {
+        let area = self.pr_detail_viewport.get();
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return None;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return None;
+        }
+        let content_row = self
+            .pr_detail_scroll
+            .saturating_add(row.saturating_sub(area.y));
+        let content_col = self
+            .copy_mode
+            .h_scroll
+            .saturating_add(col.saturating_sub(area.x));
+        Some((usize::from(content_row), usize::from(content_col)))
+    }
+
+    /// Move the dashboard selection by `delta` rows, clamped to the current
+    /// list length. Used by the mouse wheel handler.
+    fn move_dashboard_selection(&mut self, delta: i32) {
+        let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
+            return;
+        };
+        let len = self.active_list_len();
+        if len == 0 {
+            return;
+        }
+        let max_idx = len.saturating_sub(1);
+        let sel = self.selection.entry(repo).or_insert(0);
+        let new = i64::try_from(*sel).unwrap_or(0).saturating_add(i64::from(delta));
+        let clamped = new.clamp(0, i64::try_from(max_idx).unwrap_or(i64::MAX));
+        *sel = usize::try_from(clamped).unwrap_or(0);
+    }
+
+    /// Rebuild the currently focused detail's rendered line buffer.
+    ///
+    /// Copy-mode cursor motion and selection extraction work against the
+    /// exact same `Vec<Line>` the renderer produces, so we call into the
+    /// panel `build_content` helpers on demand. Returns an empty `Vec` when
+    /// no detail is loaded.
+    fn current_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
+        if let Some(detail) = &self.pr_detail {
+            let (lines, _, _) = crate::ui::pr_detail::build_content(
+                detail,
+                self.pr_detail_files_expanded,
+                self.pr_detail_comments_expanded,
+                &self.palette,
+                self.config.show_ascii_glyphs,
+            );
+            return lines;
+        }
+        if let Some(detail) = &self.issue_detail {
+            let (lines, _) = crate::ui::issue_detail::build_content(
+                detail,
+                self.pr_detail_comments_expanded,
+                &self.palette,
+                self.config.show_ascii_glyphs,
+            );
+            return lines;
+        }
+        Vec::new()
+    }
+
+    /// Adjust `pr_detail_scroll` and `copy_mode.h_scroll` so that the cursor
+    /// is always visible within the last-rendered viewport.
+    fn ensure_cursor_visible(&mut self, lines: &[ratatui::text::Line<'static>]) {
+        let area = self.pr_detail_viewport.get();
+        let (vw, vh) = (area.width, area.height);
+        if vh == 0 {
+            return;
+        }
+        let cursor_row = u16::try_from(self.copy_mode.cursor.row).unwrap_or(u16::MAX);
+        if cursor_row < self.pr_detail_scroll {
+            self.pr_detail_scroll = cursor_row;
+        } else if cursor_row >= self.pr_detail_scroll.saturating_add(vh) {
+            self.pr_detail_scroll = cursor_row.saturating_sub(vh).saturating_add(1);
+        }
+
+        if vw == 0 {
+            return;
+        }
+        let line = lines.get(self.copy_mode.cursor.row);
+        let cursor_col = line
+            .map_or(0, |l| crate::ui::copy_mode::cursor_display_col(l, self.copy_mode.cursor.col));
+        if cursor_col < self.copy_mode.h_scroll {
+            self.copy_mode.h_scroll = cursor_col;
+        } else if cursor_col >= self.copy_mode.h_scroll.saturating_add(vw) {
+            self.copy_mode.h_scroll = cursor_col.saturating_sub(vw).saturating_add(1);
         }
     }
 
@@ -1290,6 +1547,7 @@ impl App {
         self.pr_detail_section_anchors.clear();
         self.pr_detail_unresolved_anchors.clear();
         self.pr_detail_unresolved_idx = 0;
+        self.copy_mode.exit();
     }
 
     /// Jump to the next (`delta = 1`) or previous (`delta = -1`) section anchor.
@@ -1799,6 +2057,162 @@ mod tests {
         let result = crate::actions_util::copy_to_clipboard("https://github.com");
         // On a real desktop this should succeed; on headless it fails gracefully.
         let _ = result;
+    }
+
+    // ── Copy mode & mouse tests ───────────────────────────────────────────────
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Pressing `v` in detail focus enters copy mode with the cursor anchored
+    /// at the top of the current viewport (so it lands where the user is
+    /// already looking, not scrolled off-screen).
+    #[test]
+    fn v_in_detail_enters_copy_mode() {
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.pr_detail_scroll = 12;
+
+        app.handle_key(key(KeyCode::Char('v')));
+
+        assert!(app.copy_mode.active);
+        assert_eq!(app.copy_mode.cursor.row, 12, "cursor must start at scroll offset");
+        assert_eq!(app.copy_mode.cursor.col, 0);
+        assert!(app.copy_mode.anchor.is_none(), "no selection until V pressed");
+    }
+
+    /// Esc in copy mode exits the mode but stays in the detail focus —
+    /// distinct from Esc in normal detail mode, which returns to dashboard.
+    #[test]
+    fn esc_in_copy_mode_stays_in_detail() {
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.copy_mode.enter(0, 0);
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(!app.copy_mode.active);
+        assert_eq!(app.focus, Focus::Detail, "Esc in copy mode must not leave detail");
+    }
+
+    /// Returning to the dashboard via `b` also tears down copy-mode state.
+    #[test]
+    fn back_to_dashboard_clears_copy_mode() {
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.copy_mode.enter(5, 7);
+
+        app.back_to_dashboard();
+
+        assert_eq!(app.focus, Focus::Dashboard);
+        assert!(!app.copy_mode.active);
+        assert_eq!(app.copy_mode.cursor, crate::ui::copy_mode::Pos::default());
+    }
+
+    /// Mouse wheel in detail focus scrolls the content by 3 lines per tick.
+    #[test]
+    fn mouse_wheel_scrolls_detail() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.pr_detail_scroll = 10;
+
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.pr_detail_scroll, 13);
+
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.pr_detail_scroll, 10);
+    }
+
+    /// A left-click inside the cached detail viewport enters copy mode and
+    /// places the cursor at the corresponding content coordinate.
+    #[test]
+    fn mouse_click_in_detail_places_cursor() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        // Pretend the detail area is rendered at origin (0,1) with size 80x20.
+        app.pr_detail_viewport
+            .set(ratatui::layout::Rect::new(0, 1, 80, 20));
+        app.pr_detail_scroll = 5;
+
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 3, // inside viewport: row offset 2 -> content row 7
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert!(app.copy_mode.active);
+        assert_eq!(app.copy_mode.cursor.row, 7);
+        assert_eq!(app.copy_mode.cursor.col, 10);
+    }
+
+    /// A left-click outside the cached viewport must be ignored (no copy-mode
+    /// entry, no state mutation). This also covers the case where the
+    /// viewport hasn't been cached yet (zero-sized rect).
+    #[test]
+    fn mouse_click_outside_viewport_is_ignored() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.pr_detail_viewport
+            .set(ratatui::layout::Rect::new(0, 1, 10, 10));
+
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 50,
+            row: 50, // far outside
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert!(!app.copy_mode.active);
+    }
+
+    /// Dragging with left button held starts a selection on first drag and
+    /// moves the cursor on subsequent drag events.
+    #[test]
+    fn mouse_drag_starts_selection() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        app.focus = Focus::Detail;
+        app.pr_detail_viewport
+            .set(ratatui::layout::Rect::new(0, 1, 80, 20));
+
+        // Initial click to enter copy mode at (0, 2).
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(app.copy_mode.active);
+        assert!(app.copy_mode.anchor.is_none());
+
+        // First drag event sets the anchor at the current cursor position.
+        app.handle_action(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert_eq!(app.copy_mode.anchor, Some(crate::ui::copy_mode::Pos { row: 0, col: 2 }));
+        // Cursor moved to click position (row 0 inside content since no lines).
+        // Without loaded detail, current_detail_lines() returns an empty Vec,
+        // which clamps row to 0. Column is free-form (display cell).
+        assert_eq!(app.copy_mode.cursor.col, 5);
     }
 
     // ── Phase 5 tests ─────────────────────────────────────────────────────────
