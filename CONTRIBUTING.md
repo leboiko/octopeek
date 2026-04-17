@@ -6,7 +6,7 @@ workflow, coding standards, and the pull request process.
 ## Building
 
 ```sh
-# Prerequisites: Rust 1.85+ (see rust-toolchain.toml)
+# Prerequisites: Rust 1.88+ (stable; see rust-toolchain.toml)
 git clone https://github.com/leboiko/octopeek
 cd octopeek
 cargo build

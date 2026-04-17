@@ -1,6 +1,4 @@
 //! Single-line status bar rendered at the bottom of the screen.
-// `FlashMessage::new` is used by action handlers in Phase 3+.
-#![allow(dead_code)]
 //!
 //! Shows the current focus mode, keybinding hints, and any active flash
 //! message. Flash messages auto-revert after a configurable duration (the
@@ -27,6 +25,7 @@ pub struct FlashMessage {
 
 impl FlashMessage {
     /// Create a flash message that expires after `duration`.
+    #[allow(dead_code)] // Used by Phase 3+ action handlers (copy URL, checkout).
     pub fn new(text: impl Into<String>, duration: std::time::Duration) -> Self {
         Self { text: text.into(), expires_at: Instant::now() + duration }
     }

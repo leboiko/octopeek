@@ -135,6 +135,12 @@ impl App {
             self.handle_action(action);
         }
 
+        // Abort the auto-refresh task explicitly: `JoinHandle::drop` only
+        // detaches in tokio, it does not cancel.
+        if let Some(handle) = self.refresh_handle.take() {
+            handle.abort();
+        }
+
         // Persist the session so the active tab index survives a relaunch.
         self.session.active_tab_index = self.tabs.active_index().unwrap_or(0);
         self.session.save();

@@ -1,6 +1,4 @@
 //! User configuration loaded from `~/.config/octopeek/config.toml`.
-// `Config::save` is used in the settings panel (Phase 4).
-#![allow(dead_code)]
 //!
 //! All fields use `#[serde(default)]` so that older config files missing
 //! newer fields still parse without error.
@@ -9,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::theme::Theme;
 
@@ -57,20 +56,32 @@ impl Config {
         toml::from_str(&text).unwrap_or_default()
     }
 
-    /// Persist settings to disk. Silently swallows any I/O error.
+    /// Persist settings to disk.
+    ///
+    /// Reached only from the Phase 4 settings panel; logs but does not fail
+    /// on I/O errors so a read-only config dir never brings the UI down.
+    #[allow(dead_code)] // Called from the Phase 4 settings panel.
     pub fn save(&self) {
         let Some(path) = config_path() else {
+            warn!("cannot resolve config path; skipping save");
             return;
         };
         if let Some(parent) = path.parent()
-            && fs::create_dir_all(parent).is_err()
+            && let Err(e) = fs::create_dir_all(parent)
         {
+            warn!("failed to create config dir {}: {e}", parent.display());
             return;
         }
-        let Ok(text) = toml::to_string_pretty(self) else {
-            return;
+        let text = match toml::to_string_pretty(self) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("failed to serialize config: {e}");
+                return;
+            }
         };
-        let _ = fs::write(&path, text);
+        if let Err(e) = fs::write(&path, text) {
+            warn!("failed to write config to {}: {e}", path.display());
+        }
     }
 }
 

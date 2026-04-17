@@ -9,9 +9,11 @@ use crossterm::event::{KeyEvent, MouseEvent};
 
 /// All actions that can be dispatched through the application event loop.
 ///
-/// Dead-code analysis produces false positives here because many variants are
-/// constructed only through key-handler dispatch paths or in future phases.
+/// Many variants are matched in `handle_action` but not yet constructed
+/// anywhere — those belong to Phase 2 onward. The enum-level attribute keeps
+/// compilation clean without masking missing variants at call sites.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub enum Action {
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     /// Exit the application cleanly.

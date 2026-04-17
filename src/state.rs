@@ -1,6 +1,4 @@
 //! Session state persisted to disk across launches.
-// `set_view_mode` and `view_mode` are used in Phase 3's toggle-view action.
-#![allow(dead_code)]
 //!
 //! Stored at the XDG state path (`~/.local/state/octopeek/state.toml` on
 //! Linux; `~/Library/Application Support/octopeek/state.toml` on macOS).
@@ -10,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 const APP_NAME: &str = "octopeek";
 const STATE_FILE: &str = "state.toml";
@@ -75,29 +74,42 @@ impl AppSession {
         toml::from_str(&text).unwrap_or_default()
     }
 
-    /// Persist session state to disk. Silently swallows any I/O error.
+    /// Persist session state to disk.
+    ///
+    /// Logs but does not fail on I/O errors — state loss on a read-only disk
+    /// is preferable to a crash at shutdown.
     pub fn save(&self) {
         let Some(path) = state_path() else {
+            warn!("cannot resolve state path; skipping save");
             return;
         };
         if let Some(parent) = path.parent()
-            && fs::create_dir_all(parent).is_err()
+            && let Err(e) = fs::create_dir_all(parent)
         {
+            warn!("failed to create state dir {}: {e}", parent.display());
             return;
         }
-        let Ok(text) = toml::to_string_pretty(self) else {
-            return;
+        let text = match toml::to_string_pretty(self) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("failed to serialize state: {e}");
+                return;
+            }
         };
-        let _ = fs::write(&path, text);
+        if let Err(e) = fs::write(&path, text) {
+            warn!("failed to write state to {}: {e}", path.display());
+        }
     }
 
     /// Set the view mode for a given repo slug and persist immediately.
+    #[allow(dead_code)] // Called from the Phase 3 toggle-view action.
     pub fn set_view_mode(&mut self, repo: &str, mode: ViewMode) {
         self.per_repo_view.insert(repo.to_owned(), mode);
         self.save();
     }
 
     /// Get the current view mode for a repo, defaulting to `Prs`.
+    #[allow(dead_code)] // Called from the Phase 3 dashboard renderer.
     pub fn view_mode(&self, repo: &str) -> ViewMode {
         self.per_repo_view.get(repo).copied().unwrap_or_default()
     }

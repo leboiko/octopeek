@@ -1,6 +1,4 @@
 //! Ordered collection of open repository tabs with an active-tab pointer.
-// `close`, `activate_previous`, and `needs_action_count` are used in later phases.
-#![allow(dead_code)]
 //!
 //! Each tab represents one `owner/name` repository slug. The tab bar shows
 //! the repo name and (in Phase 3) a badge with the count of items needing
@@ -25,6 +23,7 @@ pub struct Tab {
     pub repo: String,
     /// Count of items that need attention (PRs / issues). `None` until the
     /// first fetch completes in Phase 3.
+    #[allow(dead_code)] // Populated by Phase 3 after the first fetch.
     pub needs_action_count: Option<usize>,
 }
 
@@ -41,6 +40,7 @@ pub enum OpenOutcome {
 
 /// Ordered collection of open repository tabs with an active-tab pointer.
 #[allow(clippy::struct_field_names)]
+#[derive(Debug)]
 pub struct Tabs {
     pub tabs: Vec<Tab>,
     /// The currently visible tab (by id).
@@ -114,6 +114,7 @@ impl Tabs {
     ///
     /// After closing, the active tab is updated: the previously active tab if
     /// it still exists, otherwise the neighbour at the same index (clamped).
+    #[allow(dead_code)] // Bound in Phase 3 once the `x` close-tab keybinding is wired up.
     pub fn close(&mut self, id: TabId) -> bool {
         let Some(idx) = self.index_of(id) else {
             return false;
@@ -187,6 +188,7 @@ impl Tabs {
     }
 
     /// Activate the previously active tab (backtick navigation).
+    #[allow(dead_code)] // Bound in Phase 3 once backtick keybinding is wired up.
     pub fn activate_previous(&mut self) {
         let Some(prev) = self.previous else {
             return;

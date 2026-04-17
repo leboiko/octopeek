@@ -22,4 +22,5 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Release workflow skeleton driven by git tags.
 - OSS project hygiene: dual MIT/Apache-2.0 licensing, Contributor Covenant, security policy, contributing guide, issue and PR templates, CODEOWNERS, Dependabot.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/HEAD...HEAD
+<!-- Comparison links will be populated once the first version is tagged. -->
+

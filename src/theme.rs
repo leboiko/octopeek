@@ -1,11 +1,11 @@
 //! Color theme definitions for the octopeek TUI.
-// Many palette fields and theme methods are defined now for later phases
-// (markdown rendering, settings panel). Suppress dead_code warnings.
-#![allow(dead_code)]
 //!
-//! Each theme maps to a [`Palette`] of concrete colors threaded through
-//! every renderer. The syntect theme mapping is kept even for Phase 1 because
-//! PR bodies are markdown and may contain code blocks.
+//! Each theme maps to a [`Palette`] of concrete colors threaded through every
+//! renderer. Many palette fields and helper methods are defined up-front for
+//! later phases (markdown rendering in Phase 4, settings panel in Phase 4).
+//! The module-level `allow(dead_code)` acknowledges that; per-item allows
+//! would need ~40 attributes across the file.
+#![allow(dead_code)]
 
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};

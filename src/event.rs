@@ -5,8 +5,10 @@ use crate::app::actions::Action;
 use crossterm::event::{self, Event};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 /// Drives the terminal event loop and forwards actions to the application.
 ///
@@ -17,6 +19,9 @@ pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Action>,
     /// Shared flag to signal the background thread to stop polling.
     stop: Arc<AtomicBool>,
+    /// Join handle for the background polling thread. Taken and joined in
+    /// `Drop` so raw-mode and mouse-capture handles are released cleanly.
+    thread: Option<JoinHandle<()>>,
 }
 
 impl EventHandler {
@@ -36,7 +41,7 @@ impl EventHandler {
         // Use a real OS thread — crossterm::event::poll is blocking I/O and
         // must not run on the tokio async executor, which would block the
         // entire single-threaded runtime.
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             while !stop_clone.load(Ordering::Relaxed) {
                 // Poll with a short timeout so the stop flag is checked often.
                 if event::poll(Duration::from_millis(50)).unwrap_or(false)
@@ -63,7 +68,7 @@ impl EventHandler {
             }
         });
 
-        (Self { rx, stop }, tx)
+        (Self { rx, stop, thread: Some(thread) }, tx)
     }
 
     /// Wait for the next action from any source.
@@ -76,8 +81,15 @@ impl EventHandler {
 }
 
 impl Drop for EventHandler {
-    /// Signal the background polling thread to exit when the handler is dropped.
+    /// Signal the background thread to stop and join it so OS-level terminal
+    /// handles (raw mode, mouse capture) are released before `TerminalGuard`
+    /// tears the terminal down.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take()
+            && let Err(e) = handle.join()
+        {
+            warn!("input thread panicked during shutdown: {e:?}");
+        }
     }
 }

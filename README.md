@@ -2,7 +2,10 @@
 
 [![CI](https://github.com/leboiko/octopeek/actions/workflows/ci.yml/badge.svg)](https://github.com/leboiko/octopeek/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/leboiko/octopeek#license)
-[![crates.io](https://img.shields.io/crates/v/octopeek.svg)](https://crates.io/crates/octopeek)
+<!-- Crates.io badge will be enabled once the first release is published. -->
+<!-- [![crates.io](https://img.shields.io/crates/v/octopeek.svg)](https://crates.io/crates/octopeek) -->
+
+> **Status:** Early development. Phase 1 (scaffolding) is on `main`. Phase 2 (GitHub data layer) is next.
 
 **A fast, keyboard-driven TUI for your GitHub PR and issue inbox.**
 
@@ -14,9 +17,7 @@ at your fingertips when you're doing triage.
 
 ## Screenshot
 
-![octopeek screenshot](docs/screenshot.png)
-
-> Screenshot coming soon — Phase 2 data layer will populate the dashboard.
+> Screenshot coming in Phase 2 once the data layer populates the dashboard.
 
 ## Features
 

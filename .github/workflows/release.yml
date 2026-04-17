@@ -27,6 +27,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -50,7 +52,8 @@ jobs:
       - name: Build
         run: cargo build --profile dist --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           set -euo pipefail
@@ -63,12 +66,29 @@ jobs:
           tar -czf "$STAGE.tar.gz" "$STAGE"
           shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
 
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $bin = "octopeek"
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $stage = "$bin-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/dist/$bin.exe" "$stage/"
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE, CHANGELOG.md $stage
+          Compress-Archive -Path "$stage" -DestinationPath "$stage.zip"
+          $sha = (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower()
+          "$sha  $stage.zip" | Out-File -FilePath "$stage.zip.sha256" -Encoding ascii
+
       - uses: actions/upload-artifact@v4
         with:
           name: octopeek-${{ matrix.target }}
           path: |
             octopeek-*.tar.gz
             octopeek-*.tar.gz.sha256
+            octopeek-*.zip
+            octopeek-*.zip.sha256
+          if-no-files-found: error
 
   publish:
     name: publish release
@@ -86,6 +106,8 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
+            artifacts/*.zip
+            artifacts/*.zip.sha256
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
