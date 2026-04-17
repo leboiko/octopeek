@@ -263,9 +263,8 @@ pub struct RawWorkflow {
 
 /// A legacy commit-status context (not a GitHub Actions check run).
 ///
-/// The fields are present in the JSON but we do not surface them in the
-/// domain layer — only `CheckRun` contexts contribute to `failing_checks`.
-#[allow(dead_code)]
+/// Consumed by `raw_pr_to_domain` to surface external-status failures
+/// (`Codecov`, `CircleCI`, etc.) into the same `failing_checks` vec as `CheckRun`s.
 #[derive(Debug, Deserialize)]
 pub struct RawStatusContext {
     pub context: String,
@@ -433,10 +432,22 @@ fn raw_pr_to_domain(raw: RawPr) -> PullRequest {
                 .into_iter()
                 .filter_map(|ctx| match ctx {
                     RawCheckContext::CheckRun(cr) => {
-                        let is_failing = cr
-                            .conclusion
-                            .as_deref()
-                            .is_some_and(|c| matches!(c, "failure" | "error"));
+                        // GitHub's GraphQL API returns `conclusion` as a
+                        // SCREAMING_SNAKE_CASE enum name (e.g. `FAILURE`, not
+                        // `failure` as the REST API uses). `null` means the
+                        // run is still in progress and is intentionally not
+                        // surfaced as failing.
+                        let is_failing = cr.conclusion.as_deref().is_some_and(|c| {
+                            matches!(
+                                c,
+                                "FAILURE"
+                                    | "ERROR"
+                                    | "TIMED_OUT"
+                                    | "ACTION_REQUIRED"
+                                    | "CANCELLED"
+                                    | "STARTUP_FAILURE"
+                            )
+                        });
                         if is_failing {
                             // Traverse: checkSuite → workflowRun → workflow → name
                             let workflow_name = cr
@@ -455,7 +466,23 @@ fn raw_pr_to_domain(raw: RawPr) -> PullRequest {
                             None
                         }
                     }
-                    RawCheckContext::StatusContext(_) => None,
+                    RawCheckContext::StatusContext(sc) => {
+                        // Legacy commit statuses (Codecov, external CIs, etc.)
+                        // expose a `state` field whose GraphQL enum is also
+                        // uppercase (`FAILURE`, `ERROR`, `SUCCESS`, `PENDING`,
+                        // `EXPECTED`). Surface failing ones as CheckRun-shaped
+                        // domain values so the UI treats them uniformly.
+                        if matches!(sc.state.as_str(), "FAILURE" | "ERROR") {
+                            Some(CheckRun {
+                                name: sc.context,
+                                workflow_name: None,
+                                conclusion: Some(sc.state),
+                                status: "COMPLETED".to_owned(),
+                            })
+                        } else {
+                            None
+                        }
+                    }
                 })
                 .collect()
         })
@@ -579,7 +606,9 @@ mod tests {
     /// deserialize correctly and produce the right domain values.
     #[test]
     fn failing_ci_and_changes_requested() {
-        let json = make_base_pr_json(1, "FAILURE", "failure", "CHANGES_REQUESTED", false);
+        // GraphQL returns enum values in SCREAMING_SNAKE_CASE, so the
+        // conclusion is `FAILURE` (not lowercase as the REST API uses).
+        let json = make_base_pr_json(1, "FAILURE", "FAILURE", "CHANGES_REQUESTED", false);
         let raw: RawPr = serde_json::from_value(json).expect("deserialize RawPr");
         let pr = raw_pr_to_domain(raw);
 

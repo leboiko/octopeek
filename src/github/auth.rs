@@ -28,7 +28,14 @@ pub fn load_token() -> anyhow::Result<String> {
         Command::new("gh").args(["auth", "token"]).output().ok().filter(|o| o.status.success());
 
     if let Some(out) = output {
-        let token = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        // Strict UTF-8 decode: a token with non-UTF-8 bytes is almost certainly
+        // a terminal-writing helper output (e.g., ANSI escapes) rather than a
+        // real credential. Silently using `from_utf8_lossy` would mangle the
+        // token and produce a confusing 401 later.
+        let token = std::str::from_utf8(&out.stdout)
+            .map_err(|e| anyhow::anyhow!("gh auth token stdout is not valid UTF-8: {e}"))?
+            .trim()
+            .to_owned();
         if !token.is_empty() {
             return Ok(token);
         }

@@ -121,7 +121,14 @@ mod tests {
     fn draft_wins_over_everything() {
         let mut pr = base_pr();
         pr.is_draft = true;
-        pr.mergeable = Mergeable::Conflicting; // would be Conflict without Draft
+        // Pile on every lower-priority signal: a draft with conflicts AND CI
+        // failure AND changes-requested must still report Draft.
+        pr.mergeable = Mergeable::Conflicting;
+        pr.check_state = Some(CheckState::Failure);
+        pr.review_decision = Some(ReviewDecision::ChangesRequested);
+        pr.requested_reviewers = vec!["viewer".to_owned()];
+        pr.unresolved_threads = 5;
+        pr.merge_state = MergeStateStatus::Behind;
         assert_eq!(pr.primary_flag("viewer"), ActionFlag::Draft);
     }
 

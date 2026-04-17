@@ -204,16 +204,22 @@ impl App {
         self.fetching = true;
         let _ = tx.send(Action::InboxFetchStarted);
 
-        // Clone the Arc — cheap reference-count bump, not a deep copy.
+        // Spawn a supervisor task that awaits an inner task's JoinHandle. If
+        // the inner task panics, `JoinHandle::await` returns an `Err(JoinError)`
+        // with `is_panic() == true`, so we can always emit a terminal action —
+        // neither `InboxLoaded` nor `FetchFailed` must ever be skipped, or the
+        // `fetching` guard would pin itself on `true` forever.
         tokio::spawn(async move {
-            match client.fetch_inbox().await {
-                Ok(inbox) => {
-                    let _ = tx.send(Action::InboxLoaded(Box::new(inbox)));
+            let inner = tokio::spawn(async move { client.fetch_inbox().await });
+            let action = match inner.await {
+                Ok(Ok(inbox)) => Action::InboxLoaded(Box::new(inbox)),
+                Ok(Err(e)) => Action::FetchFailed(e.to_string()),
+                Err(join_err) if join_err.is_panic() => {
+                    Action::FetchFailed(format!("fetch task panicked: {join_err}"))
                 }
-                Err(e) => {
-                    let _ = tx.send(Action::FetchFailed(e.to_string()));
-                }
-            }
+                Err(join_err) => Action::FetchFailed(format!("fetch task aborted: {join_err}")),
+            };
+            let _ = tx.send(action);
         });
     }
 

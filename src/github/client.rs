@@ -37,7 +37,13 @@ impl Client {
     /// Returns an error if the underlying `reqwest::Client` cannot be built
     /// (extremely rare — only if TLS initialisation fails).
     pub fn new(token: String) -> Result<Self> {
-        let http = reqwest::Client::builder().build().context("failed to build HTTP client")?;
+        let http = reqwest::Client::builder()
+            // A 30-second cap keeps a hung GraphQL endpoint from pinning the
+            // fetch task indefinitely, which would strand `App::fetching` on
+            // `true` and block every subsequent refresh.
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .context("failed to build HTTP client")?;
 
         Ok(Self { http, token, viewer_login: OnceLock::new() })
     }
