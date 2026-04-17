@@ -235,10 +235,23 @@ fn syntect_color_to_ratatui(c: syntect::highlighting::Color) -> Color {
     Color::Rgb(c.r, c.g, c.b)
 }
 
+/// Return the first non-blank line of `s`, or `""` if all lines are blank.
+///
+/// Used by [`try_highlight_code`] to feed the first meaningful line to
+/// syntect's shebang/pattern sniffer when the fenced block has no language tag.
+fn first_non_blank_line(s: &str) -> &str {
+    s.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
+}
+
 /// Attempt to syntax-highlight `source` for language `lang`.
 ///
-/// Returns `None` if the language is unknown or highlighting fails, so the
-/// caller can fall back to plain text.
+/// When `lang` is empty, tries to auto-detect the language by feeding the
+/// first non-blank line to syntect's pattern sniffer (shebangs, keywords).
+/// If detection still fails, falls back to the "Plain Text" syntax so the
+/// code background is applied uniformly even without per-token colours.
+///
+/// Returns `None` only when syntect's theme cannot be resolved, so the
+/// caller can fall back to plain-colour rendering.
 fn try_highlight_code(
     source: &str,
     lang: &str,
@@ -246,7 +259,15 @@ fn try_highlight_code(
     ss: &SyntaxSet,
     ts: &ThemeSet,
 ) -> Option<Vec<Line<'static>>> {
-    let syntax = if lang.is_empty() { None } else { ss.find_syntax_by_token(lang) }?;
+    let syntax = if lang.is_empty() {
+        // 1. Try sniffing via the first non-blank line (shebangs, etc.).
+        let first = first_non_blank_line(source);
+        ss.find_syntax_by_first_line(first)
+            // 2. Fall back to Plain Text so code_bg is still applied.
+            .or_else(|| ss.find_syntax_plain_text().into())
+    } else {
+        ss.find_syntax_by_token(lang)
+    }?;
 
     let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("base16-ocean.dark"))?;
 
@@ -595,6 +616,36 @@ mod tests {
             non_empty.iter().any(|l| line_text(l).contains("main")),
             "fn main() not found in highlighted output"
         );
+    }
+
+    #[test]
+    fn fenced_code_block_untagged_falls_back_to_plain_text() {
+        // No language tag — previously `try_highlight_code` returned `None`,
+        // losing the code background. Now it sniffs the first line and falls
+        // back to Plain Text so the block still renders with `code_bg`.
+        let src = "```\nhello world\nsecond line\n```\n";
+        let p = palette();
+        let lines = render_markdown(src, &p);
+        let non_empty: Vec<_> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
+        let text: String = non_empty.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("hello world"), "missing first line: {text}");
+        assert!(text.contains("second line"), "missing second line: {text}");
+    }
+
+    #[test]
+    fn fenced_code_block_untagged_with_shebang_detected() {
+        // A shebang on the first line lets syntect's pattern sniffer pick a
+        // real syntax even without a language tag.
+        let src = "```\n#!/bin/bash\necho hi\n```\n";
+        let lines = render_markdown(src, &palette());
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("#!/bin/bash"), "shebang missing: {text}");
+        assert!(text.contains("echo hi"), "body missing: {text}");
     }
 
     #[test]
