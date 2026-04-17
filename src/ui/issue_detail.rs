@@ -5,6 +5,17 @@
 //! 2. Meta line (author, age, comments count, labels)
 //! 3. Body (rendered Markdown)
 //! 4. COMMENTS section
+//!
+//! ## Comment rendering contract
+//!
+//! Each issue comment is rendered as:
+//! - `@handle` bold (`palette.foreground`) + `  <age>` dim
+//! - Body: full GFM-rendered markdown, indented by `"  "` (two spaces). No `│`
+//!   gutter — these are flat top-level comments with nothing to tether.
+//! - Blank line between comments.
+//!
+//! When `comments_expanded == false`, each comment body is capped at 6 rendered
+//! lines and a `[m] expand` hint line is appended.
 
 use ratatui::{
     Frame,
@@ -33,9 +44,18 @@ fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
 
 /// Build all content lines for the issue detail view.
 ///
-/// Returns `(lines, section_anchors)`.
+/// Each comment body is rendered via [`render_markdown`] so inline styles,
+/// code blocks, and headings display correctly. When `comments_expanded` is
+/// `false`, bodies exceeding 6 rendered lines are capped and a `[m] expand`
+/// hint is shown.
+///
+/// # Returns
+///
+/// `(lines, section_anchors)` where `section_anchors[0]` is always the title
+/// (Y = 0) and `section_anchors[1]` (when present) is the COMMENTS header.
 pub fn build_content(
     detail: &IssueDetail,
+    comments_expanded: bool,
     p: &crate::theme::Palette,
 ) -> (Vec<Line<'static>>, Vec<u16>) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
@@ -85,6 +105,8 @@ pub fn build_content(
 
         for comment in &detail.comments {
             let age = humanize_delta(&comment.created_at);
+
+            // Author header: `@handle` bold, then `  <age>` dim.
             all_lines.push(Line::from(vec![
                 Span::styled(
                     format!("@{}", comment.author),
@@ -92,14 +114,31 @@ pub fn build_content(
                 ),
                 Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
             ]));
-            // Render body as plain text (first 5 lines for compact view).
-            for body_line in comment.body_markdown.trim().lines().take(5) {
-                all_lines.push(Line::from(Span::styled(
-                    format!("  {body_line}"),
-                    Style::default().fg(p.foreground),
-                )));
+
+            // Body rendered as full GFM markdown, indented by two spaces.
+            // When collapsed, cap at 6 rendered lines and show expand hint.
+            let body = comment.body_markdown.trim();
+            let rendered = render_markdown(body, p);
+            let total_rendered = rendered.len();
+
+            let (visible_rendered, truncated) = if !comments_expanded && total_rendered > 6 {
+                (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
+            } else {
+                (rendered, false)
+            };
+
+            // Prepend a `"  "` indent to each body line (no gutter — flat comments).
+            for mut line in visible_rendered {
+                line.spans.insert(0, Span::raw("  "));
+                all_lines.push(line);
             }
-            all_lines.push(Line::from(""));
+
+            if truncated {
+                all_lines
+                    .push(Line::from(Span::styled("  [m] expand", Style::default().fg(p.dim))));
+            }
+
+            all_lines.push(Line::from("")); // blank separator between comments
         }
     }
 
@@ -153,7 +192,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let (content_lines, _section_anchors) = build_content(detail, p);
+    let (content_lines, _section_anchors) =
+        build_content(detail, app.pr_detail_comments_expanded, p);
 
     let scroll = app.pr_detail_scroll; // reuse same offset field for simplicity
 
@@ -207,7 +247,7 @@ mod tests {
     fn issue_detail_anchors_start_at_zero() {
         let detail = fixture_issue_detail(3);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, &p);
+        let (_, anchors) = build_content(&detail, false, &p);
         assert!(!anchors.is_empty(), "should have at least one anchor");
         assert_eq!(anchors[0], 0, "title anchor should be at 0");
     }
@@ -217,7 +257,7 @@ mod tests {
     fn issue_detail_anchors_monotone() {
         let detail = fixture_issue_detail(5);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, &p);
+        let (_, anchors) = build_content(&detail, false, &p);
         for window in anchors.windows(2) {
             assert!(window[1] >= window[0], "anchors not monotone: {anchors:?}");
         }
@@ -228,7 +268,83 @@ mod tests {
     fn issue_detail_no_comments_one_anchor() {
         let detail = fixture_issue_detail(0);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, &p);
+        let (_, anchors) = build_content(&detail, false, &p);
         assert_eq!(anchors.len(), 1, "no comments => only title anchor");
+    }
+
+    /// Issue comment bodies render markdown: bold and inline-code produce styled spans.
+    #[test]
+    fn issue_comment_body_renders_markdown_styles() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let detail = IssueDetail {
+            repo: "owner/repo".to_owned(),
+            number: 1,
+            title: "Issue".to_owned(),
+            url: "u".to_owned(),
+            author: "dave".to_owned(),
+            body_markdown: String::new(),
+            state: "OPEN".to_owned(),
+            updated_at: now,
+            created_at: now,
+            labels: vec![],
+            assignees: vec![],
+            comments: vec![IssueComment {
+                author: "eve".to_owned(),
+                // Bold + inline code in the body.
+                body_markdown: "**critical** and `fix_it()`".to_owned(),
+                created_at: now,
+            }],
+        };
+
+        let (lines, _) = build_content(&detail, true, &p);
+
+        // Bold span for "critical".
+        let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+            s.content.contains("critical") && s.style.add_modifier.contains(Modifier::BOLD)
+        });
+
+        // Inline-code span with code_bg background.
+        let has_code = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.contains("fix_it()") && s.style.bg == Some(p.code_bg));
+
+        assert!(has_bold, "issue comment **bold** must produce BOLD modifier span");
+        assert!(has_code, "issue comment `code` must produce code_bg span");
+    }
+
+    /// A comment body with > 6 rendered lines when collapsed must show `[m] expand`.
+    #[test]
+    fn issue_comment_collapsed_shows_expand_hint() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let long_body = (0..10).map(|i| format!("Para {i}.")).collect::<Vec<_>>().join("\n\n");
+
+        let detail = IssueDetail {
+            repo: "owner/repo".to_owned(),
+            number: 1,
+            title: "Issue".to_owned(),
+            url: "u".to_owned(),
+            author: "dave".to_owned(),
+            body_markdown: String::new(),
+            state: "OPEN".to_owned(),
+            updated_at: now,
+            created_at: now,
+            labels: vec![],
+            assignees: vec![],
+            comments: vec![IssueComment {
+                author: "frank".to_owned(),
+                body_markdown: long_body,
+                created_at: now,
+            }],
+        };
+
+        let (lines, _) = build_content(&detail, false, &p);
+
+        let has_hint =
+            lines.iter().any(|l| l.spans.iter().any(|s| s.content.contains("[m] expand")));
+
+        assert!(has_hint, "collapsed long issue comment must show [m] expand hint");
     }
 }

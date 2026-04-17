@@ -9,6 +9,17 @@
 //! 6. REVIEWS section
 //! 7. FILES CHANGED section
 //! 8. COMMENTS section
+//!
+//! ## Thread hierarchy contract
+//!
+//! `comments_lines` renders review threads with a vertical `│` gutter so the
+//! reader can see at a glance that all comments belong to one conversation.
+//! The first comment in a thread is the opener; subsequent comments are prefixed
+//! with `↳ ` in `palette.dim` to signal "this is a reply".
+//!
+//! `unresolved_anchors` returned by `build_content` always point at the
+//! thread-header line (the `⚑/✓/◆ path:line` line), never at a comment body
+//! line, so `n`/`N` navigation lands the reader at the right place.
 
 use ratatui::{
     Frame,
@@ -232,11 +243,101 @@ fn files_lines(detail: &PrDetail, expanded: bool, p: &crate::theme::Palette) -> 
     lines
 }
 
-/// Build comment section lines, with expansion controlled by `expanded`.
-/// Returns `(lines, unresolved_thread_relative_offsets)`.
+// ── Gutter helper ─────────────────────────────────────────────────────────────
+
+/// The vertical gutter prepended to every body line inside a review thread.
 ///
-/// Offsets are relative to the start of the comments block (0 = first line of
-/// the block header). Callers add the header's absolute Y to get global anchors.
+/// Styled with `palette.block_quote_border` so it visually tethers all replies
+/// in a thread together, similar to a quoted block.
+const THREAD_GUTTER: &str = "  \u{2502}  "; // "  │  "
+
+/// Wrap rendered markdown lines with the thread gutter prefix.
+///
+/// Each `Line` from `render_markdown` gets a leading `"  │  "` span
+/// (`palette.block_quote_border`) prepended, so all body content is visually
+/// indented inside the thread's vertical rail.
+fn gutter_lines(md_lines: Vec<Line<'static>>, p: &crate::theme::Palette) -> Vec<Line<'static>> {
+    md_lines
+        .into_iter()
+        .map(|mut line| {
+            // Prepend the gutter span; existing spans follow.
+            let gutter_span =
+                Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border));
+            line.spans.insert(0, gutter_span);
+            line
+        })
+        .collect()
+}
+
+/// Apply a `"  "` (two-space) indent prefix to each rendered markdown line.
+///
+/// Used for issue comments, which have no thread to tether so don't need
+/// the `│` gutter — just a small left margin to group body under the header.
+fn indent_lines(md_lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    md_lines
+        .into_iter()
+        .map(|mut line| {
+            line.spans.insert(0, Span::raw("  "));
+            line
+        })
+        .collect()
+}
+
+// ── Thread header ─────────────────────────────────────────────────────────────
+
+/// Build the single header line for a review thread:
+/// `  <glyph> <path>:<line>  ·  <N> comments  ·  <status>`
+///
+/// - Unresolved: `⚑` in `palette.warning`
+/// - Resolved: `✓` in `palette.muted`
+/// - Outdated: `◆` in `palette.muted`
+fn thread_header_line(thread: &ReviewThread, p: &crate::theme::Palette) -> Line<'static> {
+    let (glyph, glyph_color, status_text) = if thread.is_outdated {
+        ("\u{25C6}", p.muted, "outdated") // ◆
+    } else if thread.is_resolved {
+        ("\u{2713}", p.muted, "resolved") // ✓
+    } else {
+        ("\u{2691}", p.warning, "unresolved") // ⚑
+    };
+
+    let location =
+        thread.line.map_or_else(|| thread.path.clone(), |ln| format!("{}:{ln}", thread.path));
+
+    let n = thread.comments.len();
+    let count_str = format!("  \u{00B7}  {n} comment{}", if n == 1 { "" } else { "s" });
+    let status_str = format!("  \u{00B7}  {status_text}");
+
+    Line::from(vec![
+        Span::styled(format!("  {glyph} "), Style::default().fg(glyph_color)),
+        Span::styled(location, Style::default().fg(p.accent)),
+        Span::styled(count_str, Style::default().fg(p.dim)),
+        Span::styled(status_str, Style::default().fg(p.dim)),
+    ])
+}
+
+// ── Comment section builder ───────────────────────────────────────────────────
+
+/// Build comment section lines, with expansion controlled by `expanded`.
+///
+/// ## Thread contract
+///
+/// For each review thread the layout is:
+/// 1. Thread header line (`⚑/✓/◆ path:line · N comments · status`)
+/// 2. For each comment in the thread:
+///    - Author-age line, prefixed by `"  │  "` gutter (and `"↳ "` for replies)
+///    - Rendered markdown body lines, each prefixed by `"  │  "` gutter
+///    - Blank gutter line separating comments within the same thread
+/// 3. Blank line (no gutter) between threads
+///
+/// ## Returns
+///
+/// `(lines, unresolved_thread_relative_offsets)` where offsets are relative
+/// to the start of the comment block (0 = first line of the block header).
+/// Callers add the header's absolute Y to get global anchors.
+///
+/// `unresolved_anchors` always point at the thread-header line so `n`/`N`
+/// navigation lands correctly regardless of body content.
+#[allow(clippy::too_many_lines)]
 fn comments_lines(
     detail: &PrDetail,
     expanded: bool,
@@ -247,66 +348,111 @@ fn comments_lines(
     let total_comments = detail.issue_comments.len();
 
     let mut lines = Vec::new();
-    // Track relative Y of each unresolved thread start (within this block, after header).
+    // Track relative Y of each unresolved thread header (within this block, after the section
+    // header). These are shifted by +1 when the section header is prepended.
     let mut unresolved_offsets: Vec<u16> = Vec::new();
 
     // Sort threads: unresolved first.
     let mut threads: Vec<&ReviewThread> = detail.review_threads.iter().collect();
     threads.sort_by_key(|t| t.is_resolved);
 
+    // When collapsed, allow up to 10 total items (threads + issue comments).
     let max_items = if expanded { usize::MAX } else { 10 };
     let mut items_shown = 0;
 
-    // Render review threads.
+    // ── Review threads ────────────────────────────────────────────────────────
     for thread in &threads {
         if items_shown >= max_items {
             break;
         }
 
-        // Record offset for unresolved threads (lines.len() = current relative offset).
+        // Record the thread-header offset for unresolved threads so `n`/`N`
+        // navigation jumps to the right line. `lines.len()` at this point is
+        // the 0-based index of the header line within this block.
         if !thread.is_resolved {
             #[allow(clippy::cast_possible_truncation)]
             unresolved_offsets.push(lines.len() as u16);
         }
 
-        let tag = if thread.is_resolved { "resolved" } else { "unresolved" };
-        let tag_color = if thread.is_resolved { p.muted } else { p.warning };
-        let location =
-            thread.line.map_or_else(|| thread.path.clone(), |ln| format!("{}:{ln}", thread.path));
+        // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
+        lines.push(thread_header_line(thread, p));
 
-        lines.push(Line::from(vec![
-            Span::styled(location, Style::default().fg(p.accent)),
-            Span::styled(format!("  [{tag}]"), Style::default().fg(tag_color)),
-        ]));
-
-        for comment in &thread.comments {
+        for (idx, comment) in thread.comments.iter().enumerate() {
             let age = humanize_delta(&comment.created_at);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  @{}", comment.author),
-                    Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
-            ]));
-            // Render body as plain text (first line only for threads to keep it compact).
+
+            // The first comment is the thread opener; subsequent ones are replies.
+            // We signal replies with `↳ ` in palette.dim on the author line.
+            let author_line = if idx == 0 {
+                // Thread opener — gutter only, no reply prefix.
+                Line::from(vec![
+                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
+                    Span::styled(
+                        format!("@{}", comment.author),
+                        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
+                ])
+            } else {
+                // Reply — gutter + `↳ ` reply prefix.
+                Line::from(vec![
+                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
+                    Span::styled("\u{21b3} ", Style::default().fg(p.dim)), // ↳
+                    Span::styled(
+                        format!("@{}", comment.author),
+                        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
+                ])
+            };
+            lines.push(author_line);
+
+            // Render the comment body as markdown, wrapped in the `│` gutter.
+            // When collapsed, cap each comment at 6 rendered lines and append an
+            // expand hint. When expanded, show the full body.
             let body = comment.body_markdown.trim();
-            for body_line in body.lines().take(3) {
-                lines.push(Line::from(Span::styled(
-                    format!("    {body_line}"),
-                    Style::default().fg(p.foreground),
-                )));
+            let rendered = render_markdown(body, p);
+            let total_rendered = rendered.len();
+
+            let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
+                (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
+            } else {
+                (rendered, false)
+            };
+
+            lines.extend(gutter_lines(visible_rendered, p));
+
+            if truncated {
+                // Hint line sits inside the gutter so it aligns visually.
+                lines.push(Line::from(vec![
+                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
+                    Span::styled("[m] expand", Style::default().fg(p.dim)),
+                ]));
+            }
+
+            // Blank gutter line between comments within the same thread so code
+            // blocks don't blur into each other, but the `│` rail shows they're
+            // still part of the same conversation.
+            if idx + 1 < thread.comments.len() {
+                lines.push(Line::from(vec![Span::styled(
+                    THREAD_GUTTER,
+                    Style::default().fg(p.block_quote_border),
+                )]));
             }
         }
-        lines.push(Line::from("")); // blank separator
+
+        // Blank line between threads (no gutter — clean visual separator).
+        lines.push(Line::from(""));
         items_shown += 1;
     }
 
-    // Render issue comments.
+    // ── Issue comments ────────────────────────────────────────────────────────
     for comment in &detail.issue_comments {
         if items_shown >= max_items {
             break;
         }
         let age = humanize_delta(&comment.created_at);
+
+        // Author header: `@handle` bold, then `  <age>` dim.
         lines.push(Line::from(vec![
             Span::styled(
                 format!("@{}", comment.author),
@@ -314,13 +460,26 @@ fn comments_lines(
             ),
             Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
         ]));
-        for body_line in comment.body_markdown.trim().lines().take(5) {
-            lines.push(Line::from(Span::styled(
-                format!("  {body_line}"),
-                Style::default().fg(p.foreground),
-            )));
+
+        // Body rendered as markdown, indented by two spaces (no gutter — these
+        // are top-level comments with nothing to tether).
+        let body = comment.body_markdown.trim();
+        let rendered = render_markdown(body, p);
+        let total_rendered = rendered.len();
+
+        let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
+            (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
+        } else {
+            (rendered, false)
+        };
+
+        lines.extend(indent_lines(visible_rendered));
+
+        if truncated {
+            lines.push(Line::from(Span::styled("  [m] expand", Style::default().fg(p.dim))));
         }
-        lines.push(Line::from("")); // blank separator
+
+        lines.push(Line::from("")); // blank separator between comments
         items_shown += 1;
     }
 
@@ -353,6 +512,9 @@ fn comments_lines(
 ///
 /// Returns `(lines, section_anchors, unresolved_thread_anchors)` where anchors
 /// are absolute Y offsets within the content.
+///
+/// `unresolved_thread_anchors` always point at the thread-header line for each
+/// unresolved thread so `n`/`N` navigation in the key handler works correctly.
 pub fn build_content(
     detail: &PrDetail,
     files_expanded: bool,
@@ -623,6 +785,11 @@ pub mod tests {
         }
     }
 
+    /// Helper: concatenate all span text in a line.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     /// Section anchors must be monotonically non-decreasing and contain one
     /// entry for each major section that has content.
     #[test]
@@ -672,5 +839,309 @@ pub mod tests {
         let (lines_collapsed, _, _) = build_content(&detail, false, false, &p);
         let (lines_expanded, _, _) = build_content(&detail, true, false, &p);
         assert!(lines_expanded.len() > lines_collapsed.len(), "expanded should produce more lines");
+    }
+
+    // ── New tests: markdown rendering in threads ───────────────────────────────
+
+    /// A thread comment with a rich markdown body (heading, bold, fenced code block)
+    /// must produce multiple spans — not a flat single-styled plain-text line.
+    #[test]
+    fn thread_comment_body_renders_as_markdown() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(10),
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![ReviewComment {
+                    author: "bob".to_owned(),
+                    // Rich body: heading + bold + code block.
+                    body_markdown: "# Heading\n\n**bold** text\n\n```rust\nfn f() {}\n```"
+                        .to_owned(),
+                    created_at: now,
+                }],
+            }],
+            issue_comments: vec![],
+        };
+
+        let (lines, _, _) = build_content(&detail, false, true, &p);
+
+        // Count lines whose first non-gutter span has a non-plain style (heading or code).
+        // At minimum we expect a heading line (BOLD modifier) and a code-block line.
+        let styled_count = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| {
+                // Heading spans carry BOLD; code spans carry a background colour.
+                s.style.add_modifier.contains(Modifier::BOLD) || s.style.bg.is_some()
+            })
+            .count();
+
+        assert!(
+            styled_count >= 2,
+            "expected >= 2 styled spans (heading + code), got {styled_count}"
+        );
+    }
+
+    /// In a thread with 3 comments, only the 2nd and 3rd author lines must carry
+    /// the `↳` reply prefix; the first must not.
+    #[test]
+    fn thread_reply_prefix_only_on_non_first_comments() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(5),
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![
+                    ReviewComment {
+                        author: "alice".to_owned(),
+                        body_markdown: "First comment".to_owned(),
+                        created_at: now,
+                    },
+                    ReviewComment {
+                        author: "bob".to_owned(),
+                        body_markdown: "Second comment".to_owned(),
+                        created_at: now,
+                    },
+                    ReviewComment {
+                        author: "carol".to_owned(),
+                        body_markdown: "Third comment".to_owned(),
+                        created_at: now,
+                    },
+                ],
+            }],
+            issue_comments: vec![],
+        };
+
+        let (lines, _, _) = build_content(&detail, false, true, &p);
+
+        // Collect all lines that contain an author name.
+        // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
+        let reply_glyph = "\u{21b3} ";
+        let has_reply_prefix =
+            |line: &Line<'_>| line.spans.iter().any(|s| s.content.contains(reply_glyph));
+
+        // Find author lines by content (`@alice`, `@bob`, `@carol`).
+        let alice_line = lines.iter().find(|l| line_text(l).contains("@alice"));
+        let bob_line = lines.iter().find(|l| line_text(l).contains("@bob"));
+        let carol_line = lines.iter().find(|l| line_text(l).contains("@carol"));
+
+        assert!(alice_line.is_some(), "@alice line not found");
+        assert!(bob_line.is_some(), "@bob line not found");
+        assert!(carol_line.is_some(), "@carol line not found");
+
+        assert!(
+            !has_reply_prefix(alice_line.expect("@alice line")),
+            "@alice (first comment) must NOT have reply prefix"
+        );
+        assert!(
+            has_reply_prefix(bob_line.expect("@bob line")),
+            "@bob (second comment) must have reply prefix"
+        );
+        assert!(
+            has_reply_prefix(carol_line.expect("@carol line")),
+            "@carol (third comment) must have reply prefix"
+        );
+    }
+
+    /// Unresolved thread anchor must point at the thread-header line, not a body line.
+    ///
+    /// We verify by checking that the line at the anchor offset contains the
+    /// thread glyph (`⚑`) and the path, not an author name or body text.
+    #[test]
+    fn unresolved_anchor_points_at_thread_header() {
+        let now = Utc::now();
+        let p = Palette::default();
+        // Single unresolved thread, no other sections to clutter offsets.
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(42),
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![ReviewComment {
+                    author: "bob".to_owned(),
+                    body_markdown: "Needs refactor.".to_owned(),
+                    created_at: now,
+                }],
+            }],
+            issue_comments: vec![],
+        };
+
+        let (lines, _, unresolved) = build_content(&detail, false, true, &p);
+
+        assert_eq!(unresolved.len(), 1, "expected exactly 1 unresolved anchor");
+        let anchor = unresolved[0] as usize;
+        assert!(anchor < lines.len(), "anchor out of bounds");
+
+        let header_text = line_text(&lines[anchor]);
+        // The thread header contains the path and the unresolved glyph ⚑.
+        assert!(
+            header_text.contains("src/lib.rs"),
+            "anchor line should contain file path, got: {header_text:?}"
+        );
+        assert!(
+            header_text.contains('\u{2691}'), // ⚑
+            "anchor line should contain ⚑ glyph, got: {header_text:?}"
+        );
+    }
+
+    /// A comment body exceeding 6 rendered lines when collapsed must show the
+    /// `[m] expand` hint and not show all body lines.
+    #[test]
+    fn collapsed_long_comment_shows_expand_hint() {
+        let now = Utc::now();
+        let p = Palette::default();
+        // 10 paragraphs → render_markdown produces >> 6 lines.
+        let long_body = (0..10).map(|i| format!("Paragraph {i}.")).collect::<Vec<_>>().join("\n\n");
+
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(1),
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![ReviewComment {
+                    author: "alice".to_owned(),
+                    body_markdown: long_body,
+                    created_at: now,
+                }],
+            }],
+            issue_comments: vec![],
+        };
+
+        // collapsed = false (comments_expanded = false)
+        let (lines, _, _) = build_content(&detail, false, false, &p);
+
+        let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
+
+        assert!(has_expand_hint, "collapsed long comment must show [m] expand hint");
+    }
+
+    /// Issue comments must render markdown (bold/inline-code) rather than plain text.
+    #[test]
+    fn issue_comments_render_markdown_styles() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![],
+            // Issue comment with bold and inline-code so we can detect styled spans.
+            issue_comments: vec![IssueComment {
+                author: "dave".to_owned(),
+                body_markdown: "**important** and `code_snippet`".to_owned(),
+                created_at: now,
+            }],
+        };
+
+        let (lines, _, _) = build_content(&detail, false, true, &p);
+
+        // Bold span for "important".
+        let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+            s.content.contains("important") && s.style.add_modifier.contains(Modifier::BOLD)
+        });
+
+        // Inline-code span with code_bg background.
+        let has_code = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.contains("code_snippet") && s.style.bg == Some(p.code_bg));
+
+        assert!(has_bold, "issue comment body must render **bold** with BOLD modifier");
+        assert!(has_code, "issue comment body must render `code_snippet` with code_bg");
     }
 }
