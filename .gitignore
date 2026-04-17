@@ -1,0 +1,24 @@
+# Rust build artifacts
+/target/
+
+# macOS metadata
+.DS_Store
+
+# Editor swap files
+*.swp
+*.swo
+
+# JetBrains IDEs
+.idea/
+
+# VS Code — ignore user-specific settings but keep shared workspace config
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Environment files — never commit secrets
+.env
+.env.local
+
+# Cargo.lock is NOT ignored for binary crates — it ensures reproducible builds.
+# Cargo.lock

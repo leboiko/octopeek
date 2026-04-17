@@ -1,0 +1,53 @@
+[package]
+name = "octopeek"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Luis Eduardo Boiko <luiseduardo.boiko@gmail.com>"]
+description = "A fast, keyboard-driven TUI for your GitHub PR and issue inbox."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/leboiko/octopeek"
+homepage = "https://github.com/leboiko/octopeek"
+readme = "README.md"
+keywords = ["tui", "github", "pull-request", "cli", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.102"
+arboard = "3.6.1"
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4.6.1", features = ["derive"] }
+crossterm = "0.29.0"
+dirs = "6.0.0"
+pulldown-cmark = "0.13.3"
+ratatui = "0.30.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+supports-color = "3.0.2"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+thiserror = "2.0.18"
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+unicode-width = "0.2.2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+
+[profile.dist]
+inherits = "release"
+lto = "fat"

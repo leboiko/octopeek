@@ -1,0 +1,91 @@
+//! Full-screen help overlay listing all keyboard shortcuts.
+//!
+//! Closed with `?`, `q`, or `Esc`.
+
+use crate::app::App;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Flex, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+};
+
+/// Render the centered help overlay.
+#[allow(clippy::too_many_lines)]
+pub fn draw(f: &mut Frame, app: &App) {
+    let p = &app.palette;
+
+    let header_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(p.foreground);
+    let dim_style = p.dim_style();
+
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled("octopeek Keyboard Shortcuts", header_style)),
+        Line::from(""),
+        Line::from(Span::styled("── General ──────────────────────────────────", dim_style)),
+        shortcut("q", "Quit", key_style, desc_style),
+        shortcut("?", "Toggle this help overlay", key_style, desc_style),
+        shortcut("Tab / Shift+Tab", "Next / previous tab", key_style, desc_style),
+        shortcut("1 – 9", "Jump to tab N", key_style, desc_style),
+        Line::from(""),
+        Line::from(Span::styled("── Dashboard (Phase 2+) ─────────────────────", dim_style)),
+        shortcut("j / Down", "Move cursor down", key_style, desc_style),
+        shortcut("k / Up", "Move cursor up", key_style, desc_style),
+        shortcut("g", "Jump to top of list", key_style, desc_style),
+        shortcut("G", "Jump to bottom of list", key_style, desc_style),
+        shortcut("Enter", "Open PR / issue detail", key_style, desc_style),
+        shortcut("Esc", "Return to dashboard from detail", key_style, desc_style),
+        shortcut("i", "Toggle between PR and Issue view", key_style, desc_style),
+        shortcut("r", "Refresh current tab", key_style, desc_style),
+        shortcut("R", "Refresh all tabs", key_style, desc_style),
+        shortcut("n / N", "Next / previous match", key_style, desc_style),
+        shortcut("f", "Filter / find", key_style, desc_style),
+        shortcut("b", "Back", key_style, desc_style),
+        Line::from(""),
+        Line::from(Span::styled("── PR / Issue Actions (Phase 4+) ────────────", dim_style)),
+        shortcut("o", "Open in browser", key_style, desc_style),
+        shortcut("y", "Copy URL to clipboard", key_style, desc_style),
+        shortcut("c", "Checkout PR branch (with confirmation)", key_style, desc_style),
+        shortcut("p", "Open repo picker", key_style, desc_style),
+        Line::from(""),
+        Line::from(Span::styled("── Inbox Roles (Phase 3) ────────────────────", dim_style)),
+        Line::from(Span::styled(
+            "  A = Author   R = Review requested   @ = Assignee",
+            Style::default().fg(p.dim),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Press ?, q, or Esc to close", Style::default().fg(p.dim))),
+    ];
+
+    let height = crate::cast::u16_sat(lines.len()) + 2;
+    let width = 58u16;
+
+    let area = centered_rect(width, height, f.area());
+
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.border_focused))
+        .style(Style::default().bg(p.help_bg));
+
+    let paragraph = Paragraph::new(lines).block(block);
+
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
+}
+
+/// Build a two-column shortcut line: `  {key:<22} {desc}`.
+fn shortcut<'a>(key: &'a str, desc: &'a str, key_style: Style, desc_style: Style) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!("  {key:<22}"), key_style),
+        Span::styled(desc, desc_style),
+    ])
+}
+
+/// Compute a centered [`Rect`] of the requested dimensions within `area`.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).split(area);
+    Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).split(vertical[0])[0]
+}
