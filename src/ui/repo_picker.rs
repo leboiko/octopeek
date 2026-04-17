@@ -311,4 +311,58 @@ mod tests {
         assert!(!is_valid_repo_slug("./repo"));
         assert!(!is_valid_repo_slug("../repo"));
     }
+
+    // ── Render-path smoke tests ───────────────────────────────────────────────
+    //
+    // These drive the real `draw` function against a ratatui `TestBackend`
+    // so a regression that "the picker opens but nothing is drawn" would
+    // fail at the test level, not only when a human tries it interactively.
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// Render the picker with zero tracked repos — must show the empty-state
+    /// hint.
+    #[test]
+    fn draw_empty_state_shows_hint() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = crate::app::App::new(config, session);
+        app.focus = crate::app::Focus::RepoPicker;
+
+        terminal.draw(|f| draw(f, &app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
+
+        assert!(rendered.contains("Repositories"), "overlay must render the `Repositories` title");
+        assert!(
+            rendered.contains("No repositories tracked yet"),
+            "empty state hint must be visible; got: {rendered}"
+        );
+    }
+
+    /// Render the picker with one tracked repo — its slug must appear in the
+    /// buffer.
+    #[test]
+    fn draw_populated_list_shows_repo() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let config = crate::config::Config {
+            repos: vec!["rust-lang/rust".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = crate::app::App::new(config, session);
+        app.focus = crate::app::Focus::RepoPicker;
+
+        terminal.draw(|f| draw(f, &app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
+
+        assert!(rendered.contains("rust-lang/rust"), "configured repo must render");
+    }
 }
