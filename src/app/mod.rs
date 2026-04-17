@@ -766,36 +766,8 @@ impl App {
                 self.focus = Focus::RepoPicker;
             }
             KeyCode::Enter => {
-                // Commit all selected suggestions to config.
                 self.pending_g = false;
-                let selected: Vec<String> = self
-                    .first_run_suggestions
-                    .iter()
-                    .filter(|s| s.selected)
-                    .map(|s| s.repo.clone())
-                    .collect();
-                let added: usize = selected
-                    .iter()
-                    .filter(|repo| {
-                        if self.config.repos.contains(repo) {
-                            false
-                        } else {
-                            self.config.repos.push((*repo).clone());
-                            true
-                        }
-                    })
-                    .count();
-                self.config.save();
-                self.sync_tabs_to_config();
-                self.first_run_suggestions.clear();
-                self.first_run_cursor = 0;
-                self.focus = Focus::Dashboard;
-                if added > 0 {
-                    self.show_flash(
-                        format!("Added {added} repositor{}", if added == 1 { "y" } else { "ies" }),
-                        std::time::Duration::from_secs(2),
-                    );
-                }
+                self.commit_first_run();
             }
             KeyCode::Esc => {
                 // Skip without committing.
@@ -812,6 +784,50 @@ impl App {
                 self.pending_g = false;
             }
         }
+    }
+
+    /// Commit the user's selections from the first-run wizard to
+    /// `config.repos`, save, and return to the dashboard.
+    ///
+    /// If nothing is selected, flashes a hint and keeps the wizard open
+    /// rather than closing silently (users often hit Enter accidentally).
+    fn commit_first_run(&mut self) {
+        // Collect the chosen slugs first so the mutation loop below does not
+        // also need to borrow `first_run_suggestions`.
+        let selected: Vec<String> = self
+            .first_run_suggestions
+            .iter()
+            .filter(|s| s.selected)
+            .map(|s| s.repo.clone())
+            .collect();
+
+        if selected.is_empty() {
+            self.show_flash(
+                "Nothing selected — press Space to pick repos, or Esc to skip",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+
+        // Explicit loop (not an iterator with side-effects in its closure) so
+        // that the `added` count cannot silently desync from the `push` calls
+        // if the deduplication logic is refactored later.
+        let mut added: usize = 0;
+        for repo in selected {
+            if !self.config.repos.contains(&repo) {
+                self.config.repos.push(repo);
+                added += 1;
+            }
+        }
+        self.config.save();
+        self.sync_tabs_to_config();
+        self.first_run_suggestions.clear();
+        self.first_run_cursor = 0;
+        self.focus = Focus::Dashboard;
+        self.show_flash(
+            format!("Added {added} repositor{}", if added == 1 { "y" } else { "ies" }),
+            std::time::Duration::from_secs(2),
+        );
     }
 
     /// Key handler for the PR/issue detail focus.
@@ -2309,6 +2325,117 @@ mod tests {
             let sug = app.first_run_suggestions.iter().find(|s| s.repo == "x/y");
             assert!(sug.is_some(), "x/y must appear in suggestions");
             assert_eq!(sug.unwrap().count, 5, "2 PRs + 3 issues = 5 total");
+        });
+    }
+
+    /// Regression guard for the reviewer's "selections survive a mid-wizard
+    /// refresh" invariant. A second `on_inbox_loaded` call while focus is
+    /// `FirstRun` must NOT clobber the user's toggled selections.
+    ///
+    /// The guard at the top of `on_inbox_loaded` requires
+    /// `focus == Dashboard` to populate suggestions; with focus still on the
+    /// wizard, the method must leave `first_run_suggestions` intact.
+    #[test]
+    fn first_run_survives_mid_wizard_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            // Initial fetch triggers the wizard.
+            let inbox = make_inbox(vec![("a/b", "clean"), ("c/d", "clean")], vec![]);
+            app.on_inbox_loaded(inbox);
+            assert_eq!(app.focus, Focus::FirstRun);
+            assert_eq!(app.first_run_suggestions.len(), 2);
+
+            // User toggles the first suggestion.
+            app.first_run_cursor = 0;
+            app.first_run_suggestions[0].selected = true;
+            let snapshot_repo = app.first_run_suggestions[0].repo.clone();
+
+            // A background refresh arrives while focus is still on the wizard.
+            let inbox2 =
+                make_inbox(vec![("a/b", "clean"), ("c/d", "clean"), ("e/f", "clean")], vec![]);
+            app.on_inbox_loaded(inbox2);
+
+            assert_eq!(app.focus, Focus::FirstRun, "focus must not bounce");
+            assert_eq!(app.first_run_suggestions.len(), 2, "suggestions must not be rebuilt");
+            assert_eq!(
+                app.first_run_suggestions[0].repo, snapshot_repo,
+                "suggestion ordering must be preserved"
+            );
+            assert!(
+                app.first_run_suggestions[0].selected,
+                "user's selection must survive the refresh"
+            );
+        });
+    }
+
+    /// Regression guard for the reviewer's `a`-key roundtrip concern. Pressing
+    /// `a` in the wizard opens the repo picker in Input mode and records
+    /// `FirstRun` as the return-to focus; after the picker closes (via
+    /// `close_repo_picker`) the user lands back in the wizard, not on the
+    /// dashboard.
+    #[test]
+    fn first_run_a_roundtrips_back_to_first_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox = make_inbox(vec![("a/b", "clean")], vec![]);
+            app.on_inbox_loaded(inbox);
+            assert_eq!(app.focus, Focus::FirstRun, "wizard must be active");
+
+            // User presses `a` — should open picker with return_focus recorded.
+            let a_key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('a'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(a_key);
+            assert_eq!(app.focus, Focus::RepoPicker);
+            assert_eq!(
+                app.repo_picker_return_focus,
+                Focus::FirstRun,
+                "return-focus must be recorded so the picker close path returns here"
+            );
+
+            // Simulate picker close.
+            app.close_repo_picker();
+            assert_eq!(app.focus, Focus::FirstRun, "closing picker must return to wizard");
+        });
+    }
+
+    /// Pressing Enter with zero items ticked must flash a hint and NOT
+    /// close the wizard — otherwise the user's accidental Enter would
+    /// dump them to an empty dashboard with no feedback.
+    #[test]
+    fn first_run_enter_with_nothing_selected_flashes_hint() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox = make_inbox(vec![("a/b", "clean")], vec![]);
+            app.on_inbox_loaded(inbox);
+            assert_eq!(app.focus, Focus::FirstRun);
+            assert!(
+                !app.first_run_suggestions.iter().any(|s| s.selected),
+                "no suggestions should start selected"
+            );
+
+            let enter = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(enter);
+
+            assert_eq!(app.focus, Focus::FirstRun, "wizard must stay open on empty Enter");
+            assert!(app.flash.is_some(), "a hint flash must be shown");
+            assert!(app.config.repos.is_empty(), "config must not be mutated");
         });
     }
 }
