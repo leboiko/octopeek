@@ -162,7 +162,11 @@ impl Palette {
                 gutter: Color::DarkGray,
                 status_bar_bg: Color::Rgb(30, 30, 30),
                 status_bar_fg: Color::Gray,
-                help_bg: Color::Rgb(20, 20, 30),
+                // Lifted ~10 per channel above `background` so help, repo picker,
+                // and confirm overlays are visibly distinct from the dashboard
+                // behind them. Matching `background` would make the overlay
+                // border the only visible cue — easily missed.
+                help_bg: Color::Rgb(32, 32, 45),
                 git_new: Color::Rgb(80, 200, 120),
                 git_modified: Color::Rgb(220, 180, 60),
                 needs_action: Color::Rgb(255, 200, 60),
@@ -205,7 +209,10 @@ impl Palette {
                 gutter: Color::Rgb(98, 114, 164),
                 status_bar_bg: Color::Rgb(40, 42, 54),
                 status_bar_fg: Color::Rgb(98, 114, 164),
-                help_bg: Color::Rgb(40, 42, 54),
+                // Dracula's `current-line` color — brighter than the base
+                // background so overlays are clearly distinct from the
+                // dashboard behind them.
+                help_bg: Color::Rgb(68, 71, 90),
                 git_new: Color::Rgb(80, 250, 123),
                 git_modified: Color::Rgb(241, 250, 140),
                 needs_action: Color::Rgb(241, 250, 140),
