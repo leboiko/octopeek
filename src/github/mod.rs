@@ -1,7 +1,14 @@
-//! GitHub data layer.
-//!
-//! Phase 2: GitHub GraphQL client goes here. Will include:
-//! - Token authentication via `GITHUB_TOKEN` env var or `gh auth token`.
-//! - GraphQL queries for PRs where the user is author, reviewer, or assignee.
-//! - Issue queries for configured repositories.
-//! - Rate-limit tracking and exponential backoff.
+//! GitHub data layer: auth, types, GraphQL query, HTTP client, and action flags.
+
+pub mod auth;
+pub mod client;
+pub mod flags;
+pub mod query;
+pub mod types;
+
+pub use client::Client;
+// Phase 3 will reference ActionFlag from the UI layer; suppress the unused
+// warning until then so we don't prematurely wire in a dependency.
+#[allow(unused_imports)]
+pub use flags::ActionFlag;
+pub use types::Inbox;

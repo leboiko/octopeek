@@ -7,6 +7,8 @@
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::github;
+
 /// All actions that can be dispatched through the application event loop.
 ///
 /// Many variants are matched in `handle_action` but not yet constructed
@@ -86,4 +88,14 @@ pub enum Action {
 
     /// Toggle the help overlay.
     OpenHelp,
+
+    // ── GitHub data ───────────────────────────────────────────────────────────
+    /// A background fetch has been kicked off; `fetching` is now `true`.
+    InboxFetchStarted,
+
+    /// The GitHub inbox was successfully fetched and is ready to display.
+    InboxLoaded(Box<github::Inbox>),
+
+    /// A GitHub inbox fetch failed; the string is a human-readable description.
+    FetchFailed(String),
 }

@@ -9,7 +9,7 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     cursor::Show,
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -38,6 +38,26 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Debug subcommands for development and troubleshooting.
+#[derive(Subcommand, Debug)]
+enum DebugCommand {
+    /// Fetch the GitHub inbox and print raw JSON to stdout, then exit.
+    ///
+    /// Useful for verifying token auth and GraphQL response shape without
+    /// launching the TUI.
+    Dump,
+}
+
+/// Top-level developer-facing subcommands.
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Low-level debugging utilities.
+    Debug {
+        #[command(subcommand)]
+        cmd: DebugCommand,
+    },
+}
+
 /// octopeek — a keyboard-driven TUI for your GitHub PR and issue inbox.
 #[derive(Parser, Debug)]
 #[command(
@@ -45,12 +65,15 @@ impl Drop for TerminalGuard {
     about = "A fast, keyboard-driven TUI for your GitHub PR and issue inbox.",
     version
 )]
-struct Cli {}
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI arguments (no positional arguments in Phase 1).
-    let _cli = Cli::parse();
+    // Parse CLI arguments.
+    let cli = Cli::parse();
 
     // Initialise tracing with an environment-variable filter. Default level is
     // `warn` so production runs are quiet; set `RUST_LOG=debug` for verbose
@@ -63,6 +86,11 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
+
+    // Handle the `debug dump` subcommand before entering the TUI.
+    if let Some(Commands::Debug { cmd: DebugCommand::Dump }) = cli.command {
+        return run_debug_dump().await;
+    }
 
     // Load config and session from disk (graceful fallback to defaults).
     let config = config::Config::load();
@@ -82,4 +110,16 @@ async fn main() -> Result<()> {
 
     let app = App::new(config, session);
     app.run(&mut terminal).await
+}
+
+/// Fetch the inbox and print it as pretty JSON, then exit without launching the TUI.
+///
+/// Errors are written to stderr and the process exits with a non-zero status
+/// via the `?` propagation in `main`.
+async fn run_debug_dump() -> Result<()> {
+    let token = github::auth::load_token()?;
+    let client = github::Client::new(token)?;
+    let inbox = client.fetch_inbox().await?;
+    println!("{}", serde_json::to_string_pretty(&inbox)?);
+    Ok(())
 }

@@ -13,8 +13,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use std::sync::Arc;
+
 use crate::config::Config;
 use crate::event::EventHandler;
+use crate::github;
 use crate::state::AppSession;
 use crate::theme::Palette;
 use crate::ui::tabs::Tabs;
@@ -59,6 +62,18 @@ pub struct App {
     /// Handle for the auto-refresh background task, kept alive as long as the
     /// feature is enabled. Dropping this handle cancels the task.
     refresh_handle: Option<JoinHandle<()>>,
+
+    // ── GitHub data ───────────────────────────────────────────────────────────
+    /// Authenticated GitHub client, absent if token discovery failed at startup.
+    /// Wrapped in `Arc` so it can be shared with background fetch tasks without
+    /// requiring `Client: Clone`.
+    pub client: Option<Arc<github::Client>>,
+    /// Most-recently-fetched inbox, absent until the first successful fetch.
+    pub inbox: Option<github::Inbox>,
+    /// Human-readable description of the last fetch error, if any.
+    pub last_fetch_error: Option<String>,
+    /// `true` while a background fetch is in-flight; prevents overlapping fetches.
+    pub fetching: bool,
 }
 
 impl App {
@@ -77,6 +92,22 @@ impl App {
         // Restore the active tab index from the previous session.
         tabs.set_active_by_index(session.active_tab_index);
 
+        // Attempt token discovery at startup; failure is non-fatal — the UI
+        // will surface `last_fetch_error` in Phase 3.
+        let (client, last_fetch_error) = match github::auth::load_token() {
+            Ok(token) => match github::Client::new(token) {
+                Ok(c) => (Some(Arc::new(c)), None),
+                Err(e) => {
+                    tracing::error!("failed to build GitHub client: {e}");
+                    (None, Some(e.to_string()))
+                }
+            },
+            Err(e) => {
+                tracing::warn!("GitHub token not found: {e}");
+                (None, Some(e.to_string()))
+            }
+        };
+
         Self {
             config,
             session,
@@ -87,6 +118,10 @@ impl App {
             action_tx: None,
             show_help: false,
             refresh_handle: None,
+            client,
+            inbox: None,
+            last_fetch_error,
+            fetching: false,
         }
     }
 
@@ -99,6 +134,12 @@ impl App {
     ) -> Result<()> {
         let (mut events, tx) = EventHandler::new();
         self.action_tx = Some(tx.clone());
+
+        // Kick off an initial inbox fetch if a client is available and we have
+        // no cached data yet.
+        if self.client.is_some() && self.inbox.is_none() {
+            self.spawn_fetch(tx.clone());
+        }
 
         // If auto-refresh is configured, spawn a background task that emits
         // `Action::RefreshAll` on the given cadence. The handle is stored on
@@ -148,6 +189,34 @@ impl App {
         Ok(())
     }
 
+    /// Spawn a background task that fetches the inbox and sends the result back
+    /// via the action channel.  Guards against concurrent fetches via `fetching`.
+    fn spawn_fetch(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Action>) {
+        if self.fetching {
+            debug!("fetch already in progress; skipping");
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            debug!("no GitHub client; skipping fetch");
+            return;
+        };
+
+        self.fetching = true;
+        let _ = tx.send(Action::InboxFetchStarted);
+
+        // Clone the Arc — cheap reference-count bump, not a deep copy.
+        tokio::spawn(async move {
+            match client.fetch_inbox().await {
+                Ok(inbox) => {
+                    let _ = tx.send(Action::InboxLoaded(Box::new(inbox)));
+                }
+                Err(e) => {
+                    let _ = tx.send(Action::FetchFailed(e.to_string()));
+                }
+            }
+        });
+    }
+
     /// Route an action to the appropriate handler.
     // Taking `Action` by value is correct — the dispatcher owns and consumes
     // the action. clippy prefers `&Action` here but that would require cloning
@@ -187,11 +256,10 @@ impl App {
                     self.focus = Focus::Dashboard;
                 }
             }
-            Action::Refresh => {
-                warn!("Action::Refresh not yet implemented (Phase 2)");
-            }
-            Action::RefreshAll => {
-                warn!("Action::RefreshAll not yet implemented (Phase 2)");
+            Action::Refresh | Action::RefreshAll => {
+                if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_fetch(tx);
+                }
             }
             Action::OpenDetail => {
                 warn!("Action::OpenDetail not yet implemented (Phase 3)");
@@ -216,6 +284,19 @@ impl App {
             }
             Action::OpenRepoPicker => {
                 warn!("Action::OpenRepoPicker not yet implemented (Phase 3)");
+            }
+            Action::InboxFetchStarted => {
+                self.fetching = true;
+            }
+            Action::InboxLoaded(inbox) => {
+                self.fetching = false;
+                self.last_fetch_error = None;
+                self.inbox = Some(*inbox);
+            }
+            Action::FetchFailed(msg) => {
+                self.fetching = false;
+                warn!("GitHub inbox fetch failed: {msg}");
+                self.last_fetch_error = Some(msg);
             }
         }
     }
