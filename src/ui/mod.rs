@@ -2,6 +2,7 @@
 
 pub mod confirm;
 pub mod dashboard;
+pub mod first_run;
 pub mod glyphs;
 pub mod help;
 pub mod issue_detail;
@@ -89,6 +90,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     // ── Overlays (drawn last so they float above everything) ──────────────────
     if app.show_help {
         help::draw(f, app);
+    }
+
+    if app.focus == Focus::FirstRun {
+        first_run::draw(f, app);
     }
 
     if app.focus == Focus::RepoPicker {

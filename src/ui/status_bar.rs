@@ -44,6 +44,7 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
 
     let focus_label = match app.focus {
         Focus::Dashboard => "DASHBOARD",
+        Focus::FirstRun => "WELCOME",
         Focus::Detail => "DETAIL",
         Focus::RepoPicker => "REPOS",
         Focus::Help => "HELP",
@@ -66,6 +67,7 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::Dashboard => {
             "j/k nav  Enter detail  i toggle  r refresh  c checkout  p repos  ? help  q quit"
         }
+        Focus::FirstRun => "Space toggle  Enter confirm  a add  Esc skip",
         Focus::Detail => {
             "j/k scroll  Tab section  n/N unresolved  c checkout  o browser  y copy  Esc back"
         }

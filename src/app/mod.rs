@@ -31,6 +31,9 @@ pub enum Focus {
     /// The main dashboard list (PRs or issues).
     #[default]
     Dashboard,
+    /// The first-run welcome wizard shown when config is empty and the inbox
+    /// reveals repos the user is already active in.
+    FirstRun,
     /// The detail view for a single PR or issue.
     Detail,
     /// The repo-picker overlay.
@@ -39,6 +42,19 @@ pub enum Focus {
     Help,
     /// The generic confirmation overlay.
     Confirm,
+}
+
+/// One repo suggestion shown in the first-run wizard.
+///
+/// Built from the inbox on first launch when `config.repos` is empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstRunSuggestion {
+    /// `owner/name` slug of the suggested repository.
+    pub repo: String,
+    /// Total number of open items (PRs + issues) the viewer has in this repo.
+    pub count: usize,
+    /// Whether the user has checked this suggestion for import.
+    pub selected: bool,
 }
 
 /// Interaction mode for the repo picker overlay.
@@ -151,6 +167,13 @@ pub struct App {
     pub confirm: Option<crate::ui::confirm::Confirm>,
     /// Focus state to restore when the confirmation overlay is dismissed.
     pub confirm_return_focus: Focus,
+
+    // ── First-run wizard state ────────────────────────────────────────────────
+    /// Suggested repos shown in the first-run wizard; populated from the inbox
+    /// when `config.repos` is empty on the first successful fetch.
+    pub first_run_suggestions: Vec<FirstRunSuggestion>,
+    /// Index of the currently highlighted row in the first-run suggestion list.
+    pub first_run_cursor: usize,
 }
 
 impl App {
@@ -220,6 +243,8 @@ impl App {
             repo_picker_return_focus: Focus::Dashboard,
             confirm: None,
             confirm_return_focus: Focus::Dashboard,
+            first_run_suggestions: Vec::new(),
+            first_run_cursor: 0,
         }
     }
 
@@ -365,6 +390,33 @@ impl App {
                 *idx = 0;
             } else if *idx >= max {
                 *idx = max - 1;
+            }
+        }
+
+        // First-run wizard: when config is still empty and focus is on the
+        // dashboard (not an overlay or detail), compute repo suggestions from
+        // the inbox and switch to the wizard focus.
+        if self.config.repos.is_empty() && self.focus == Focus::Dashboard {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for pr in &inbox.prs {
+                *counts.entry(pr.repo.clone()).or_insert(0) += 1;
+            }
+            for issue in &inbox.issues {
+                *counts.entry(issue.repo.clone()).or_insert(0) += 1;
+            }
+            if !counts.is_empty() {
+                // Sort by count descending, then alphabetically by repo for
+                // stable ordering when counts are equal.
+                let mut suggestions: Vec<FirstRunSuggestion> = counts
+                    .into_iter()
+                    .map(|(repo, count)| FirstRunSuggestion { repo, count, selected: false })
+                    .collect();
+                suggestions.sort_unstable_by(|a, b| {
+                    b.count.cmp(&a.count).then_with(|| a.repo.cmp(&b.repo))
+                });
+                self.first_run_suggestions = suggestions;
+                self.first_run_cursor = 0;
+                self.focus = Focus::FirstRun;
             }
         }
 
@@ -625,11 +677,139 @@ impl App {
         // Per-focus dispatch.
         match self.focus {
             Focus::Dashboard => self.handle_key_dashboard(key),
+            Focus::FirstRun => self.handle_key_first_run(key),
             Focus::Detail => self.handle_key_detail(key),
             Focus::RepoPicker => self.handle_key_repo_picker(key),
             Focus::Confirm => self.handle_key_confirm(key),
             Focus::Help => {
                 // Handled above; unreachable here.
+            }
+        }
+    }
+
+    /// Key handler for the first-run welcome wizard.
+    ///
+    /// Bindings:
+    /// - `j` / `Down`: move cursor down (clamped).
+    /// - `k` / `Up`: move cursor up (saturating).
+    /// - `g g` (vim chord via `pending_g`): jump to top.
+    /// - `G`: jump to bottom.
+    /// - `Space`: toggle selected state of the cursor row.
+    /// - `a`: open the repo-picker in Input mode so the user can add a custom repo.
+    /// - `Enter`: commit all selected suggestions to config, then go to Dashboard.
+    /// - `Esc`: skip wizard without committing, go to Dashboard.
+    /// - `?`: toggle help overlay.
+    /// - `q`: quit.
+    fn handle_key_first_run(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        // Ignore key combos with modifiers (consistent with other handlers).
+        if key.modifiers != KeyModifiers::NONE {
+            self.pending_g = false;
+            return;
+        }
+
+        let len = self.first_run_suggestions.len();
+
+        match key.code {
+            KeyCode::Char('q') => {
+                self.pending_g = false;
+                self.running = false;
+            }
+            KeyCode::Char('?') => {
+                self.pending_g = false;
+                self.handle_action(Action::OpenHelp);
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.pending_g = false;
+                if len > 0 {
+                    self.first_run_cursor = (self.first_run_cursor + 1).min(len - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.pending_g = false;
+                self.first_run_cursor = self.first_run_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('g') => {
+                if self.pending_g {
+                    // Second `g` in vim chord — jump to top.
+                    self.pending_g = false;
+                    self.first_run_cursor = 0;
+                } else {
+                    self.pending_g = true;
+                }
+            }
+            KeyCode::Char('G') => {
+                self.pending_g = false;
+                if len > 0 {
+                    self.first_run_cursor = len - 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                self.pending_g = false;
+                if len > 0 {
+                    let idx = self.first_run_cursor.min(len - 1);
+                    self.first_run_suggestions[idx].selected =
+                        !self.first_run_suggestions[idx].selected;
+                }
+            }
+            KeyCode::Char('a') => {
+                // Open the repo-picker in Input mode so the user can add a
+                // custom repo not present in the suggestions list.
+                self.pending_g = false;
+                self.repo_picker_list_cursor = 0;
+                self.repo_picker_input.clear();
+                self.repo_picker_mode = RepoPickerMode::Input;
+                // Return to FirstRun (not Dashboard) when the picker closes,
+                // so the wizard can stay open for any remaining suggestions.
+                self.repo_picker_return_focus = Focus::FirstRun;
+                self.focus = Focus::RepoPicker;
+            }
+            KeyCode::Enter => {
+                // Commit all selected suggestions to config.
+                self.pending_g = false;
+                let selected: Vec<String> = self
+                    .first_run_suggestions
+                    .iter()
+                    .filter(|s| s.selected)
+                    .map(|s| s.repo.clone())
+                    .collect();
+                let added: usize = selected
+                    .iter()
+                    .filter(|repo| {
+                        if self.config.repos.contains(repo) {
+                            false
+                        } else {
+                            self.config.repos.push((*repo).clone());
+                            true
+                        }
+                    })
+                    .count();
+                self.config.save();
+                self.sync_tabs_to_config();
+                self.first_run_suggestions.clear();
+                self.first_run_cursor = 0;
+                self.focus = Focus::Dashboard;
+                if added > 0 {
+                    self.show_flash(
+                        format!("Added {added} repositor{}", if added == 1 { "y" } else { "ies" }),
+                        std::time::Duration::from_secs(2),
+                    );
+                }
+            }
+            KeyCode::Esc => {
+                // Skip without committing.
+                self.pending_g = false;
+                self.first_run_suggestions.clear();
+                self.first_run_cursor = 0;
+                self.focus = Focus::Dashboard;
+                self.show_flash(
+                    "Press `p` any time to add repos",
+                    std::time::Duration::from_secs(2),
+                );
+            }
+            _ => {
+                self.pending_g = false;
             }
         }
     }
@@ -1902,5 +2082,233 @@ mod tests {
 
         assert_eq!(app.focus, Focus::Dashboard, "focus must be restored after cancel");
         assert!(app.confirm.is_none(), "confirm must be cleared after cancel");
+    }
+
+    // ── First-run wizard tests ────────────────────────────────────────────────
+
+    /// Helper: build an `Inbox` with a given set of PRs and issues.
+    fn make_inbox(prs: Vec<(&str, &str)>, issues: Vec<&str>) -> Inbox {
+        Inbox {
+            viewer_login: "viewer".to_owned(),
+            prs: prs.into_iter().map(|(repo, variant)| make_pr(repo, variant, "viewer")).collect(),
+            issues: issues.into_iter().map(make_issue).collect(),
+        }
+    }
+
+    /// When config is empty and the inbox has items, `on_inbox_loaded` must
+    /// switch focus to `FirstRun` and populate `first_run_suggestions`.
+    #[test]
+    fn on_inbox_loaded_triggers_first_run_when_config_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default(); // repos empty
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox = make_inbox(
+                vec![("alice/foo", "clean"), ("bob/bar", "clean"), ("alice/foo", "conflict")],
+                vec![],
+            );
+            app.on_inbox_loaded(inbox);
+
+            assert_eq!(app.focus, Focus::FirstRun, "focus must switch to FirstRun");
+            assert_eq!(
+                app.first_run_suggestions.len(),
+                2,
+                "two distinct repos must appear in suggestions"
+            );
+            // alice/foo has 2 PRs; bob/bar has 1.
+            assert_eq!(app.first_run_suggestions[0].repo, "alice/foo");
+            assert_eq!(app.first_run_suggestions[0].count, 2);
+            assert_eq!(app.first_run_suggestions[1].repo, "bob/bar");
+            assert_eq!(app.first_run_suggestions[1].count, 1);
+        });
+    }
+
+    /// When config already has repos, `on_inbox_loaded` must NOT trigger the
+    /// first-run wizard.
+    #[test]
+    fn on_inbox_loaded_skips_first_run_when_config_nonempty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config {
+                repos: vec!["existing/repo".to_owned()],
+                ..Default::default()
+            };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox = make_inbox(vec![("alice/foo", "clean")], vec![]);
+            app.on_inbox_loaded(inbox);
+
+            assert_eq!(
+                app.focus,
+                Focus::Dashboard,
+                "focus must remain Dashboard when config has repos"
+            );
+            assert!(app.first_run_suggestions.is_empty(), "no suggestions when config is nonempty");
+        });
+    }
+
+    /// When config is empty AND inbox is empty, focus must stay Dashboard
+    /// (existing empty-dashboard state is the correct UX).
+    #[test]
+    fn on_inbox_loaded_skips_first_run_when_inbox_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox = make_inbox(vec![], vec![]);
+            app.on_inbox_loaded(inbox);
+
+            assert_eq!(app.focus, Focus::Dashboard, "focus must stay Dashboard for empty inbox");
+            assert!(app.first_run_suggestions.is_empty());
+        });
+    }
+
+    /// Space key in `FirstRun` focus must toggle the selected state of the
+    /// cursor row.
+    #[test]
+    fn first_run_space_toggles_selection() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::FirstRun;
+            app.first_run_suggestions =
+                vec![FirstRunSuggestion { repo: "a/b".to_owned(), count: 1, selected: false }];
+            app.first_run_cursor = 0;
+
+            let space = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(' '),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(space);
+            assert!(app.first_run_suggestions[0].selected, "Space must select the row");
+
+            // Press again to deselect.
+            let space2 = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(' '),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(space2);
+            assert!(!app.first_run_suggestions[0].selected, "second Space must deselect the row");
+        });
+    }
+
+    /// Enter in `FirstRun` focus must commit selected repos to config, clear
+    /// the suggestions, switch to Dashboard, and set a flash message.
+    #[test]
+    fn first_run_enter_commits_selected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::FirstRun;
+            app.first_run_suggestions = vec![
+                FirstRunSuggestion { repo: "a/b".to_owned(), count: 5, selected: true },
+                FirstRunSuggestion { repo: "c/d".to_owned(), count: 3, selected: true },
+                FirstRunSuggestion { repo: "e/f".to_owned(), count: 1, selected: false },
+            ];
+
+            let enter = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(enter);
+
+            assert_eq!(app.focus, Focus::Dashboard, "focus must switch to Dashboard after commit");
+            assert!(app.first_run_suggestions.is_empty(), "suggestions must be cleared");
+            assert!(
+                app.config.repos.contains(&"a/b".to_owned()),
+                "selected repo a/b must be in config"
+            );
+            assert!(
+                app.config.repos.contains(&"c/d".to_owned()),
+                "selected repo c/d must be in config"
+            );
+            assert!(
+                !app.config.repos.contains(&"e/f".to_owned()),
+                "unselected repo e/f must NOT be in config"
+            );
+            assert!(app.flash.is_some(), "a flash message must be set after committing");
+        });
+    }
+
+    /// Esc in `FirstRun` focus must skip without touching config and switch
+    /// focus to Dashboard.
+    #[test]
+    fn first_run_esc_skips_without_commit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::FirstRun;
+            app.first_run_suggestions =
+                vec![FirstRunSuggestion { repo: "a/b".to_owned(), count: 2, selected: true }];
+
+            let esc = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_key_first_run(esc);
+
+            assert_eq!(app.focus, Focus::Dashboard, "focus must be Dashboard after Esc");
+            assert!(app.config.repos.is_empty(), "Esc must not commit any repos to config");
+            assert!(app.first_run_suggestions.is_empty(), "suggestions must be cleared on Esc");
+        });
+    }
+
+    /// Suggestions must be sorted by count descending, then alphabetically.
+    #[test]
+    fn first_run_suggestions_sorted_by_count_desc() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            // a/b appears 5 times (5 PRs), c/d 10 times (10 PRs).
+            let mut prs: Vec<(&str, &str)> = Vec::new();
+            for _ in 0..5 {
+                prs.push(("a/b", "clean"));
+            }
+            for _ in 0..10 {
+                prs.push(("c/d", "clean"));
+            }
+            let inbox = make_inbox(prs, vec![]);
+            app.on_inbox_loaded(inbox);
+
+            assert_eq!(app.focus, Focus::FirstRun, "must switch to FirstRun");
+            assert_eq!(
+                app.first_run_suggestions[0].repo, "c/d",
+                "repo with more items must be first"
+            );
+            assert_eq!(app.first_run_suggestions[0].count, 10);
+        });
+    }
+
+    /// A repo with 2 PRs and 3 issues must yield a combined count of 5.
+    #[test]
+    fn first_run_suggestion_counts_pr_plus_issue() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            let inbox =
+                make_inbox(vec![("x/y", "clean"), ("x/y", "conflict")], vec!["x/y", "x/y", "x/y"]);
+            app.on_inbox_loaded(inbox);
+
+            let sug = app.first_run_suggestions.iter().find(|s| s.repo == "x/y");
+            assert!(sug.is_some(), "x/y must appear in suggestions");
+            assert_eq!(sug.unwrap().count, 5, "2 PRs + 3 issues = 5 total");
+        });
     }
 }
