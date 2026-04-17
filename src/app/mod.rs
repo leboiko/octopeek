@@ -529,6 +529,7 @@ impl App {
                 }
             }
             Action::OpenRepoPicker => {
+                debug!("Action::OpenRepoPicker: switching focus from {:?}", self.focus);
                 self.repo_picker_list_cursor = 0;
                 self.repo_picker_input.clear();
                 self.repo_picker_mode = RepoPickerMode::List;
@@ -1306,6 +1307,7 @@ impl App {
                 self.handle_action(Action::CheckoutBranch);
             }
             KeyCode::Char('p') => {
+                debug!("dashboard: 'p' pressed — dispatching OpenRepoPicker");
                 self.pending_g = false;
                 self.handle_action(Action::OpenRepoPicker);
             }
