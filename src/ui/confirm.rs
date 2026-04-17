@@ -83,8 +83,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let hint_yes =
         Span::styled("[y] yes", Style::default().fg(p.success).add_modifier(Modifier::BOLD));
+    // Match the handler: `n`, `N`, and Esc all cancel. Writing the hint as
+    // `[n/N]` makes the lowercase form visible in the UI.
     let hint_no =
-        Span::styled("[N] no / cancel", Style::default().fg(p.dim).add_modifier(Modifier::BOLD));
+        Span::styled("[n/N] cancel", Style::default().fg(p.dim).add_modifier(Modifier::BOLD));
 
     let lines = vec![
         Line::from(""),

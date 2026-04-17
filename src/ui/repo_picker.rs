@@ -74,6 +74,12 @@ pub fn is_valid_repo_slug(s: &str) -> bool {
         return false;
     }
 
+    // GitHub rejects `.` and `..` as repository names (they confuse URL
+    // routing). Reject either half matching them.
+    if owner == "." || owner == ".." || name == "." || name == ".." {
+        return false;
+    }
+
     // Character allow-list.
     let is_allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_');
     owner.chars().all(is_allowed) && name.chars().all(is_allowed)
@@ -294,5 +300,15 @@ mod tests {
     fn exactly_max_len_accepted() {
         let exactly = "a".repeat(100);
         assert!(is_valid_repo_slug(&format!("{exactly}/{exactly}")));
+    }
+
+    /// GitHub rejects `.` and `..` as repo or owner names; our validator must
+    /// too, even though they would otherwise pass the character allow-list.
+    #[test]
+    fn dot_and_dotdot_rejected() {
+        assert!(!is_valid_repo_slug("owner/."));
+        assert!(!is_valid_repo_slug("owner/.."));
+        assert!(!is_valid_repo_slug("./repo"));
+        assert!(!is_valid_repo_slug("../repo"));
     }
 }

@@ -804,17 +804,23 @@ impl App {
 
     /// Ensure `App::tabs` mirrors `config.repos`: open any newly-added repos,
     /// close any removed repos, and preserve the active tab where possible.
+    ///
+    /// Also drops stale entries from the `selection` map: a repo that has been
+    /// removed from the config must not continue to hold a per-repo cursor
+    /// index, or long-running sessions would accumulate dead entries.
     fn sync_tabs_to_config(&mut self) {
-        // Close tabs whose repos are no longer in the config.
-        let ids_to_close: Vec<crate::ui::tabs::TabId> = self
+        // Close tabs whose repos are no longer in the config and drop any
+        // per-repo state that only makes sense for a tracked repo.
+        let removed: Vec<(crate::ui::tabs::TabId, String)> = self
             .tabs
             .tabs
             .iter()
             .filter(|t| !self.config.repos.contains(&t.repo))
-            .map(|t| t.id)
+            .map(|t| (t.id, t.repo.clone()))
             .collect();
-        for id in ids_to_close {
+        for (id, repo) in removed {
             self.tabs.close(id);
+            self.selection.remove(&repo);
         }
 
         // Open tabs for repos not yet represented.
@@ -1011,6 +1017,17 @@ impl App {
     fn begin_checkout_from_selection(&mut self) {
         // Prefer the detail view's head_ref when we are in it.
         let (branch, repo, number) = if let Some(detail) = &self.pr_detail {
+            // `PrDetail::head_ref` is a `String`, so it can technically be
+            // empty even though GitHub would not return one. Guard against it
+            // so we never shell out `git checkout ""` (which produces a
+            // confusing usage error instead of a clean flash).
+            if detail.head_ref.is_empty() {
+                self.show_flash(
+                    "Branch info not available for this PR.",
+                    std::time::Duration::from_secs(3),
+                );
+                return;
+            }
             (detail.head_ref.clone(), detail.repo.clone(), detail.number)
         } else {
             // Fall back to the list-level PullRequest.
@@ -1709,6 +1726,40 @@ mod tests {
 
         assert!(app.config.repos.is_empty(), "invalid slug must not be added");
         assert!(app.flash.is_some(), "flash message must be set on validation failure");
+    }
+
+    /// Deleting a repo must also drop its entry from the per-repo selection
+    /// map so long-running sessions don't accumulate dead cursor state.
+    #[test]
+    fn repo_picker_delete_cleans_up_selection_map() {
+        let config = crate::config::Config {
+            repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        // Seed cursor positions as if the user had scrolled in both tabs.
+        app.selection.insert("owner/a".to_owned(), 3);
+        app.selection.insert("owner/b".to_owned(), 1);
+
+        app.focus = Focus::RepoPicker;
+        app.repo_picker_mode = RepoPickerMode::List;
+        app.repo_picker_list_cursor = 0;
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_repo_picker_list_key(key);
+
+        assert!(
+            !app.selection.contains_key("owner/a"),
+            "deleted repo's selection entry must be removed"
+        );
+        assert_eq!(
+            app.selection.get("owner/b"),
+            Some(&1),
+            "other repos' selection entries must be untouched"
+        );
     }
 
     /// Deleting a repo in List mode must remove it from `config.repos` and

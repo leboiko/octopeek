@@ -66,7 +66,6 @@ pub fn is_working_tree_clean() -> Result<bool> {
 }
 
 /// Return the name of the currently checked-out branch.
-#[allow(dead_code)] // Available for future use (e.g. display in status bar)
 ///
 /// Runs `git rev-parse --abbrev-ref HEAD`.  Returns `"HEAD"` when in
 /// detached-HEAD state.
@@ -74,6 +73,7 @@ pub fn is_working_tree_clean() -> Result<bool> {
 /// # Errors
 ///
 /// Returns an error when the cwd is not a git repository or `git` is absent.
+#[allow(dead_code)] // Available for future use (e.g. display in status bar).
 pub fn current_branch() -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
