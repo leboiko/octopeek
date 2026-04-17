@@ -721,13 +721,14 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
-                // Re-fetch the current detail.
+                // Re-fetch the current detail. As in `open_detail_for_selection`,
+                // `detail_fetching` must NOT be set here — `spawn_detail_fetch`
+                // owns the guard, and setting it externally would make it skip.
                 if let Some(detail) = &self.pr_detail {
                     let repo = detail.repo.clone();
                     let number = detail.number;
                     self.pr_detail = None;
                     self.issue_detail = None;
-                    self.detail_fetching = true;
                     self.detail_error = None;
                     self.pr_detail_scroll = 0;
                     if let Some(tx) = self.action_tx.clone() {
@@ -738,7 +739,6 @@ impl App {
                     let number = detail.number;
                     self.pr_detail = None;
                     self.issue_detail = None;
-                    self.detail_fetching = true;
                     self.detail_error = None;
                     self.pr_detail_scroll = 0;
                     if let Some(tx) = self.action_tx.clone() {
@@ -769,34 +769,58 @@ impl App {
 
     /// Jump to the next (`delta = 1`) or previous (`delta = -1`) section anchor.
     fn detail_jump_section(&mut self, delta: i32) {
+        // Compute anchors on demand from the current pr_detail instead of
+        // relying on a cached copy populated by the renderer. The renderer
+        // has `&App`, not `&mut App`, so anchors computed during `draw`
+        // cannot be written back — reading a stale cache silently no-ops
+        // Tab navigation.
+        let Some(detail) = &self.pr_detail else {
+            return;
+        };
+        let (_, section_anchors, unresolved) = crate::ui::pr_detail::build_content(
+            detail,
+            self.pr_detail_files_expanded,
+            self.pr_detail_comments_expanded,
+            &self.palette,
+        );
+        self.pr_detail_section_anchors = section_anchors;
+        self.pr_detail_unresolved_anchors = unresolved;
+
         let anchors = &self.pr_detail_section_anchors;
         if anchors.is_empty() {
             return;
         }
         let current = self.pr_detail_scroll;
         if delta > 0 {
-            // Find the first anchor strictly greater than current scroll.
             if let Some(&next) = anchors.iter().find(|&&a| a > current) {
                 self.pr_detail_scroll = next;
             } else {
-                // Wrap: jump to first anchor.
                 self.pr_detail_scroll = anchors[0];
             }
-        } else {
-            // Find the last anchor strictly less than current scroll.
-            if let Some(&prev) = anchors.iter().rev().find(|&&a| a < current) {
-                self.pr_detail_scroll = prev;
-            } else {
-                // Wrap: jump to last anchor.
-                if let Some(&last) = anchors.last() {
-                    self.pr_detail_scroll = last;
-                }
-            }
+        } else if let Some(&prev) = anchors.iter().rev().find(|&&a| a < current) {
+            self.pr_detail_scroll = prev;
+        } else if let Some(&last) = anchors.last() {
+            self.pr_detail_scroll = last;
         }
     }
 
     /// Cycle the scroll offset between unresolved review thread anchors.
     fn detail_cycle_unresolved(&mut self, delta: i32) {
+        // Same staleness concern as `detail_jump_section` — recompute anchors
+        // from the current pr_detail so a Tab/n/N press after the first
+        // render actually has data to work with.
+        let Some(detail) = &self.pr_detail else {
+            return;
+        };
+        let (_, section_anchors, unresolved) = crate::ui::pr_detail::build_content(
+            detail,
+            self.pr_detail_files_expanded,
+            self.pr_detail_comments_expanded,
+            &self.palette,
+        );
+        self.pr_detail_section_anchors = section_anchors;
+        self.pr_detail_unresolved_anchors = unresolved;
+
         let anchors = &self.pr_detail_unresolved_anchors;
         if anchors.is_empty() {
             return;
@@ -832,10 +856,13 @@ impl App {
                     inbox.prs.iter().filter(|pr| pr.repo == repo).collect();
                 if let Some(pr) = prs.get(sel) {
                     let number = pr.number;
-                    // Reset detail state before switching focus.
+                    // Reset detail state before switching focus. `detail_fetching`
+                    // is set by `spawn_detail_fetch` itself — if we set it here
+                    // too, the guard inside that function sees `true` and
+                    // silently skips the fetch, leaving the view stuck on the
+                    // spinner forever.
                     self.pr_detail = None;
                     self.issue_detail = None;
-                    self.detail_fetching = true;
                     self.detail_error = None;
                     self.pr_detail_scroll = 0;
                     self.pr_detail_files_expanded = false;
@@ -854,9 +881,11 @@ impl App {
                     inbox.issues.iter().filter(|i| i.repo == repo).collect();
                 if let Some(issue) = issues.get(sel) {
                     let number = issue.number;
+                    // See the PR branch above: `detail_fetching` is set by
+                    // `spawn_detail_fetch`, not here, to avoid the self-
+                    // blocking guard.
                     self.pr_detail = None;
                     self.issue_detail = None;
-                    self.detail_fetching = true;
                     self.detail_error = None;
                     self.pr_detail_scroll = 0;
                     self.pr_detail_files_expanded = false;
