@@ -30,6 +30,59 @@ use crate::github::detail::IssueDetail;
 use crate::ui::markdown::render_markdown;
 use crate::ui::util::humanize_delta;
 
+/// Short state label + color for the issue header's top line.
+///
+/// The [`IssueDetail`] model carries the state as a free-form `String` (`"OPEN"`,
+/// `"CLOSED"`). We map the known values to palette colours and fall back to
+/// `dim` for anything unexpected so new states don't crash the header.
+fn issue_state_label(detail: &IssueDetail, p: &crate::theme::Palette) -> (String, ratatui::style::Color) {
+    match detail.state.as_str() {
+        "OPEN" => ("OPEN".to_owned(), p.success),
+        "CLOSED" => ("CLOSED".to_owned(), p.accent_alt),
+        other => (other.to_owned(), p.dim),
+    }
+}
+
+/// Build the sticky header lines for an issue, matching the PR header shape
+/// so users see a consistent landing-pad across the two detail kinds.
+pub fn build_header(detail: &IssueDetail, p: &crate::theme::Palette) -> Vec<Line<'static>> {
+    let (state_text, state_color) = issue_state_label(detail, p);
+    let age = humanize_delta(&detail.created_at);
+
+    let line1 = Line::from(vec![
+        Span::styled(
+            format!("{} #{}", detail.repo, detail.number),
+            Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
+        Span::styled(
+            state_text,
+            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
+        Span::styled(format!("@{}", detail.author), Style::default().fg(p.foreground)),
+        Span::styled(format!(" opened {age}"), Style::default().fg(p.dim)),
+    ]);
+
+    let line2 = Line::from(Span::styled(
+        detail.title.clone(),
+        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+    ));
+
+    let labels_str = if detail.labels.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = detail.labels.iter().map(|l| l.name.as_str()).collect();
+        format!("  \u{00B7}  labels: {}", names.join(", "))
+    };
+    let line3 = Line::from(Span::styled(
+        format!("{} comments{}", detail.comments.len(), labels_str),
+        Style::default().fg(p.dim),
+    ));
+
+    vec![line1, line2, line3]
+}
+
 // ── Section header helper ─────────────────────────────────────────────────────
 
 fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
@@ -70,35 +123,13 @@ pub fn build_content(
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     let mut section_anchors: Vec<u16> = Vec::new();
 
-    // ── Title ─────────────────────────────────────────────────────────────────
+    // Title + meta moved into the sticky header rendered above the body, so
+    // the scrolling content starts with the body markdown. The anchor list
+    // still exposes a body anchor at line 0 so Tab navigation keeps a top
+    // target even when the body is empty.
     #[allow(clippy::cast_possible_truncation)]
-    let title_anchor = all_lines.len() as u16;
-    section_anchors.push(title_anchor);
-    all_lines.push(Line::from(Span::styled(
-        detail.title.clone(),
-        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
-    )));
-    all_lines.push(Line::from(""));
-
-    // ── Meta ──────────────────────────────────────────────────────────────────
-    let age = humanize_delta(&detail.created_at);
-    let labels_str = if detail.labels.is_empty() {
-        String::new()
-    } else {
-        let names: Vec<&str> = detail.labels.iter().map(|l| l.name.as_str()).collect();
-        format!("  \u{00B7}  labels: {}", names.join(", "))
-    };
-    let meta = format!(
-        "@{}  opened {}  \u{00B7}  {} comments{}",
-        detail.author,
-        age,
-        detail.comments.len(),
-        labels_str,
-    );
-    all_lines.push(Line::from(Span::styled(meta, Style::default().fg(p.dim))));
-    all_lines.push(Line::from(""));
-
-    // ── Body (rendered Markdown) ───────────────────────────────────────────────
+    let body_anchor = all_lines.len() as u16;
+    section_anchors.push(body_anchor);
     if !detail.body_markdown.is_empty() {
         let body_lines = render_markdown(&detail.body_markdown, p);
         all_lines.extend(body_lines);
@@ -207,14 +238,31 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // expand key and the scroll offset behave the same regardless of which
     // kind of detail is open. A future refactor that adds parallel
     // `issue_detail_*` fields would need to re-plumb those keybindings.
+
+    // Split the detail area into a fixed-height sticky header and the
+    // scrollable body — same shape as the PR view so the two detail types
+    // share the same reading affordance.
+    let header_lines = build_header(detail, p);
+    #[allow(clippy::cast_possible_truncation)]
+    let header_rows = (header_lines.len() + 2) as u16; // +2 = top pad + rule row
+    let header_rows = header_rows.min(area.height);
+    let splits = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(header_rows),
+        ratatui::layout::Constraint::Min(1),
+    ])
+    .split(area);
+    let header_area = splits[0];
+    let body_area = splits[1];
+
+    render_issue_header(f, header_lines, header_area, p);
+
     let (content_lines, _section_anchors) =
         build_content(detail, app.pr_detail_comments_expanded, p, app.config.show_ascii_glyphs);
 
-    // Wrap the paragraph in a padded block — see pr_detail::draw for rationale.
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
-        .padding(Padding::new(2, 2, 1, 0));
-    let inner = block.inner(area);
+        .padding(Padding::new(2, 2, 0, 0));
+    let inner = block.inner(body_area);
     app.pr_detail_viewport.set(inner);
 
     let scroll = app.pr_detail_scroll;
@@ -233,7 +281,39 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .scroll((scroll, 0))
     };
 
-    f.render_widget(widget, area);
+    f.render_widget(widget, body_area);
+}
+
+/// Render the sticky issue header into `area`. Shares the same shape as
+/// `pr_detail::render_pr_header` (tinted block + bottom accent rule) so both
+/// detail kinds feel like the same surface.
+fn render_issue_header(
+    f: &mut Frame,
+    lines: Vec<Line<'static>>,
+    area: Rect,
+    p: &crate::theme::Palette,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let rule_row = area.height.saturating_sub(1);
+    let content_h = area.height.saturating_sub(1);
+
+    let content_area = Rect { x: area.x, y: area.y, width: area.width, height: content_h };
+    let rule_area = Rect { x: area.x, y: area.y + rule_row, width: area.width, height: 1 };
+
+    let block = Block::default()
+        .style(Style::default().bg(p.help_bg).fg(p.foreground))
+        .padding(Padding::new(2, 2, 1, 0));
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, content_area);
+
+    let rule_text = "\u{2501}".repeat(usize::from(rule_area.width));
+    let rule = Paragraph::new(Line::from(Span::styled(
+        rule_text,
+        Style::default().fg(p.accent).bg(p.background),
+    )));
+    f.render_widget(rule, rule_area);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -273,14 +353,33 @@ mod tests {
         }
     }
 
-    /// Issue detail anchors: always starts with title anchor at 0.
+    /// The scrolling body starts with the body anchor at line 0.
+    ///
+    /// Title/meta have moved into the sticky header, so the first anchor is
+    /// now BODY (always at 0) rather than the old TITLE anchor.
     #[test]
     fn issue_detail_anchors_start_at_zero() {
         let detail = fixture_issue_detail(3);
         let p = Palette::default();
         let (_, anchors) = build_content(&detail, false, &p, false);
         assert!(!anchors.is_empty(), "should have at least one anchor");
-        assert_eq!(anchors[0], 0, "title anchor should be at 0");
+        assert_eq!(anchors[0], 0, "body anchor should be at 0");
+    }
+
+    /// The sticky issue header must carry the repo/number, state label, and
+    /// title — the minimum context a reader needs before scrolling into a
+    /// long body.
+    #[test]
+    fn build_header_carries_context() {
+        let detail = fixture_issue_detail(2);
+        let p = Palette::default();
+        let lines = build_header(&detail, &p);
+        let text: String =
+            lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("owner/repo #7"), "repo/number missing: {text}");
+        assert!(text.contains("OPEN"), "state label missing: {text}");
+        assert!(text.contains("Test Issue"), "title missing: {text}");
+        assert!(text.contains("2 comments"), "comment count missing: {text}");
     }
 
     /// Anchors must be monotonically non-decreasing.

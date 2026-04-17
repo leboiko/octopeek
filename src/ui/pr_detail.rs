@@ -85,6 +85,85 @@ fn file_kind_glyph(kind: FileChangeKind) -> &'static str {
     }
 }
 
+// ── Sticky header ─────────────────────────────────────────────────────────────
+
+/// Short state label + color for the sticky header's top line.
+///
+/// The [`PrDetail`] model does not currently distinguish "closed unmerged" from
+/// "open", so we treat any non-draft, non-merged PR as OPEN. If closed-state
+/// ever shows up in the model, this is the single place to teach it.
+fn pr_state_label(detail: &PrDetail, p: &crate::theme::Palette) -> (&'static str, Color) {
+    if detail.merged {
+        ("MERGED", p.accent_alt)
+    } else if detail.is_draft {
+        ("DRAFT", p.dim)
+    } else {
+        ("OPEN", p.success)
+    }
+}
+
+/// Build the sticky header lines for a PR.
+///
+/// The header is rendered in its own fixed-height region above the scrolling
+/// body so the reader never loses the repo/number/title/stats context. Returns
+/// one `Line` per visible row; callers use `len()` for layout sizing.
+///
+/// Layout:
+/// 1. `repo #N  ·  STATE  ·  @author opened AGE` (dim, STATE coloured)
+/// 2. Title (bold foreground)
+/// 3. `head → base  ·  +A −D across N files  ·  C comments` (dim)
+/// 4. `✖ CI FAILING` (danger) — only when the banner signal fires
+pub fn build_header(detail: &PrDetail, p: &crate::theme::Palette) -> Vec<Line<'static>> {
+    let (state_text, state_color) = pr_state_label(detail, p);
+    let age = humanize_delta(&detail.created_at);
+
+    // Line 1: repo + number + state + author + age.
+    let line1 = Line::from(vec![
+        Span::styled(
+            format!("{} #{}", detail.repo, detail.number),
+            Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
+        Span::styled(
+            state_text,
+            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
+        Span::styled(format!("@{}", detail.author), Style::default().fg(p.foreground)),
+        Span::styled(format!(" opened {age}"), Style::default().fg(p.dim)),
+    ]);
+
+    // Line 2: title.
+    let line2 = Line::from(Span::styled(
+        detail.title.clone(),
+        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+    ));
+
+    // Line 3: branches + diff stats + comment count.
+    let line3 = Line::from(vec![
+        Span::styled(detail.head_ref.clone(), Style::default().fg(p.accent_alt)),
+        Span::styled(" \u{2192} ", Style::default().fg(p.dim)), // →
+        Span::styled(detail.base_ref.clone(), Style::default().fg(p.accent_alt)),
+        Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
+        Span::styled(format!("+{}", detail.additions), Style::default().fg(p.git_new)),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!("\u{2212}{}", detail.deletions), // −
+            Style::default().fg(p.danger),
+        ),
+        Span::styled(
+            format!("  across {} files  \u{00B7}  {} comments", detail.changed_files_count, detail.issue_comments.len()),
+            Style::default().fg(p.dim),
+        ),
+    ]);
+
+    let mut header = vec![line1, line2, line3];
+    if let Some(banner) = banner_line(detail, p) {
+        header.push(banner);
+    }
+    header
+}
+
 // ── Banner line ───────────────────────────────────────────────────────────────
 
 /// Produce the flag banner line (may be empty) for the top of the detail view.
@@ -661,42 +740,19 @@ pub fn build_content(
     let mut unresolved_anchors: Vec<u16> = Vec::new();
     let mut alt_bg_ranges: Vec<(u16, u16)> = Vec::new();
 
-    // ── Banner ────────────────────────────────────────────────────────────────
-    #[allow(clippy::cast_possible_truncation)]
-    let banner_anchor = all_lines.len() as u16;
-    section_anchors.push(banner_anchor);
-    if let Some(banner) = banner_line(detail, p) {
-        all_lines.push(banner);
-    } else {
-        all_lines.push(Line::from("")); // placeholder keeps anchor math stable
-    }
-    all_lines.push(Line::from(""));
-
-    // ── Title ─────────────────────────────────────────────────────────────────
-    #[allow(clippy::cast_possible_truncation)]
-    let title_anchor = all_lines.len() as u16;
-    section_anchors.push(title_anchor);
-    all_lines.push(Line::from(Span::styled(
-        detail.title.clone(),
-        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
-    )));
-    all_lines.push(Line::from(""));
-
-    // ── Meta ──────────────────────────────────────────────────────────────────
-    let age = humanize_delta(&detail.created_at);
-    let meta = format!(
-        "@{}  opened {}  \u{00B7}  +{} \u{2212}{}  \u{00B7}  {} files  \u{00B7}  {} comments",
-        detail.author,
-        age,
-        detail.additions,
-        detail.deletions,
-        detail.changed_files_count,
-        detail.issue_comments.len(),
-    );
-    all_lines.push(Line::from(Span::styled(meta, Style::default().fg(p.dim))));
-    all_lines.push(Line::from(""));
+    // The banner, title, and meta lines used to live at the top of the
+    // scrolling content. They are now rendered by `build_header` into a fixed
+    // region above the body, so the body starts directly with the description
+    // markdown. Tab navigation anchors accordingly begin at BODY / CHECKS /
+    // whichever section is the first with content.
 
     // ── Body (rendered Markdown) ───────────────────────────────────────────────
+    // The body gets its own anchor (even when empty) so Tab navigation always
+    // has a "top" target to jump to. This preserves the behaviour of the old
+    // banner/title anchors for users who rely on `gg` or Shift+Tab-to-top.
+    #[allow(clippy::cast_possible_truncation)]
+    let body_anchor = all_lines.len() as u16;
+    section_anchors.push(body_anchor);
     if !detail.body_markdown.is_empty() {
         let body_lines = render_markdown(&detail.body_markdown, p);
         all_lines.extend(body_lines);
@@ -802,6 +858,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // Split the detail area into a fixed-height sticky header and the
+    // scrollable body below it. The header stays visible no matter how far
+    // the reader scrolls, so the repo/number/title/branches context never
+    // drops out of view. A thin rule drawn by `render_pr_header` separates
+    // the two regions so the tint band has a clean lower edge.
+    let header_lines = build_header(detail, p);
+    #[allow(clippy::cast_possible_truncation)]
+    let header_rows = (header_lines.len() + 2) as u16; // +2 = top pad + bottom rule
+    let header_rows = header_rows.min(area.height);
+    let splits = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(header_rows),
+        ratatui::layout::Constraint::Min(1),
+    ])
+    .split(area);
+    let header_area = splits[0];
+    let body_area = splits[1];
+
+    render_pr_header(f, header_lines, header_area, p);
+
     let (content_lines, _section_anchors, _unresolved_anchors, alt_bg_ranges) = build_content(
         detail,
         app.pr_detail_files_expanded,
@@ -816,12 +891,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // gutter of breathing room on each side.
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
-        .padding(Padding::new(2, 2, 1, 0));
-    let inner = block.inner(area);
+        .padding(Padding::new(2, 2, 0, 0));
+    let inner = block.inner(body_area);
 
     // Cache the inner rect (not the outer area) so key handlers auto-scroll
     // based on the actual content viewport, and mouse coordinates map into
     // the content's coordinate system rather than landing on the pad columns.
+    // Note: this is the *body* rect; the header is non-interactive (no copy
+    // mode or cursor lands there), so header clicks are correctly ignored
+    // by the bounds-check in `App::mouse_to_content_pos`.
     app.pr_detail_viewport.set(inner);
 
     let scroll = app.pr_detail_scroll;
@@ -850,7 +928,46 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .scroll((scroll, 0))
     };
 
-    f.render_widget(widget, area);
+    f.render_widget(widget, body_area);
+}
+
+/// Render the sticky PR header into `area`.
+///
+/// Wraps the caller-provided lines in a horizontally-padded block tinted
+/// with `palette.help_bg` (same tone used for comment stripes, so the reader
+/// sees the same "card" cue throughout the app). A bottom rule drawn in
+/// `palette.accent` makes the boundary with the scrolling body unmistakable,
+/// especially on themes where `help_bg` and `background` differ only slightly.
+fn render_pr_header(
+    f: &mut Frame,
+    lines: Vec<Line<'static>>,
+    area: Rect,
+    p: &crate::theme::Palette,
+) {
+    if area.height == 0 {
+        return;
+    }
+    // Split: content rows + one bottom rule row.
+    let rule_row = area.height.saturating_sub(1);
+    let content_h = area.height.saturating_sub(1);
+
+    let content_area = Rect { x: area.x, y: area.y, width: area.width, height: content_h };
+    let rule_area = Rect { x: area.x, y: area.y + rule_row, width: area.width, height: 1 };
+
+    let block = Block::default()
+        .style(Style::default().bg(p.help_bg).fg(p.foreground))
+        .padding(Padding::new(2, 2, 1, 0));
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, content_area);
+
+    // Full-width rule. Uses a heavy box-drawing char so the separator reads
+    // as a deliberate section break rather than a faint line artefact.
+    let rule_text = "\u{2501}".repeat(usize::from(rule_area.width));
+    let rule = Paragraph::new(Line::from(Span::styled(
+        rule_text,
+        Style::default().fg(p.accent).bg(p.background),
+    )));
+    f.render_widget(rule, rule_area);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -985,14 +1102,58 @@ pub mod tests {
         }
     }
 
-    /// No checks/reviews/files: anchor list should only have banner + title.
+    /// Anchor list includes every body-side section that has content. Since
+    /// the sticky header moved banner/title/meta out of the scrolling body,
+    /// the first anchor is now BODY rather than the old BANNER.
     #[test]
     fn section_anchors_count_matches_content() {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
         let (_, anchors, _, _) = build_content(&detail, false, false, &p, false);
-        // banner + title + checks + reviews + files + comments = 6
-        assert_eq!(anchors.len(), 6, "expected 6 anchors for full fixture, got {}", anchors.len());
+        // body + checks + reviews + files + comments = 5
+        assert_eq!(anchors.len(), 5, "expected 5 anchors for full fixture, got {}", anchors.len());
+        assert_eq!(anchors[0], 0, "body anchor must be the top of the scroll buffer");
+    }
+
+    /// The sticky header must contain the repo/number, title, state label,
+    /// and branch arrow — it's the landing pad that replaces the old
+    /// in-body banner/title/meta trio, so regressions here are user-visible.
+    #[test]
+    fn build_header_contains_core_context() {
+        let detail = fixture_pr_detail(0, 0, 0, 0);
+        let p = Palette::default();
+        let lines = build_header(&detail, &p);
+        let text: String =
+            lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("owner/repo #1"), "repo/number missing: {text}");
+        assert!(text.contains("OPEN"), "state label missing: {text}");
+        assert!(text.contains("Test PR"), "title missing: {text}");
+        assert!(text.contains("feat/test"), "head branch missing: {text}");
+        assert!(text.contains("main"), "base branch missing: {text}");
+    }
+
+    /// Header state label must flip with `is_draft` / `merged` fields.
+    #[test]
+    fn build_header_state_label_reflects_state() {
+        let p = Palette::default();
+        let mut detail = fixture_pr_detail(0, 0, 0, 0);
+
+        detail.is_draft = true;
+        let text: String = build_header(&detail, &p)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("DRAFT"), "draft label missing: {text}");
+
+        detail.is_draft = false;
+        detail.merged = true;
+        let text: String = build_header(&detail, &p)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("MERGED"), "merged label missing: {text}");
     }
 
     /// Unresolved thread anchors must be a subset of the total anchor range.
