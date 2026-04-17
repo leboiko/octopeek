@@ -238,7 +238,11 @@ impl App {
     fn on_inbox_loaded(&mut self, inbox: github::Inbox) {
         let viewer_login = inbox.viewer_login.clone();
 
-        // Update each tab's needs_action_count from the new inbox.
+        // Update each tab's needs_action_count from the new inbox. Every open
+        // issue assigned to the viewer is counted (the assignment query
+        // `assignee:@me` already limits the set to items the viewer is
+        // responsible for), while PRs are filtered by primary_flag to exclude
+        // Clean and Draft states.
         for tab in &mut self.tabs.tabs {
             let count = inbox
                 .prs
@@ -252,6 +256,22 @@ impl App {
                 .count()
                 + inbox.issues.iter().filter(|i| i.repo == tab.repo).count();
             tab.needs_action_count = Some(count);
+        }
+
+        // Clamp any stale per-repo selection indices so they cannot point past
+        // the end of the refreshed list (a blocking render bug if a repo
+        // shrinks between refreshes). `draw_*_list` clamps defensively too,
+        // but keeping the canonical state consistent avoids subtle surprises
+        // elsewhere (e.g. the Phase 4 detail view will key off this index).
+        for (repo, idx) in &mut self.selection {
+            let max_pr = inbox.prs.iter().filter(|pr| pr.repo == *repo).count();
+            let max_issue = inbox.issues.iter().filter(|i| i.repo == *repo).count();
+            let max = max_pr.max(max_issue);
+            if max == 0 {
+                *idx = 0;
+            } else if *idx >= max {
+                *idx = max - 1;
+            }
         }
 
         self.inbox = Some(inbox);
@@ -643,6 +663,43 @@ mod tests {
         assert!(!app.fetching);
         assert!(app.last_fetch_error.is_none());
         assert!(app.inbox_loaded_at.is_some());
+    }
+
+    /// When a refresh shrinks a repo's list, stale selection indices must be
+    /// clamped so the dashboard cannot render a cursor past the end of the list.
+    #[test]
+    fn on_inbox_loaded_clamps_stale_selection() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // Simulate: earlier refresh had 5 PRs and the user moved the cursor to row 4.
+        app.selection.insert("o/r".to_owned(), 4);
+
+        // Now the refresh returns only 2 PRs in "o/r".
+        let inbox = Inbox {
+            viewer_login: "viewer".to_owned(),
+            prs: vec![make_pr("o/r", "clean", "viewer"), make_pr("o/r", "conflict", "viewer")],
+            issues: vec![],
+        };
+        app.on_inbox_loaded(inbox);
+
+        assert_eq!(app.selection.get("o/r"), Some(&1), "stale index 4 must clamp to len-1 = 1");
+    }
+
+    /// When a refresh removes every item for a repo, the stored selection must
+    /// collapse to 0 rather than attempting len-1 = `usize::MAX` underflow.
+    #[test]
+    fn on_inbox_loaded_clamps_empty_list() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.selection.insert("o/r".to_owned(), 3);
+
+        let inbox = Inbox { viewer_login: "viewer".to_owned(), prs: vec![], issues: vec![] };
+        app.on_inbox_loaded(inbox);
+
+        assert_eq!(app.selection.get("o/r"), Some(&0));
     }
 
     /// `on_fetch_failed` sets the error string and clears `fetching`.

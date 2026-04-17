@@ -139,6 +139,16 @@ fn primary_role(roles: &[Role]) -> Role {
     }
 }
 
+/// Stable sort key for roles. An explicit match so reordering the `Role` enum
+/// declaration does not silently invert dashboard sort priority.
+fn role_sort_key(role: Role) -> u8 {
+    match role {
+        Role::Author => 0,
+        Role::Reviewer => 1,
+        Role::Assignee => 2,
+    }
+}
+
 /// Build the 4-char "St cluster" string for a PR row.
 ///
 /// Layout: `{role}{space}{needs_dot}{flag_glyph}`
@@ -459,11 +469,16 @@ fn draw_pr_list(
 
     let mut prs: Vec<&PullRequest> = inbox.prs.iter().filter(|pr| pr.repo == repo).collect();
 
-    // Sort: Author > Reviewer > Assignee, then updated_at descending.
+    // Sort: Author > Reviewer > Assignee, then updated_at descending, then PR
+    // number ascending as a deterministic tie-breaker so the order cannot
+    // flicker between refreshes when two PRs share a timestamp.
     prs.sort_by(|a, b| {
-        let role_a = primary_role(&a.roles) as u8;
-        let role_b = primary_role(&b.roles) as u8;
-        role_a.cmp(&role_b).then_with(|| b.updated_at.cmp(&a.updated_at))
+        let role_a = role_sort_key(primary_role(&a.roles));
+        let role_b = role_sort_key(primary_role(&b.roles));
+        role_a
+            .cmp(&role_b)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.number.cmp(&b.number))
     });
 
     if prs.is_empty() {
@@ -476,7 +491,11 @@ fn draw_pr_list(
         return;
     }
 
-    let selected = app.selection.get(repo).copied().unwrap_or(0);
+    // Clamp the selection to the current list length. The stored index can go
+    // stale on two paths: (1) a refresh shrinks the list, (2) the user toggled
+    // between Prs and Issues (selection is shared per-repo but counts differ).
+    let stored = app.selection.get(repo).copied().unwrap_or(0);
+    let selected = stored.min(prs.len() - 1);
     let mut table_state = TableState::default().with_selected(Some(selected));
 
     let cols = pr_columns(width);
@@ -513,7 +532,10 @@ fn draw_issue_list(
         return;
     }
 
-    let selected = app.selection.get(repo).copied().unwrap_or(0);
+    // Clamp the stored selection — see note in `draw_pr_list` for the two
+    // paths that can leave it stale.
+    let stored = app.selection.get(repo).copied().unwrap_or(0);
+    let selected = stored.min(issues.len() - 1);
     let mut table_state = TableState::default().with_selected(Some(selected));
 
     let cols = issue_columns(width);
