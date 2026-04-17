@@ -565,4 +565,51 @@ mod tests {
             );
         }
     }
+
+    /// Overlay surfaces (help, repo picker, confirm, first-run wizard) all
+    /// render with `palette.help_bg` as their fill color. If that equals the
+    /// dashboard background, the overlay is invisible apart from its border —
+    /// a real bug shipped in the original Default and Dracula palettes that
+    /// made first-time users think the picker was broken.
+    ///
+    /// Lock it in: every theme must provide a visually distinct overlay
+    /// surface.
+    #[test]
+    fn overlay_bg_is_distinct_from_main_bg() {
+        for &theme in Theme::ALL {
+            let p = Palette::from_theme(theme);
+            assert_ne!(
+                p.help_bg, p.background,
+                "Theme {theme:?}: help_bg == background — overlays will be invisible",
+            );
+        }
+    }
+
+    /// A selection row highlighted via reverse video (see `ui::dashboard`)
+    /// must present `selection_fg` on top of `selection_bg`. Equal values
+    /// make the highlighted row unreadable.
+    #[test]
+    fn selection_fg_contrasts_with_selection_bg() {
+        for &theme in Theme::ALL {
+            let p = Palette::from_theme(theme);
+            assert_ne!(
+                p.selection_fg, p.selection_bg,
+                "Theme {theme:?}: selection_fg == selection_bg — highlighted rows unreadable",
+            );
+        }
+    }
+
+    /// Status-bar text must be readable against its own background. This catches
+    /// the easy mistake of forgetting to set `status_bar_fg` when introducing
+    /// a new theme.
+    #[test]
+    fn status_bar_fg_contrasts_with_status_bar_bg() {
+        for &theme in Theme::ALL {
+            let p = Palette::from_theme(theme);
+            assert_ne!(
+                p.status_bar_fg, p.status_bar_bg,
+                "Theme {theme:?}: status_bar_fg == status_bar_bg — hints unreadable",
+            );
+        }
+    }
 }
