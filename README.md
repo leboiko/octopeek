@@ -67,10 +67,18 @@ cargo install --git https://github.com/leboiko/octopeek
    export GITHUB_TOKEN=ghp_...
    ```
 
-2. Create a config file:
+2. Create a config file at the platform-specific path:
+
+   | OS      | Config path                                                  |
+   | ------- | ------------------------------------------------------------ |
+   | Linux   | `~/.config/octopeek/config.toml` (or `$XDG_CONFIG_HOME/octopeek/`) |
+   | macOS   | `~/Library/Application Support/octopeek/config.toml`         |
+   | Windows | `%APPDATA%\octopeek\config.toml`                             |
+
+   Example (macOS):
    ```sh
-   mkdir -p ~/.config/octopeek
-   cat > ~/.config/octopeek/config.toml << 'EOF'
+   mkdir -p ~/Library/Application\ Support/octopeek
+   cat > ~/Library/Application\ Support/octopeek/config.toml << 'EOF'
    theme = "default"
    repos = [
      "rust-lang/rust",
@@ -80,12 +88,16 @@ cargo install --git https://github.com/leboiko/octopeek
    EOF
    ```
 
+   Don't remember the path? Add repos interactively with the `p` keybinding — the picker writes to the correct location for you.
+
 3. Launch:
    ```sh
    octopeek
    ```
 
 ## Configuration
+
+Location varies by platform (see Quick Start). On Linux:
 
 `~/.config/octopeek/config.toml`:
 

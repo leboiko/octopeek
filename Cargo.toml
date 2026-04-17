@@ -38,6 +38,11 @@ unicode-width = "0.2.2"
 # above. supports-color (NO_COLOR / capability detection) is deferred to a
 # later phase if needed.
 
+[dev-dependencies]
+# Test-only: tempfile directories so `Config::save` / `AppSession::save` never
+# touch the user's real filesystem during `cargo test`.
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "forbid"
 

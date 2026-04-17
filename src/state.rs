@@ -3,15 +3,47 @@
 //! Stored at the XDG state path (`~/.local/state/octopeek/state.toml` on
 //! Linux; `~/Library/Application Support/octopeek/state.toml` on macOS).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 const APP_NAME: &str = "octopeek";
 const STATE_FILE: &str = "state.toml";
+
+thread_local! {
+    /// Per-thread override for the state directory. See [`crate::config`] for
+    /// the matching facility on the config side — same rationale, same shape.
+    static STATE_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Install a per-thread override for the state directory.
+///
+/// Intended for test use.
+#[allow(dead_code)] // Used by integration-style tests via `with_state_dir_override`.
+pub fn set_state_dir_override(dir: impl Into<PathBuf>) {
+    let dir: PathBuf = dir.into();
+    STATE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(dir));
+}
+
+/// Run `f` with a per-thread state-directory override, then restore whatever
+/// override (if any) was previously in place. Safe across panics.
+#[allow(dead_code)] // Used by tests; the binary never calls this directly.
+pub fn with_state_dir_override<R>(dir: impl AsRef<Path>, f: impl FnOnce() -> R) -> R {
+    struct Guard(Option<PathBuf>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            STATE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = self.0.take());
+        }
+    }
+
+    let previous = STATE_DIR_OVERRIDE.with(|c| c.borrow_mut().replace(dir.as_ref().to_path_buf()));
+    let _guard = Guard(previous);
+    f()
+}
 
 /// Which item type a repo tab is currently showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -117,10 +149,15 @@ impl AppSession {
 
 /// Resolve the platform path for the state file.
 ///
-/// Prefers `dirs::state_dir()` (XDG `$XDG_STATE_HOME` on Linux); falls back
-/// to `dirs::data_dir()` on platforms (e.g., macOS) that have no dedicated
-/// state directory.
+/// Honors the per-thread override installed via [`set_state_dir_override`];
+/// otherwise prefers `dirs::state_dir()` (XDG `$XDG_STATE_HOME` on Linux) and
+/// falls back to `dirs::data_dir()` on platforms (e.g., macOS) that have no
+/// dedicated state directory.
 fn state_path() -> Option<PathBuf> {
+    if let Some(mut p) = STATE_DIR_OVERRIDE.with(|c| c.borrow().clone()) {
+        p.push(STATE_FILE);
+        return Some(p);
+    }
     // `or_else` is used because `dirs::state_dir()` returns `None` on macOS
     // (no XDG_STATE_HOME equivalent), so we fall back to the data dir.
     let base = dirs::state_dir().or_else(dirs::data_dir)?;

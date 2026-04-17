@@ -1666,130 +1666,174 @@ mod tests {
     /// Adding a valid slug via the picker must append it to `config.repos`.
     #[test]
     fn repo_picker_add_valid_slug() {
-        let config = crate::config::Config::default();
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        app.focus = Focus::RepoPicker;
-        app.repo_picker_mode = RepoPickerMode::Input;
-        app.repo_picker_input = "rust-lang/rust".to_owned();
+        // Sandbox the config save under a tempdir so the test cannot clobber
+        // the developer's real `~/Library/Application Support/octopeek/`
+        // (or `$XDG_CONFIG_HOME/octopeek/`) file.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+            app.repo_picker_input = "rust-lang/rust".to_owned();
 
-        // Simulate Enter.
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        );
-        app.handle_repo_picker_input_key(key);
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_repo_picker_input_key(key);
 
-        assert!(app.config.repos.contains(&"rust-lang/rust".to_owned()));
-        assert!(app.repo_picker_input.is_empty(), "buffer must be cleared after successful add");
+            assert!(app.config.repos.contains(&"rust-lang/rust".to_owned()));
+            assert!(
+                app.repo_picker_input.is_empty(),
+                "buffer must be cleared after successful add"
+            );
+        });
     }
 
     /// Adding a duplicate slug must not create a duplicate entry.
     #[test]
     fn repo_picker_add_dedup() {
-        let config = crate::config::Config {
-            repos: vec!["rust-lang/rust".to_owned()],
-            ..Default::default()
-        };
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        app.focus = Focus::RepoPicker;
-        app.repo_picker_mode = RepoPickerMode::Input;
-        app.repo_picker_input = "rust-lang/rust".to_owned();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config {
+                repos: vec!["rust-lang/rust".to_owned()],
+                ..Default::default()
+            };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+            app.repo_picker_input = "rust-lang/rust".to_owned();
 
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        );
-        app.handle_repo_picker_input_key(key);
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_repo_picker_input_key(key);
 
-        assert_eq!(
-            app.config.repos.iter().filter(|r| *r == "rust-lang/rust").count(),
-            1,
-            "duplicate repo must not be added"
-        );
+            assert_eq!(
+                app.config.repos.iter().filter(|r| *r == "rust-lang/rust").count(),
+                1,
+                "duplicate repo must not be added"
+            );
+        });
     }
 
     /// An invalid slug must set a flash error and not append to `config.repos`.
     #[test]
     fn repo_picker_add_invalid_slug_sets_flash() {
-        let config = crate::config::Config::default();
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        app.focus = Focus::RepoPicker;
-        app.repo_picker_mode = RepoPickerMode::Input;
-        app.repo_picker_input = "no-slash-here".to_owned();
+        // This path rejects the slug before reaching Config::save, so an
+        // override is not strictly required — but wrapping keeps all tests
+        // uniformly sandboxed in case the code path evolves.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+            app.repo_picker_input = "no-slash-here".to_owned();
 
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        );
-        app.handle_repo_picker_input_key(key);
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_repo_picker_input_key(key);
 
-        assert!(app.config.repos.is_empty(), "invalid slug must not be added");
-        assert!(app.flash.is_some(), "flash message must be set on validation failure");
+            assert!(app.config.repos.is_empty(), "invalid slug must not be added");
+            assert!(app.flash.is_some(), "flash message must be set on validation failure");
+        });
     }
 
     /// Deleting a repo must also drop its entry from the per-repo selection
     /// map so long-running sessions don't accumulate dead cursor state.
     #[test]
     fn repo_picker_delete_cleans_up_selection_map() {
-        let config = crate::config::Config {
-            repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
-            ..Default::default()
-        };
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        // Seed cursor positions as if the user had scrolled in both tabs.
-        app.selection.insert("owner/a".to_owned(), 3);
-        app.selection.insert("owner/b".to_owned(), 1);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config {
+                repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
+                ..Default::default()
+            };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.selection.insert("owner/a".to_owned(), 3);
+            app.selection.insert("owner/b".to_owned(), 1);
 
-        app.focus = Focus::RepoPicker;
-        app.repo_picker_mode = RepoPickerMode::List;
-        app.repo_picker_list_cursor = 0;
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('d'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        app.handle_repo_picker_list_key(key);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::List;
+            app.repo_picker_list_cursor = 0;
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_repo_picker_list_key(key);
 
-        assert!(
-            !app.selection.contains_key("owner/a"),
-            "deleted repo's selection entry must be removed"
-        );
-        assert_eq!(
-            app.selection.get("owner/b"),
-            Some(&1),
-            "other repos' selection entries must be untouched"
-        );
+            assert!(
+                !app.selection.contains_key("owner/a"),
+                "deleted repo's selection entry must be removed"
+            );
+            assert_eq!(
+                app.selection.get("owner/b"),
+                Some(&1),
+                "other repos' selection entries must be untouched"
+            );
+        });
     }
 
     /// Deleting a repo in List mode must remove it from `config.repos` and
     /// close the corresponding tab.
     #[test]
     fn repo_picker_delete_removes_repo_and_tab() {
-        let config = crate::config::Config {
-            repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
-            ..Default::default()
-        };
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        app.focus = Focus::RepoPicker;
-        app.repo_picker_mode = RepoPickerMode::List;
-        app.repo_picker_list_cursor = 0; // select "owner/a"
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config {
+                repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
+                ..Default::default()
+            };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::List;
+            app.repo_picker_list_cursor = 0;
 
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('d'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        app.handle_repo_picker_list_key(key);
+            let key = crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            app.handle_repo_picker_list_key(key);
 
-        assert!(!app.config.repos.contains(&"owner/a".to_owned()), "repo must be removed");
-        assert!(app.config.repos.contains(&"owner/b".to_owned()), "other repo must remain");
-        assert!(
-            app.tabs.tabs.iter().all(|t| t.repo != "owner/a"),
-            "tab for deleted repo must be closed"
-        );
+            assert!(!app.config.repos.contains(&"owner/a".to_owned()), "repo must be removed");
+            assert!(app.config.repos.contains(&"owner/b".to_owned()), "other repo must remain");
+            assert!(
+                app.tabs.tabs.iter().all(|t| t.repo != "owner/a"),
+                "tab for deleted repo must be closed"
+            );
+        });
+    }
+
+    /// Regression guard: `Config::save` with an override writes ONLY to the
+    /// override directory and the real platform config path is never touched.
+    ///
+    /// Without this invariant, earlier picker tests clobbered the developer's
+    /// actual `~/Library/Application Support/octopeek/config.toml` on every
+    /// `cargo test` run.
+    #[test]
+    fn config_save_respects_override() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let expected = tmp.path().join("config.toml");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config {
+                repos: vec!["sentinel/override".to_owned()],
+                ..Default::default()
+            };
+            config.save();
+            assert!(expected.exists(), "save must write to the override path");
+            let written = std::fs::read_to_string(&expected).expect("read override");
+            assert!(written.contains("sentinel/override"), "override file must contain the data");
+        });
     }
 
     /// Pressing `c` on the dashboard when the inbox has a PR with `head_ref`

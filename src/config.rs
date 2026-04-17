@@ -1,10 +1,17 @@
-//! User configuration loaded from `~/.config/octopeek/config.toml`.
+//! User configuration loaded from the platform config directory.
+//!
+//! Location:
+//!
+//! - **Linux:** `$XDG_CONFIG_HOME/octopeek/config.toml` (typically `~/.config/octopeek/config.toml`).
+//! - **macOS:** `~/Library/Application Support/octopeek/config.toml`.
+//! - **Windows:** `%APPDATA%\octopeek\config.toml`.
 //!
 //! All fields use `#[serde(default)]` so that older config files missing
 //! newer fields still parse without error.
 
+use std::cell::RefCell;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -13,6 +20,53 @@ use crate::theme::Theme;
 
 const APP_NAME: &str = "octopeek";
 const CONFIG_FILE: &str = "config.toml";
+
+thread_local! {
+    /// Per-thread override of the config directory.
+    ///
+    /// When `Some`, [`config_path`] returns `<dir>/config.toml` instead of the
+    /// platform default. Tests set this to a `tempfile::TempDir` so they never
+    /// touch the user's real filesystem.
+    ///
+    /// Thread-local (not a process global) so that `cargo test`'s default
+    /// parallel test execution cannot race between tests.
+    static CONFIG_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Install a per-thread override for the config directory.
+///
+/// Intended for test use. Clear with [`clear_config_dir_override`] when done.
+#[allow(dead_code)] // Used exclusively by tests; the binary never calls this directly.
+pub fn set_config_dir_override(dir: impl Into<PathBuf>) {
+    let dir: PathBuf = dir.into();
+    CONFIG_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(dir));
+}
+
+/// Remove the per-thread config-directory override installed by
+/// [`set_config_dir_override`].
+#[allow(dead_code)] // Used exclusively by tests.
+pub fn clear_config_dir_override() {
+    CONFIG_DIR_OVERRIDE.with(|c| *c.borrow_mut() = None);
+}
+
+/// Run `f` with a per-thread config-directory override, then restore whatever
+/// override (if any) was previously in place. Safe across panics.
+///
+/// Preferred over the raw setter for test code because it cannot leak state
+/// between tests even when the test body panics.
+#[allow(dead_code)] // Used exclusively by tests.
+pub fn with_config_dir_override<R>(dir: impl AsRef<Path>, f: impl FnOnce() -> R) -> R {
+    struct Guard(Option<PathBuf>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CONFIG_DIR_OVERRIDE.with(|c| *c.borrow_mut() = self.0.take());
+        }
+    }
+
+    let previous = CONFIG_DIR_OVERRIDE.with(|c| c.borrow_mut().replace(dir.as_ref().to_path_buf()));
+    let _guard = Guard(previous);
+    f()
+}
 
 /// All persisted user settings.
 ///
@@ -85,8 +139,16 @@ impl Config {
     }
 }
 
-/// Resolve the XDG config path for the octopeek config file.
+/// Resolve the config path for the octopeek config file.
+///
+/// Honors a per-thread override installed via [`set_config_dir_override`];
+/// otherwise falls back to the platform config directory returned by
+/// [`dirs::config_dir`].
 fn config_path() -> Option<PathBuf> {
+    if let Some(mut p) = CONFIG_DIR_OVERRIDE.with(|c| c.borrow().clone()) {
+        p.push(CONFIG_FILE);
+        return Some(p);
+    }
     let mut path = dirs::config_dir()?;
     path.push(APP_NAME);
     path.push(CONFIG_FILE);
