@@ -49,24 +49,33 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::Help => "HELP",
     };
 
-    let hint_text = if let Some(msg) = flash.filter(|m| m.is_active()) {
-        // A flash message is active — show it instead of the default hints.
-        format!("  {}", msg.text)
+    // Left: fetch indicator or nothing.
+    let fetch_indicator = if app.fetching {
+        Span::styled(" syncing... ", Style::default().fg(p.dim))
     } else {
-        " Tab:next-tab  ?:help  r:refresh  i:toggle-view  o:open  y:copy-url  c:checkout  q:quit"
-            .to_owned()
+        Span::raw(" ")
     };
 
-    let active_repo =
-        app.tabs.active_tab().map_or_else(|| "no repos configured".to_owned(), |t| t.repo.clone());
+    // Center: flash message (if active) or empty.
+    let center_text =
+        flash.filter(|m| m.is_active()).map_or_else(String::new, |m| format!("  {}  ", m.text));
+
+    // Right: compact keybinding hints for current focus.
+    let hints = match app.focus {
+        Focus::Dashboard => "j/k nav  Enter detail  i toggle  r refresh  ? help  q quit",
+        Focus::Detail => "Esc back  o open  y copy  c checkout  ? help  q quit",
+        Focus::RepoPicker => "j/k nav  Enter select  Esc close  ? help  q quit",
+        Focus::Help => "? / Esc / q close help",
+    };
 
     let line = Line::from(vec![
         Span::styled(
             format!(" {focus_label} "),
             Style::default().fg(p.on_accent_fg).bg(p.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {active_repo}"), Style::default().fg(p.status_bar_fg)),
-        Span::styled(hint_text, Style::default().fg(p.dim)),
+        fetch_indicator,
+        Span::styled(center_text, Style::default().fg(p.status_bar_fg)),
+        Span::styled(format!(" {hints} "), Style::default().fg(p.dim)),
     ]);
 
     let paragraph = Paragraph::new(line).style(Style::default().bg(p.status_bar_bg));

@@ -127,8 +127,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let n = app.tabs.len();
     let active_idx = app.tabs.active_index().unwrap_or(0);
 
-    // Build display label strings.
-    // Format: ` N: owner/name ` where N is the 1-based index (hidden past 9).
+    // Build display label strings (used only for width computation).
+    // Format: ` N: owner/name ` or ` N: owner/name [K] ` when K > 0.
     let labels: Vec<String> = app
         .tabs
         .tabs
@@ -137,8 +137,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, tab)| {
             let num = if i < 9 { format!("{}", i + 1) } else { " ".to_string() };
             let name = truncate_label(&tab.repo);
-            // Phase 3: append needs_action_count badge here when available.
-            format!(" {num}: {name} ")
+            let badge = match tab.needs_action_count {
+                Some(count) if count > 0 => format!(" [{count}]"),
+                _ => String::new(),
+            };
+            format!(" {num}: {name}{badge} ")
         })
         .collect();
 
@@ -150,13 +153,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans: Vec<Span> = Vec::new();
 
-    for (i, label) in labels.iter().enumerate().skip(start).take(end - start) {
-        let style = if i == active_idx {
+    for (i, tab) in app.tabs.tabs.iter().enumerate().skip(start).take(end - start) {
+        let is_active = i == active_idx;
+        let base_style = if is_active {
             Style::default().fg(p.on_accent_fg).bg(p.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(p.dim).bg(p.status_bar_bg)
         };
-        spans.push(Span::styled(label.clone(), style));
+        // Badge portion uses needs_action color for inactive tabs; on-accent for active.
+        let badge_style = if is_active {
+            base_style
+        } else {
+            Style::default().fg(p.needs_action).bg(p.status_bar_bg).add_modifier(Modifier::BOLD)
+        };
+
+        let num = if i < 9 { format!("{}", i + 1) } else { " ".to_string() };
+        let name = truncate_label(&tab.repo);
+        let base_text = format!(" {num}: {name}");
+
+        spans.push(Span::styled(base_text, base_style));
+
+        match tab.needs_action_count {
+            Some(n) if n > 0 => {
+                // Append badge in needs_action color.
+                spans.push(Span::styled(format!(" [{n}]"), badge_style));
+                spans.push(Span::styled(" ", base_style));
+            }
+            _ => {
+                spans.push(Span::styled(" ", base_style));
+            }
+        }
     }
 
     if hidden_before > 0 {

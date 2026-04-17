@@ -6,14 +6,15 @@
 pub mod actions;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
-
-use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::event::EventHandler;
@@ -41,6 +42,7 @@ pub enum Focus {
 }
 
 /// Top-level application state.
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     /// User configuration loaded from disk at startup.
     pub config: Config,
@@ -74,6 +76,12 @@ pub struct App {
     pub last_fetch_error: Option<String>,
     /// `true` while a background fetch is in-flight; prevents overlapping fetches.
     pub fetching: bool,
+    /// Per-repo selected list index. Key = repo slug, value = 0-based row index.
+    pub selection: HashMap<String, usize>,
+    /// When the inbox was last successfully loaded (used to display "last synced" text).
+    pub inbox_loaded_at: Option<DateTime<Utc>>,
+    /// `true` when the user pressed `g` and is waiting for a second `g` (vim-style gg).
+    pub pending_g: bool,
 }
 
 impl App {
@@ -122,6 +130,9 @@ impl App {
             inbox: None,
             last_fetch_error,
             fetching: false,
+            selection: HashMap::new(),
+            inbox_loaded_at: None,
+            pending_g: false,
         }
     }
 
@@ -223,6 +234,56 @@ impl App {
         });
     }
 
+    /// Handle a successfully fetched inbox: store data, update tab badges, clear error state.
+    fn on_inbox_loaded(&mut self, inbox: github::Inbox) {
+        let viewer_login = inbox.viewer_login.clone();
+
+        // Update each tab's needs_action_count from the new inbox.
+        for tab in &mut self.tabs.tabs {
+            let count = inbox
+                .prs
+                .iter()
+                .filter(|pr| pr.repo == tab.repo)
+                .filter(|pr| {
+                    let flag = pr.primary_flag(&viewer_login);
+                    flag != crate::github::flags::ActionFlag::Clean
+                        && flag != crate::github::flags::ActionFlag::Draft
+                })
+                .count()
+                + inbox.issues.iter().filter(|i| i.repo == tab.repo).count();
+            tab.needs_action_count = Some(count);
+        }
+
+        self.inbox = Some(inbox);
+        self.inbox_loaded_at = Some(Utc::now());
+        self.fetching = false;
+        self.last_fetch_error = None;
+    }
+
+    /// Handle a failed fetch: record the error, keep any cached inbox.
+    fn on_fetch_failed(&mut self, err: String) {
+        self.fetching = false;
+        warn!("GitHub inbox fetch failed: {err}");
+        self.last_fetch_error = Some(err);
+    }
+
+    /// Return the filtered + sorted PR list length for the active repo.
+    fn active_list_len(&self) -> usize {
+        let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
+            return 0;
+        };
+        let Some(inbox) = &self.inbox else {
+            return 0;
+        };
+        let mode = self.session.view_mode(&repo);
+        match mode {
+            crate::state::ViewMode::Prs => inbox.prs.iter().filter(|p| p.repo == repo).count(),
+            crate::state::ViewMode::Issues => {
+                inbox.issues.iter().filter(|i| i.repo == repo).count()
+            }
+        }
+    }
+
     /// Route an action to the appropriate handler.
     // Taking `Action` by value is correct — the dispatcher owns and consumes
     // the action. clippy prefers `&Action` here but that would require cloning
@@ -274,7 +335,16 @@ impl App {
                 warn!("Action::BackToDashboard not yet implemented (Phase 3)");
             }
             Action::ToggleView => {
-                warn!("Action::ToggleView not yet implemented (Phase 3)");
+                if let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) {
+                    let current = self.session.view_mode(&repo);
+                    let next = match current {
+                        crate::state::ViewMode::Prs => crate::state::ViewMode::Issues,
+                        crate::state::ViewMode::Issues => crate::state::ViewMode::Prs,
+                    };
+                    self.session.set_view_mode(&repo, next);
+                    // Reset selection to 0 when toggling view.
+                    self.selection.insert(repo, 0);
+                }
             }
             Action::OpenInBrowser => {
                 warn!("Action::OpenInBrowser not yet implemented (Phase 4)");
@@ -295,14 +365,10 @@ impl App {
                 self.fetching = true;
             }
             Action::InboxLoaded(inbox) => {
-                self.fetching = false;
-                self.last_fetch_error = None;
-                self.inbox = Some(*inbox);
+                self.on_inbox_loaded(*inbox);
             }
             Action::FetchFailed(msg) => {
-                self.fetching = false;
-                warn!("GitHub inbox fetch failed: {msg}");
-                self.last_fetch_error = Some(msg);
+                self.on_fetch_failed(msg);
             }
         }
     }
@@ -372,39 +438,228 @@ impl App {
     }
 
     /// Key handler for the dashboard (PR/issue list) focus.
-    // `self` is required here so this becomes a method once Phase 3 adds
-    // real state mutations (cursor movement, selection, etc.).
-    #[allow(clippy::unused_self)]
-    fn handle_key_dashboard(&self, key: crossterm::event::KeyEvent) {
+    fn handle_key_dashboard(&mut self, key: crossterm::event::KeyEvent) {
         if key.modifiers != KeyModifiers::NONE {
+            self.pending_g = false;
             return;
         }
+
+        // Resolve active repo slug once.
+        let active_repo = self.tabs.active_tab().map(|t| t.repo.clone());
+
         match key.code {
-            // These keys are listed in the help overlay but their actions are
-            // not yet implemented; they log at warn level so the user gets
-            // immediate feedback that the key was recognised.
-            KeyCode::Char('r') => warn!("r: refresh not yet implemented (Phase 2)"),
-            KeyCode::Char('R') => warn!("R: refresh-all not yet implemented (Phase 2)"),
-            KeyCode::Enter => warn!("Enter: open detail not yet implemented (Phase 3)"),
-            KeyCode::Esc => warn!("Esc: back-to-dashboard not yet implemented (Phase 3)"),
-            KeyCode::Char('o') => warn!("o: open in browser not yet implemented (Phase 4)"),
-            KeyCode::Char('y') => warn!("y: copy URL not yet implemented (Phase 4)"),
-            KeyCode::Char('c') => warn!("c: checkout branch not yet implemented (Phase 5)"),
-            KeyCode::Char('p') => warn!("p: open repo picker not yet implemented (Phase 3)"),
-            KeyCode::Char('i') => warn!("i: toggle view not yet implemented (Phase 3)"),
             KeyCode::Char('j') | KeyCode::Down => {
-                warn!("j/Down: list navigation not yet implemented (Phase 3)");
+                self.pending_g = false;
+                if let Some(repo) = active_repo {
+                    let len = self.active_list_len();
+                    if len > 0 {
+                        let sel = self.selection.entry(repo).or_insert(0);
+                        *sel = (*sel + 1).min(len - 1);
+                    }
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                warn!("k/Up: list navigation not yet implemented (Phase 3)");
+                self.pending_g = false;
+                if let Some(repo) = active_repo {
+                    let sel = self.selection.entry(repo).or_insert(0);
+                    *sel = sel.saturating_sub(1);
+                }
             }
-            KeyCode::Char('g') => warn!("g: jump to top not yet implemented (Phase 3)"),
-            KeyCode::Char('G') => warn!("G: jump to bottom not yet implemented (Phase 3)"),
-            KeyCode::Char('n') => warn!("n: next match not yet implemented (Phase 3)"),
-            KeyCode::Char('N') => warn!("N: prev match not yet implemented (Phase 3)"),
-            KeyCode::Char('f') => warn!("f: filter not yet implemented (Phase 3)"),
-            KeyCode::Char('b') => warn!("b: back not yet implemented (Phase 3)"),
-            _ => {}
+            KeyCode::Char('g') => {
+                if self.pending_g {
+                    // Second `g` — jump to top.
+                    self.pending_g = false;
+                    if let Some(repo) = active_repo {
+                        self.selection.insert(repo, 0);
+                    }
+                } else {
+                    self.pending_g = true;
+                }
+            }
+            KeyCode::Char('G') => {
+                self.pending_g = false;
+                if let Some(repo) = active_repo {
+                    let len = self.active_list_len();
+                    let bottom = if len > 0 { len - 1 } else { 0 };
+                    self.selection.insert(repo, bottom);
+                }
+            }
+            KeyCode::Char('i') => {
+                self.pending_g = false;
+                self.handle_action(Action::ToggleView);
+            }
+            KeyCode::Char('r') => {
+                self.pending_g = false;
+                self.handle_action(Action::Refresh);
+            }
+            KeyCode::Char('R') => {
+                self.pending_g = false;
+                self.handle_action(Action::RefreshAll);
+            }
+            KeyCode::Enter => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — open detail");
+            }
+            KeyCode::Char('o') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — open in browser");
+            }
+            KeyCode::Char('y') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — copy URL");
+            }
+            KeyCode::Char('c') => {
+                self.pending_g = false;
+                info!("Phase 5: not yet implemented — checkout branch");
+            }
+            KeyCode::Char('p') => {
+                self.pending_g = false;
+                info!("Phase 5: not yet implemented — repo picker");
+            }
+            KeyCode::Char('f') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — filter");
+            }
+            KeyCode::Char('n') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — next match");
+            }
+            KeyCode::Char('N') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — prev match");
+            }
+            KeyCode::Char('b') => {
+                self.pending_g = false;
+                info!("Phase 4: not yet implemented — back");
+            }
+            // All other keys (including Esc) cancel any pending chord.
+            _ => {
+                self.pending_g = false;
+            }
         }
     }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::github::types::{
+        CheckState, Inbox, Issue, Label, MergeStateStatus, Mergeable, PullRequest, Review,
+        ReviewDecision, Role,
+    };
+
+    /// Build a minimal clean PR for use in tests.
+    fn make_pr(repo: &str, flag_variant: &str, viewer: &str) -> PullRequest {
+        let mut pr = PullRequest {
+            number: 1,
+            title: "Test PR".to_owned(),
+            url: "https://github.com/o/r/pull/1".to_owned(),
+            repo: repo.to_owned(),
+            author: viewer.to_owned(),
+            is_draft: false,
+            mergeable: Mergeable::Mergeable,
+            merge_state: MergeStateStatus::Clean,
+            review_decision: None,
+            commits_count: 1,
+            comments_count: 0,
+            check_state: Some(CheckState::Success),
+            failing_checks: vec![],
+            unresolved_threads: 0,
+            requested_reviewers: vec![],
+            reviews: vec![],
+            updated_at: Utc::now(),
+            roles: vec![Role::Author],
+        };
+        match flag_variant {
+            "conflict" => pr.mergeable = Mergeable::Conflicting,
+            "review_requested" => pr.requested_reviewers = vec![viewer.to_owned()],
+            "draft" => pr.is_draft = true,
+            "changes" => pr.review_decision = Some(ReviewDecision::ChangesRequested),
+            _ => {} // clean
+        }
+        pr
+    }
+
+    #[allow(dead_code)]
+    fn make_issue(repo: &str) -> Issue {
+        Issue {
+            number: 1,
+            title: "Test Issue".to_owned(),
+            url: "https://github.com/o/r/issues/1".to_owned(),
+            repo: repo.to_owned(),
+            author: "viewer".to_owned(),
+            comments_count: 0,
+            updated_at: Utc::now(),
+            labels: vec![Label { name: "bug".to_owned(), color: "ee0701".to_owned() }],
+        }
+    }
+
+    /// `on_inbox_loaded` must correctly count needs-action PRs for a tab
+    /// (excluding Draft and Clean) and update `tab.needs_action_count`.
+    #[test]
+    fn on_inbox_loaded_sets_needs_action_count() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let inbox = Inbox {
+            viewer_login: "viewer".to_owned(),
+            prs: vec![
+                make_pr("o/r", "conflict", "viewer"),         // needs action
+                make_pr("o/r", "review_requested", "viewer"), // needs action
+                make_pr("o/r", "draft", "viewer"),            // NOT needs action
+                make_pr("o/r", "clean", "viewer"),            // NOT needs action
+                make_pr("other/repo", "conflict", "viewer"),  // different repo
+            ],
+            issues: vec![],
+        };
+
+        app.on_inbox_loaded(inbox);
+
+        let tab = app.tabs.tabs.iter().find(|t| t.repo == "o/r").expect("tab for o/r");
+        assert_eq!(
+            tab.needs_action_count,
+            Some(2),
+            "Expected 2 action items in o/r, got {:?}",
+            tab.needs_action_count
+        );
+    }
+
+    /// After `on_inbox_loaded`, fetching is false and error is cleared.
+    #[test]
+    fn on_inbox_loaded_clears_error_and_fetching() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.fetching = true;
+        app.last_fetch_error = Some("prior error".to_owned());
+
+        let inbox = Inbox { viewer_login: "viewer".to_owned(), prs: vec![], issues: vec![] };
+        app.on_inbox_loaded(inbox);
+
+        assert!(!app.fetching);
+        assert!(app.last_fetch_error.is_none());
+        assert!(app.inbox_loaded_at.is_some());
+    }
+
+    /// `on_fetch_failed` sets the error string and clears `fetching`.
+    #[test]
+    fn on_fetch_failed_records_error() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.fetching = true;
+
+        app.on_fetch_failed("network timeout".to_owned());
+
+        assert!(!app.fetching);
+        assert_eq!(app.last_fetch_error.as_deref(), Some("network timeout"));
+    }
+
+    /// Unused fields added to avoid "unused import" warnings from the test helpers.
+    #[allow(dead_code)]
+    fn _use_types(_r: Review, _rd: ReviewDecision) {}
 }

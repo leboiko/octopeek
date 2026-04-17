@@ -1,6 +1,7 @@
 //! UI rendering: one `draw` function composes all panels for a single frame.
 
 pub mod dashboard;
+pub mod glyphs;
 pub mod help;
 pub mod pr_detail;
 pub mod repo_picker;
@@ -11,10 +12,9 @@ pub mod tabs;
 use crate::app::App;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    layout::{Constraint, Direction, Layout},
+    style::Style,
+    widgets::Block,
 };
 
 /// Render the full application UI for one frame.
@@ -50,40 +50,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // ── Main content area ─────────────────────────────────────────────────────
     let content_area = outer[1];
-
-    let placeholder_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(app.palette.border_style())
-        .style(Style::default().bg(app.palette.background));
-
-    let placeholder_text = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "octopeek",
-            Style::default().fg(app.palette.accent).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled("v0.1.0", Style::default().fg(app.palette.dim))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Phase 1 scaffold — data layer coming in Phase 2",
-            Style::default().fg(app.palette.foreground),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Add repos to ~/.config/octopeek/config.toml to get started.",
-            Style::default().fg(app.palette.dim),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Press ? for keybinding help, q to quit.",
-            Style::default().fg(app.palette.dim),
-        )),
-    ];
-
-    let placeholder =
-        Paragraph::new(placeholder_text).block(placeholder_block).alignment(Alignment::Center);
-
-    f.render_widget(placeholder, content_area);
+    dashboard::draw(f, app, content_area);
 
     // ── Status bar ────────────────────────────────────────────────────────────
     // Phase 2+: wire a real FlashMessage through App state.

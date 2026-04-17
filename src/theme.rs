@@ -112,6 +112,16 @@ pub struct Palette {
     pub help_bg: Color,
     pub git_new: Color,
     pub git_modified: Color,
+    /// Color for items needing the viewer's attention.
+    pub needs_action: Color,
+    /// Color for success states (CI passing, clean PR).
+    pub success: Color,
+    /// Color for non-critical warnings (branch behind, stale).
+    pub warning: Color,
+    /// Color for blocking issues (conflict, CI failure).
+    pub danger: Color,
+    /// Color for muted / secondary information.
+    pub muted: Color,
 }
 
 impl Palette {
@@ -155,6 +165,11 @@ impl Palette {
                 help_bg: Color::Rgb(20, 20, 30),
                 git_new: Color::Rgb(80, 200, 120),
                 git_modified: Color::Rgb(220, 180, 60),
+                needs_action: Color::Rgb(255, 200, 60),
+                success: Color::Rgb(80, 200, 120),
+                warning: Color::Rgb(220, 160, 40),
+                danger: Color::Rgb(220, 60, 60),
+                muted: Color::DarkGray,
             },
             Theme::Dracula => Self {
                 // Official Dracula palette: https://draculatheme.com/contribute
@@ -193,6 +208,11 @@ impl Palette {
                 help_bg: Color::Rgb(40, 42, 54),
                 git_new: Color::Rgb(80, 250, 123),
                 git_modified: Color::Rgb(241, 250, 140),
+                needs_action: Color::Rgb(241, 250, 140),
+                success: Color::Rgb(80, 250, 123),
+                warning: Color::Rgb(255, 184, 108),
+                danger: Color::Rgb(255, 85, 85),
+                muted: Color::Rgb(98, 114, 164),
             },
             Theme::SolarizedDark => Self {
                 // Ethan Schoonover's Solarized Dark: https://ethanschoonover.com/solarized/
@@ -231,6 +251,11 @@ impl Palette {
                 help_bg: Color::Rgb(7, 54, 66),
                 git_new: Color::Rgb(133, 153, 0),
                 git_modified: Color::Rgb(181, 137, 0),
+                needs_action: Color::Rgb(181, 137, 0),
+                success: Color::Rgb(133, 153, 0),
+                warning: Color::Rgb(203, 75, 22),
+                danger: Color::Rgb(220, 50, 47),
+                muted: Color::Rgb(88, 110, 117),
             },
             Theme::SolarizedLight => Self {
                 // Ethan Schoonover's Solarized Light: https://ethanschoonover.com/solarized/
@@ -269,6 +294,11 @@ impl Palette {
                 help_bg: Color::Rgb(238, 232, 213),
                 git_new: Color::Rgb(133, 153, 0),
                 git_modified: Color::Rgb(181, 137, 0),
+                needs_action: Color::Rgb(181, 137, 0),
+                success: Color::Rgb(133, 153, 0),
+                warning: Color::Rgb(203, 75, 22),
+                danger: Color::Rgb(220, 50, 47),
+                muted: Color::Rgb(147, 161, 161),
             },
             Theme::Nord => Self {
                 // Arctic, north-bluish color palette: https://www.nordtheme.com/docs/colors-and-palettes
@@ -307,6 +337,11 @@ impl Palette {
                 help_bg: Color::Rgb(59, 66, 82),
                 git_new: Color::Rgb(163, 190, 140),
                 git_modified: Color::Rgb(235, 203, 139),
+                needs_action: Color::Rgb(235, 203, 139),
+                success: Color::Rgb(163, 190, 140),
+                warning: Color::Rgb(208, 135, 112),
+                danger: Color::Rgb(191, 97, 106),
+                muted: Color::Rgb(76, 86, 106),
             },
             Theme::GruvboxDark => Self {
                 // Gruvbox Dark: https://github.com/morhetz/gruvbox
@@ -345,6 +380,11 @@ impl Palette {
                 help_bg: Color::Rgb(50, 48, 47),
                 git_new: Color::Rgb(184, 187, 38),
                 git_modified: Color::Rgb(250, 189, 47),
+                needs_action: Color::Rgb(250, 189, 47),
+                success: Color::Rgb(184, 187, 38),
+                warning: Color::Rgb(214, 93, 14),
+                danger: Color::Rgb(251, 73, 52),
+                muted: Color::Rgb(146, 131, 116),
             },
             Theme::GruvboxLight => Self {
                 // Gruvbox Light: https://github.com/morhetz/gruvbox
@@ -383,6 +423,11 @@ impl Palette {
                 help_bg: Color::Rgb(235, 219, 178),
                 git_new: Color::Rgb(152, 151, 26),
                 git_modified: Color::Rgb(215, 153, 33),
+                needs_action: Color::Rgb(215, 153, 33),
+                success: Color::Rgb(104, 157, 106),
+                warning: Color::Rgb(214, 93, 14),
+                danger: Color::Rgb(204, 36, 29),
+                muted: Color::Rgb(146, 131, 116),
             },
             Theme::GithubLight => Self {
                 // GitHub Light: https://primer.style/primitives/colors
@@ -423,6 +468,11 @@ impl Palette {
                 help_bg: Color::Rgb(246, 248, 250),
                 git_new: Color::Rgb(26, 127, 55),
                 git_modified: Color::Rgb(154, 103, 0),
+                needs_action: Color::Rgb(154, 103, 0),
+                success: Color::Rgb(26, 127, 55),
+                warning: Color::Rgb(130, 80, 0),
+                danger: Color::Rgb(207, 34, 46),
+                muted: Color::Rgb(101, 109, 118),
             },
         }
     }
@@ -450,6 +500,19 @@ impl Palette {
     /// Style for de-emphasized (dim) text.
     pub fn dim_style(self) -> Style {
         Style::new().fg(self.dim)
+    }
+
+    /// Map a [`crate::ui::glyphs::ColorRole`] to a concrete [`Color`].
+    pub fn color_for(self, role: crate::ui::glyphs::ColorRole) -> Color {
+        use crate::ui::glyphs::ColorRole;
+        match role {
+            ColorRole::NeedsAction => self.needs_action,
+            ColorRole::Success => self.success,
+            ColorRole::Warning => self.warning,
+            ColorRole::Danger => self.danger,
+            ColorRole::Muted => self.muted,
+            ColorRole::Accent => self.accent,
+        }
     }
 }
 
