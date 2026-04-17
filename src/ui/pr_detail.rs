@@ -24,10 +24,11 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Padding, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::github::detail::{DetailedCheck, FileChangeKind, PrDetail, ReviewThread};
@@ -112,11 +113,69 @@ fn banner_line(detail: &PrDetail, p: &crate::theme::Palette) -> Option<Line<'sta
 // ── Section header helper ─────────────────────────────────────────────────────
 
 fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
-    let rule = "\u{2500}".repeat(4); // ────
-    Line::from(Span::styled(
-        format!("{rule} {label} {rule}"),
-        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-    ))
+    // Thicker leading rule + bold label gives each section a clear visual
+    // break from the paragraph text above. We intentionally keep it on one
+    // line (no trailing rule) so very long labels like "COMMENTS (42 threads
+    // · 7 unresolved)" stay legible instead of wrapping mid-rule.
+    let rule = "\u{2501}".repeat(3); // ━━━
+    Line::from(vec![
+        Span::styled(
+            format!("{rule} "),
+            Style::default().fg(p.accent),
+        ),
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// Apply the palette's `help_bg` tint to every span of `line` and right-pad
+/// with spaces so the tint covers the row out to `width` cells.
+///
+/// Returning `Line<'static>` rather than mutating in place keeps
+/// [`build_content`] callers (tests, copy-mode extraction) working against an
+/// untinted base while the render path applies the visual treatment.
+fn tint_line(line: &Line<'static>, bg: Color, width: u16) -> Line<'static> {
+    let current_width: usize =
+        line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    let target = usize::from(width);
+    let pad = target.saturating_sub(current_width);
+
+    let mut spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|s| Span::styled(s.content.clone(), s.style.bg(bg)))
+        .collect();
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+    }
+    Line::from(spans)
+}
+
+/// Return a copy of `lines` with `alt_bg` applied to every line whose index
+/// falls within any `(start, end)` half-open range in `alt_ranges`.
+fn apply_alt_bg(
+    lines: &[Line<'static>],
+    alt_ranges: &[(u16, u16)],
+    bg: Color,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if alt_ranges.is_empty() || width == 0 {
+        return lines.to_vec();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| {
+            let in_range = alt_ranges.iter().any(|&(a, b)| {
+                let a = usize::from(a);
+                let b = usize::from(b);
+                idx >= a && idx < b
+            });
+            if in_range { tint_line(line, bg, width) } else { line.clone() }
+        })
+        .collect()
 }
 
 // ── Section renderers ─────────────────────────────────────────────────────────
@@ -371,7 +430,7 @@ fn comments_lines(
     expanded: bool,
     p: &crate::theme::Palette,
     ascii: bool,
-) -> (Vec<Line<'static>>, Vec<u16>) {
+) -> (Vec<Line<'static>>, Vec<u16>, Vec<(u16, u16)>) {
     let gutter = thread_gutter(ascii);
     let reply_glyph = if ascii { "> " } else { "\u{21b3} " };
     let unresolved_count = detail.review_threads.iter().filter(|t| !t.is_resolved).count();
@@ -382,6 +441,8 @@ fn comments_lines(
     // Track relative Y of each unresolved thread header (within this block, after the section
     // header). These are shifted by +1 when the section header is prepended.
     let mut unresolved_offsets: Vec<u16> = Vec::new();
+    // Alternating-bg line ranges, also header-shifted by the caller.
+    let mut alt_bg_ranges: Vec<(u16, u16)> = Vec::new();
 
     // Sort threads: unresolved first.
     let mut threads: Vec<&ReviewThread> = detail.review_threads.iter().collect();
@@ -390,6 +451,9 @@ fn comments_lines(
     // When collapsed, allow up to 10 total items (threads + issue comments).
     let max_items = if expanded { usize::MAX } else { 10 };
     let mut items_shown = 0;
+    // Toggle per top-level item (thread or standalone issue comment) so every
+    // other conversation gets a subtle bg tint the user can group visually.
+    let mut alt_on = false;
 
     // ── Review threads ────────────────────────────────────────────────────────
     for thread in &threads {
@@ -404,6 +468,12 @@ fn comments_lines(
             #[allow(clippy::cast_possible_truncation)]
             unresolved_offsets.push(lines.len() as u16);
         }
+
+        // Mark where this top-level item begins so the draw-time tint covers
+        // exactly the thread's lines (header + all comments + intra-thread
+        // blank gutter rows) — not the trailing blank separator that lives
+        // between threads.
+        let alt_start = lines.len();
 
         // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
         lines.push(thread_header_line(thread, p, ascii));
@@ -478,6 +548,11 @@ fn comments_lines(
             }
         }
 
+        // Close the alt-bg range BEFORE the trailing blank separator so the
+        // tint stops at the last content row, not in the gap.
+        push_alt_range(&mut alt_bg_ranges, alt_start, lines.len(), alt_on);
+        alt_on = !alt_on;
+
         // Blank line between threads (no gutter — clean visual separator).
         lines.push(Line::from(""));
         items_shown += 1;
@@ -489,6 +564,8 @@ fn comments_lines(
             break;
         }
         let age = humanize_delta(&comment.created_at);
+
+        let alt_start = lines.len();
 
         // Author header: `@handle` bold, then `  <age>` dim.
         lines.push(Line::from(vec![
@@ -517,6 +594,9 @@ fn comments_lines(
             lines.push(Line::from(Span::styled("  [m] expand", Style::default().fg(p.dim))));
         }
 
+        push_alt_range(&mut alt_bg_ranges, alt_start, lines.len(), alt_on);
+        alt_on = !alt_on;
+
         lines.push(Line::from("")); // blank separator between comments
         items_shown += 1;
     }
@@ -540,8 +620,23 @@ fn comments_lines(
 
     // Shift unresolved offsets by 1 to account for the header line we prepended.
     let shifted_offsets = unresolved_offsets.iter().map(|&o| o + 1).collect();
+    let shifted_alt_ranges: Vec<(u16, u16)> =
+        alt_bg_ranges.into_iter().map(|(a, b)| (a + 1, b + 1)).collect();
 
-    (all_lines, shifted_offsets)
+    (all_lines, shifted_offsets, shifted_alt_ranges)
+}
+
+/// Alternating-bg range helper: record `(start_line_idx, end_line_idx_exclusive)`
+/// for the lines belonging to a single top-level comment/thread when the
+/// current parity calls for a tint. Returning ranges (vs a bitset) keeps the
+/// draw-time tint + right-pad math trivial.
+fn push_alt_range(ranges: &mut Vec<(u16, u16)>, start: usize, end: usize, alt_on: bool) {
+    if !alt_on || end <= start {
+        return;
+    }
+    let start = u16::try_from(start).unwrap_or(u16::MAX);
+    let end = u16::try_from(end).unwrap_or(u16::MAX);
+    ranges.push((start, end));
 }
 
 // ── Top-level content builder ─────────────────────────────────────────────────
@@ -553,16 +648,18 @@ fn comments_lines(
 ///
 /// `unresolved_thread_anchors` always point at the thread-header line for each
 /// unresolved thread so `n`/`N` navigation in the key handler works correctly.
+#[allow(clippy::type_complexity)] // Single public API; a named struct would obscure callers more than clarify.
 pub fn build_content(
     detail: &PrDetail,
     files_expanded: bool,
     comments_expanded: bool,
     p: &crate::theme::Palette,
     ascii: bool,
-) -> (Vec<Line<'static>>, SectionAnchors, Vec<u16>) {
+) -> (Vec<Line<'static>>, SectionAnchors, Vec<u16>, Vec<(u16, u16)>) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     let mut section_anchors: SectionAnchors = Vec::new();
     let mut unresolved_anchors: Vec<u16> = Vec::new();
+    let mut alt_bg_ranges: Vec<(u16, u16)> = Vec::new();
 
     // ── Banner ────────────────────────────────────────────────────────────────
     #[allow(clippy::cast_possible_truncation)]
@@ -643,15 +740,19 @@ pub fn build_content(
         #[allow(clippy::cast_possible_truncation)]
         let comments_anchor = all_lines.len() as u16;
         section_anchors.push(comments_anchor);
-        let (comment_lines, thread_offsets) = comments_lines(detail, comments_expanded, p, ascii);
+        let (comment_lines, thread_offsets, comment_alt_ranges) =
+            comments_lines(detail, comments_expanded, p, ascii);
         // Convert thread relative offsets to absolute Y offsets.
         for offset in thread_offsets {
             unresolved_anchors.push(comments_anchor + offset);
         }
+        for (a, b) in comment_alt_ranges {
+            alt_bg_ranges.push((comments_anchor + a, comments_anchor + b));
+        }
         all_lines.extend(comment_lines);
     }
 
-    (all_lines, section_anchors, unresolved_anchors)
+    (all_lines, section_anchors, unresolved_anchors, alt_bg_ranges)
 }
 
 // ── draw (public entry point) ─────────────────────────────────────────────────
@@ -701,7 +802,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let (content_lines, _section_anchors, _unresolved_anchors) = build_content(
+    let (content_lines, _section_anchors, _unresolved_anchors, alt_bg_ranges) = build_content(
         detail,
         app.pr_detail_files_expanded,
         app.pr_detail_comments_expanded,
@@ -709,23 +810,41 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.config.show_ascii_glyphs,
     );
 
-    // Cache viewport rect for copy-mode key handlers (auto-scroll) and mouse
-    // handlers (screen-to-content coordinate mapping). Written on every frame
-    // so resizing is picked up on the next event.
-    app.pr_detail_viewport.set(area);
+    // Reading the detail in a terminal-wide column is visually hostile: long
+    // lines turn into endless sentences and comment blocks blur into each
+    // other. A padded inner rect creates a narrower reading column and a
+    // gutter of breathing room on each side.
+    let block = Block::default()
+        .style(Style::default().bg(p.background).fg(p.foreground))
+        .padding(Padding::new(2, 2, 1, 0));
+    let inner = block.inner(area);
+
+    // Cache the inner rect (not the outer area) so key handlers auto-scroll
+    // based on the actual content viewport, and mouse coordinates map into
+    // the content's coordinate system rather than landing on the pad columns.
+    app.pr_detail_viewport.set(inner);
 
     let scroll = app.pr_detail_scroll;
+
+    // Alternating comment tint is applied at draw time — once we finally know
+    // the render width — so the tinted rectangle extends all the way to the
+    // right padding column. `help_bg` is a per-theme colour already chosen to
+    // differ from `background` by just a few RGB units (see the overlay-bg
+    // feedback memo).
+    let tinted_lines = apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg, inner.width);
 
     // In copy mode we disable wrapping so that logical lines map 1:1 to screen
     // lines — otherwise the cursor's logical column would not match any
     // predictable screen column. Horizontal scrolling kicks in for long lines.
     let widget = if app.copy_mode.active {
-        let overlaid = crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p);
+        let overlaid = crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p);
         Paragraph::new(overlaid)
+            .block(block)
             .style(Style::default().bg(p.background).fg(p.foreground))
             .scroll((scroll, app.copy_mode.h_scroll))
     } else {
-        Paragraph::new(content_lines)
+        Paragraph::new(tinted_lines)
+            .block(block)
             .style(Style::default().bg(p.background).fg(p.foreground))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
@@ -855,7 +974,7 @@ pub mod tests {
     fn section_anchors_are_monotone() {
         let detail = fixture_pr_detail(3, 2, 4, 2);
         let p = Palette::default();
-        let (_, anchors, _) = build_content(&detail, false, false, &p, false);
+        let (_, anchors, _, _) = build_content(&detail, false, false, &p, false);
 
         // We have: banner, title, checks, reviews, files, comments = 6 anchors.
         assert!(!anchors.is_empty(), "anchors should not be empty");
@@ -871,7 +990,7 @@ pub mod tests {
     fn section_anchors_count_matches_content() {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
-        let (_, anchors, _) = build_content(&detail, false, false, &p, false);
+        let (_, anchors, _, _) = build_content(&detail, false, false, &p, false);
         // banner + title + checks + reviews + files + comments = 6
         assert_eq!(anchors.len(), 6, "expected 6 anchors for full fixture, got {}", anchors.len());
     }
@@ -881,7 +1000,7 @@ pub mod tests {
     fn unresolved_anchors_within_total_lines() {
         let detail = fixture_pr_detail(1, 1, 1, 4); // 4 threads, some unresolved
         let p = Palette::default();
-        let (lines, _, unresolved) = build_content(&detail, false, false, &p, false);
+        let (lines, _, unresolved, _) = build_content(&detail, false, false, &p, false);
 
         #[allow(clippy::cast_possible_truncation)]
         let total = lines.len() as u16;
@@ -890,13 +1009,73 @@ pub mod tests {
         }
     }
 
+    /// Alternating-bg ranges must cover every other top-level comment (threads
+    /// + issue comments) and stay within the comments section's line range.
+    #[test]
+    fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
+        // Fixture: 3 threads + 1 issue comment = 4 top-level items.
+        // Parity flips per item, starting with `alt_on = false`, so items 2
+        // and 4 receive alt bg. That's 2 ranges.
+        let detail = fixture_pr_detail(0, 0, 0, 3);
+        let p = Palette::default();
+        let (lines, anchors, _, alt_ranges) = build_content(&detail, false, true, &p, false);
+
+        assert_eq!(alt_ranges.len(), 2, "expected 2 alt ranges for 4 items starting off, got {alt_ranges:?}");
+
+        // Every range must fall within the comments section, which starts at
+        // the last anchor. The comments section header line itself is not in
+        // any range (push_alt_range starts counting after the header).
+        let comments_anchor = *anchors.last().expect("comments anchor");
+        #[allow(clippy::cast_possible_truncation)]
+        let total = lines.len() as u16;
+        for &(start, end) in &alt_ranges {
+            assert!(start > comments_anchor, "range {start}..{end} starts before/at the section header {comments_anchor}");
+            assert!(end <= total, "range {start}..{end} exceeds total lines {total}");
+            assert!(start < end, "empty range {start}..{end}");
+        }
+
+        // Ranges must not overlap each other.
+        let mut sorted = alt_ranges.clone();
+        sorted.sort_by_key(|r| r.0);
+        for pair in sorted.windows(2) {
+            assert!(pair[0].1 <= pair[1].0, "overlapping ranges: {pair:?}");
+        }
+    }
+
+    /// With only one top-level comment, no alt range is emitted (parity starts off).
+    #[test]
+    fn alt_bg_empty_when_single_comment() {
+        let detail = fixture_pr_detail(0, 0, 0, 0); // 0 threads, only 1 issue comment
+        let p = Palette::default();
+        let (_, _, _, alt_ranges) = build_content(&detail, false, true, &p, false);
+        assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
+    }
+
+    /// `tint_line` must replace every span's bg with the tint and right-pad
+    /// to the target width so the row fills with the tinted bg.
+    #[test]
+    fn tint_line_pads_and_recolours() {
+        let bg = ratatui::style::Color::Rgb(32, 32, 45);
+        let original = Line::from(vec![
+            Span::styled("hi ", Style::default().fg(Color::Red)),
+            Span::styled("there", Style::default().fg(Color::Blue)),
+        ]);
+        let tinted = tint_line(&original, bg, 20);
+        let text: String = tinted.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("hi there"), "text preserved: {text:?}");
+        assert_eq!(text.chars().count(), 20, "row padded to 20 cells");
+        for span in &tinted.spans {
+            assert_eq!(span.style.bg, Some(bg), "every span carries the tint bg");
+        }
+    }
+
     /// Files-expanded flag switches from 5 to all files visible.
     #[test]
     fn files_expanded_shows_more() {
         let detail = fixture_pr_detail(0, 0, 10, 0);
         let p = Palette::default();
-        let (lines_collapsed, _, _) = build_content(&detail, false, false, &p, false);
-        let (lines_expanded, _, _) = build_content(&detail, true, false, &p, false);
+        let (lines_collapsed, _, _, _) = build_content(&detail, false, false, &p, false);
+        let (lines_expanded, _, _, _) = build_content(&detail, true, false, &p, false);
         assert!(lines_expanded.len() > lines_collapsed.len(), "expanded should produce more lines");
     }
 
@@ -943,7 +1122,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
 
         // Count lines whose first non-gutter span has a non-plain style (heading or code).
         // At minimum we expect a heading line (BOLD modifier) and a code-block line.
@@ -1013,7 +1192,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
 
         // Collect all lines that contain an author name.
         // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
@@ -1086,7 +1265,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, unresolved) = build_content(&detail, false, true, &p, false);
+        let (lines, _, unresolved, _) = build_content(&detail, false, true, &p, false);
 
         assert_eq!(unresolved.len(), 1, "expected exactly 1 unresolved anchor");
         let anchor = unresolved[0] as usize;
@@ -1147,7 +1326,7 @@ pub mod tests {
         };
 
         // collapsed = false (comments_expanded = false)
-        let (lines, _, _) = build_content(&detail, false, false, &p, false);
+        let (lines, _, _, _) = build_content(&detail, false, false, &p, false);
 
         let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
 
@@ -1187,7 +1366,7 @@ pub mod tests {
             }],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
 
         // Bold span for "important".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {

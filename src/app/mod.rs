@@ -1195,7 +1195,7 @@ impl App {
     /// no detail is loaded.
     fn current_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
         if let Some(detail) = &self.pr_detail {
-            let (lines, _, _) = crate::ui::pr_detail::build_content(
+            let (lines, _, _, _) = crate::ui::pr_detail::build_content(
                 detail,
                 self.pr_detail_files_expanded,
                 self.pr_detail_comments_expanded,
@@ -1560,7 +1560,7 @@ impl App {
         let Some(detail) = &self.pr_detail else {
             return;
         };
-        let (_, section_anchors, unresolved) = crate::ui::pr_detail::build_content(
+        let (_, section_anchors, unresolved, _) = crate::ui::pr_detail::build_content(
             detail,
             self.pr_detail_files_expanded,
             self.pr_detail_comments_expanded,
@@ -1596,7 +1596,7 @@ impl App {
         let Some(detail) = &self.pr_detail else {
             return;
         };
-        let (_, section_anchors, unresolved) = crate::ui::pr_detail::build_content(
+        let (_, section_anchors, unresolved, _) = crate::ui::pr_detail::build_content(
             detail,
             self.pr_detail_files_expanded,
             self.pr_detail_comments_expanded,

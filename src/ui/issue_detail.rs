@@ -22,7 +22,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Padding, Paragraph, Wrap},
 };
 
 use crate::app::App;
@@ -33,11 +33,14 @@ use crate::ui::util::humanize_delta;
 // ── Section header helper ─────────────────────────────────────────────────────
 
 fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
-    let rule = "\u{2500}".repeat(4);
-    Line::from(Span::styled(
-        format!("{rule} {label} {rule}"),
-        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-    ))
+    let rule = "\u{2501}".repeat(3); // ━━━
+    Line::from(vec![
+        Span::styled(format!("{rule} "), Style::default().fg(p.accent)),
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 // ── Content builder ───────────────────────────────────────────────────────────
@@ -207,18 +210,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let (content_lines, _section_anchors) =
         build_content(detail, app.pr_detail_comments_expanded, p, app.config.show_ascii_glyphs);
 
-    // Cache viewport rect for copy-mode (auto-scroll) and mouse mapping.
-    app.pr_detail_viewport.set(area);
+    // Wrap the paragraph in a padded block — see pr_detail::draw for rationale.
+    let block = Block::default()
+        .style(Style::default().bg(p.background).fg(p.foreground))
+        .padding(Padding::new(2, 2, 1, 0));
+    let inner = block.inner(area);
+    app.pr_detail_viewport.set(inner);
 
     let scroll = app.pr_detail_scroll;
 
     let widget = if app.copy_mode.active {
         let overlaid = crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p);
         Paragraph::new(overlaid)
+            .block(block)
             .style(Style::default().bg(p.background).fg(p.foreground))
             .scroll((scroll, app.copy_mode.h_scroll))
     } else {
         Paragraph::new(content_lines)
+            .block(block)
             .style(Style::default().bg(p.background).fg(p.foreground))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))

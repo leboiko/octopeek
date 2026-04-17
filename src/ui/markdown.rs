@@ -150,31 +150,49 @@ impl<'p> Builder<'p> {
     // ── Block-level renderers ─────────────────────────────────────────────────
 
     /// Emit a heading line with appropriate color and modifiers.
+    ///
+    /// We intentionally do NOT re-prefix the text with `#`/`##`/`...` — the
+    /// hashes are markdown syntax, not content, and TUI users expect the
+    /// renderer to hide them the way a browser does. For visual weight we
+    /// rely on bold + colour, and add a rule line under H1/H2 so they stand
+    /// out as section breaks even when flanked by long paragraphs.
     fn emit_heading(&mut self, level: HeadingLevel) {
         let p = self.palette;
-        let (color, mods) = match level {
-            HeadingLevel::H1 => (p.h1, Modifier::BOLD),
-            HeadingLevel::H2 => (p.h2, Modifier::BOLD),
-            HeadingLevel::H3 => (p.h3, Modifier::empty()),
-            _ => (p.heading_other, Modifier::empty()),
+        let color = heading_color(level, p);
+        let mods = match level {
+            HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 => Modifier::BOLD,
+            _ => Modifier::empty(),
         };
 
         let heading_style = Style::default().fg(color).add_modifier(mods);
-        // Re-colour every accumulated span with the heading style.
-        let mut spans: Vec<Span<'static>> =
-            self.current_spans.drain(..).map(|s| Span::styled(s.text, heading_style)).collect();
 
-        // Prefix: `# `, `## `, `### `, … for visual clarity.
-        let prefix = match level {
-            HeadingLevel::H1 => "# ",
-            HeadingLevel::H2 => "## ",
-            HeadingLevel::H3 => "### ",
-            HeadingLevel::H4 => "#### ",
-            HeadingLevel::H5 => "##### ",
-            HeadingLevel::H6 => "###### ",
-        };
-        spans.insert(0, Span::styled(prefix, heading_style));
+        // Measure the heading's display width so the rule underline matches.
+        let display_width: usize = self
+            .current_spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.text.as_str()))
+            .sum();
+
+        // Re-colour every accumulated span with the heading style.
+        let spans: Vec<Span<'static>> =
+            self.current_spans.drain(..).map(|s| Span::styled(s.text, heading_style)).collect();
         self.lines.push(Line::from(spans));
+
+        // Rule underline for H1/H2 only — deeper levels stay compact.
+        let rule_char = match level {
+            HeadingLevel::H1 => Some('\u{2501}'), // ━ heavy
+            HeadingLevel::H2 => Some('\u{2500}'), // ─ light
+            _ => None,
+        };
+        if let Some(ch) = rule_char {
+            // Clamp rule width so very long headings don't produce absurdly
+            // long lines; 48 is enough to visually anchor most titles.
+            let len = display_width.clamp(3, 48);
+            self.lines.push(Line::from(Span::styled(
+                ch.to_string().repeat(len),
+                Style::default().fg(color),
+            )));
+        }
         self.lines.push(Line::from(vec![]));
     }
 
@@ -225,6 +243,19 @@ impl Palette {
             }
             _ => "base16-ocean.dark",
         }
+    }
+}
+
+/// Pick the palette colour for a heading level.
+///
+/// Extracted so [`Builder::emit_heading`] stays focused on line assembly and
+/// so future themes can override H4-H6 independently of H1-H3.
+fn heading_color(level: HeadingLevel, p: &Palette) -> ratatui::style::Color {
+    match level {
+        HeadingLevel::H1 => p.h1,
+        HeadingLevel::H2 => p.h2,
+        HeadingLevel::H3 => p.h3,
+        _ => p.heading_other,
     }
 }
 
@@ -554,19 +585,67 @@ mod tests {
     }
 
     #[test]
-    fn headings_h1_h2_h3() {
+    fn headings_render_without_hash_prefix() {
+        // Markdown hashes are syntax, not content. The renderer must strip
+        // them and rely on bold/colour (plus rule lines for H1/H2) instead.
         let src = "# Title\n\n## Subtitle\n\n### Section\n";
-        let lines = render_markdown(src, &palette());
+        let p = palette();
+        let lines = render_markdown(src, &p);
         let non_empty: Vec<_> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
-        assert!(non_empty.len() >= 3, "expected >= 3 non-empty lines, got {}", non_empty.len());
 
-        let h1 = line_text(non_empty[0]);
-        let h2 = line_text(non_empty[1]);
-        let h3 = line_text(non_empty[2]);
+        // Find the content lines by their text (rule lines are pure `━`/`─`).
+        let find_line = |needle: &str| {
+            non_empty
+                .iter()
+                .find(|l| line_text(l).contains(needle))
+                .copied()
+                .unwrap_or_else(|| panic!("no line contains {needle:?}"))
+        };
+        let h1 = find_line("Title");
+        let h2 = find_line("Subtitle");
+        let h3 = find_line("Section");
 
-        assert!(h1.contains("Title") && h1.starts_with("# "), "h1: {h1}");
-        assert!(h2.contains("Subtitle") && h2.starts_with("## "), "h2: {h2}");
-        assert!(h3.contains("Section") && h3.starts_with("### "), "h3: {h3}");
+        for (line, label) in [(h1, "h1"), (h2, "h2"), (h3, "h3")] {
+            let text = line_text(line);
+            assert!(!text.starts_with('#'), "{label} must not keep hash prefix: {text:?}");
+            let main_span = line
+                .spans
+                .iter()
+                .find(|s| !s.content.trim().is_empty())
+                .expect("heading span");
+            assert!(
+                main_span.style.add_modifier.contains(Modifier::BOLD),
+                "{label} should be bold: {:?}", main_span.style
+            );
+        }
+
+        assert_eq!(line_text(h1), "Title");
+        assert_eq!(line_text(h2), "Subtitle");
+        assert_eq!(line_text(h3), "Section");
+    }
+
+    #[test]
+    fn h1_and_h2_emit_rule_underline() {
+        let src = "# Title\n\n## Sub\n\n### NoRule\n";
+        let p = palette();
+        let lines = render_markdown(src, &p);
+        let text_lines: Vec<String> = lines.iter().map(line_text).collect();
+
+        let rule_h1 = text_lines.iter().find(|l| l.starts_with('\u{2501}'));
+        let rule_h2 = text_lines.iter().find(|l| l.starts_with('\u{2500}'));
+        assert!(rule_h1.is_some(), "h1 should emit a ━ rule line");
+        assert!(rule_h2.is_some(), "h2 should emit a ─ rule line");
+
+        // H3 must not get a rule.
+        let after_h3 = text_lines
+            .iter()
+            .position(|l| l.contains("NoRule"))
+            .expect("h3 line present");
+        let next = text_lines.get(after_h3 + 1).map_or("", String::as_str);
+        assert!(
+            !next.starts_with('\u{2500}') && !next.starts_with('\u{2501}'),
+            "h3 must not be followed by a rule; got {next:?}"
+        );
     }
 
     #[test]
