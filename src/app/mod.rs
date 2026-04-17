@@ -1307,6 +1307,7 @@ impl App {
             self.pr_detail_files_expanded,
             self.pr_detail_comments_expanded,
             &self.palette,
+            self.config.show_ascii_glyphs,
         );
         self.pr_detail_section_anchors = section_anchors;
         self.pr_detail_unresolved_anchors = unresolved;
@@ -1342,6 +1343,7 @@ impl App {
             self.pr_detail_files_expanded,
             self.pr_detail_comments_expanded,
             &self.palette,
+            self.config.show_ascii_glyphs,
         );
         self.pr_detail_section_anchors = section_anchors;
         self.pr_detail_unresolved_anchors = unresolved;

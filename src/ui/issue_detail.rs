@@ -57,7 +57,13 @@ pub fn build_content(
     detail: &IssueDetail,
     comments_expanded: bool,
     p: &crate::theme::Palette,
+    _ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<u16>) {
+    // `_ascii` is accepted for signature parity with `pr_detail::build_content`
+    // even though the issue detail does not currently use glyphs that need a
+    // fallback (the only Unicode characters are the `·` middle dot, which is
+    // ubiquitous, and header dashes). Preserving the parameter makes future
+    // glyph additions a one-line change.
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     let mut section_anchors: Vec<u16> = Vec::new();
 
@@ -192,10 +198,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // `pr_detail_comments_expanded` and `pr_detail_scroll` are intentionally
+    // reused for issue detail: both views are mutually exclusive (only one
+    // detail kind is active at a time), and sharing the fields means the `m`
+    // expand key and the scroll offset behave the same regardless of which
+    // kind of detail is open. A future refactor that adds parallel
+    // `issue_detail_*` fields would need to re-plumb those keybindings.
     let (content_lines, _section_anchors) =
-        build_content(detail, app.pr_detail_comments_expanded, p);
+        build_content(detail, app.pr_detail_comments_expanded, p, app.config.show_ascii_glyphs);
 
-    let scroll = app.pr_detail_scroll; // reuse same offset field for simplicity
+    let scroll = app.pr_detail_scroll;
 
     let widget = Paragraph::new(content_lines)
         .style(Style::default().bg(p.background).fg(p.foreground))
@@ -247,7 +259,7 @@ mod tests {
     fn issue_detail_anchors_start_at_zero() {
         let detail = fixture_issue_detail(3);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, false, &p);
+        let (_, anchors) = build_content(&detail, false, &p, false);
         assert!(!anchors.is_empty(), "should have at least one anchor");
         assert_eq!(anchors[0], 0, "title anchor should be at 0");
     }
@@ -257,7 +269,7 @@ mod tests {
     fn issue_detail_anchors_monotone() {
         let detail = fixture_issue_detail(5);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, false, &p);
+        let (_, anchors) = build_content(&detail, false, &p, false);
         for window in anchors.windows(2) {
             assert!(window[1] >= window[0], "anchors not monotone: {anchors:?}");
         }
@@ -268,7 +280,7 @@ mod tests {
     fn issue_detail_no_comments_one_anchor() {
         let detail = fixture_issue_detail(0);
         let p = Palette::default();
-        let (_, anchors) = build_content(&detail, false, &p);
+        let (_, anchors) = build_content(&detail, false, &p, false);
         assert_eq!(anchors.len(), 1, "no comments => only title anchor");
     }
 
@@ -297,7 +309,7 @@ mod tests {
             }],
         };
 
-        let (lines, _) = build_content(&detail, true, &p);
+        let (lines, _) = build_content(&detail, true, &p, false);
 
         // Bold span for "critical".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
@@ -340,7 +352,7 @@ mod tests {
             }],
         };
 
-        let (lines, _) = build_content(&detail, false, &p);
+        let (lines, _) = build_content(&detail, false, &p, false);
 
         let has_hint =
             lines.iter().any(|l| l.spans.iter().any(|s| s.content.contains("[m] expand")));

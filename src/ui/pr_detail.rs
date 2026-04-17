@@ -245,39 +245,60 @@ fn files_lines(detail: &PrDetail, expanded: bool, p: &crate::theme::Palette) -> 
 
 // ── Gutter helper ─────────────────────────────────────────────────────────────
 
-/// The vertical gutter prepended to every body line inside a review thread.
-///
-/// Styled with `palette.block_quote_border` so it visually tethers all replies
-/// in a thread together, similar to a quoted block.
-const THREAD_GUTTER: &str = "  \u{2502}  "; // "  │  "
+/// The Unicode vertical gutter prepended to every body line inside a review thread.
+const THREAD_GUTTER_UNICODE: &str = "  \u{2502}  "; // "  │  "
+
+/// The ASCII fallback used when `config.show_ascii_glyphs` is true; some
+/// terminals (older `PuTTY`, ssh through limited charsets) render Unicode box
+/// drawing as replacement squares.
+const THREAD_GUTTER_ASCII: &str = "  |  ";
+
+/// Return the gutter string appropriate for the current `ascii` setting.
+fn thread_gutter(ascii: bool) -> &'static str {
+    if ascii { THREAD_GUTTER_ASCII } else { THREAD_GUTTER_UNICODE }
+}
 
 /// Wrap rendered markdown lines with the thread gutter prefix.
 ///
-/// Each `Line` from `render_markdown` gets a leading `"  │  "` span
-/// (`palette.block_quote_border`) prepended, so all body content is visually
-/// indented inside the thread's vertical rail.
-fn gutter_lines(md_lines: Vec<Line<'static>>, p: &crate::theme::Palette) -> Vec<Line<'static>> {
+/// Each `Line` from `render_markdown` gets a leading gutter span
+/// (`palette.block_quote_border`) prepended.
+///
+/// When the incoming line's first span has a background color (typical for
+/// syntect-highlighted code-block lines), the gutter span inherits that
+/// background so the code-block's colored rail extends cleanly through the
+/// gutter column instead of breaking to the terminal default.
+fn gutter_lines(
+    md_lines: Vec<Line<'static>>,
+    p: &crate::theme::Palette,
+    ascii: bool,
+) -> Vec<Line<'static>> {
     md_lines
         .into_iter()
         .map(|mut line| {
-            // Prepend the gutter span; existing spans follow.
-            let gutter_span =
-                Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border));
+            let inherited_bg = line.spans.first().and_then(|s| s.style.bg);
+            let mut style = Style::default().fg(p.block_quote_border);
+            if let Some(bg) = inherited_bg {
+                style = style.bg(bg);
+            }
+            let gutter_span = Span::styled(thread_gutter(ascii), style);
             line.spans.insert(0, gutter_span);
             line
         })
         .collect()
 }
 
-/// Apply a `"  "` (two-space) indent prefix to each rendered markdown line.
+/// Prepend `prefix` (a raw-style indent) to each rendered markdown line.
 ///
-/// Used for issue comments, which have no thread to tether so don't need
-/// the `│` gutter — just a small left margin to group body under the header.
-fn indent_lines(md_lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+/// Used in two places:
+/// - Top-level issue comments (2-space indent, no gutter — there is no
+///   conversation to tether).
+/// - Reply body lines inside a review thread (2-space indent INSIDE the
+///   existing gutter so replies visually step in from the thread opener).
+fn indent_lines(md_lines: Vec<Line<'static>>, prefix: &'static str) -> Vec<Line<'static>> {
     md_lines
         .into_iter()
         .map(|mut line| {
-            line.spans.insert(0, Span::raw("  "));
+            line.spans.insert(0, Span::raw(prefix));
             line
         })
         .collect()
@@ -288,16 +309,23 @@ fn indent_lines(md_lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// Build the single header line for a review thread:
 /// `  <glyph> <path>:<line>  ·  <N> comments  ·  <status>`
 ///
-/// - Unresolved: `⚑` in `palette.warning`
-/// - Resolved: `✓` in `palette.muted`
-/// - Outdated: `◆` in `palette.muted`
-fn thread_header_line(thread: &ReviewThread, p: &crate::theme::Palette) -> Line<'static> {
+/// - Unresolved: `⚑` / `!` in `palette.warning`
+/// - Resolved: `✓` / `+` in `palette.muted`
+/// - Outdated: `◆` / `D` in `palette.muted`
+///
+/// The ASCII fallback is selected when `config.show_ascii_glyphs == true` so
+/// terminals without a Unicode font do not render replacement squares.
+fn thread_header_line(
+    thread: &ReviewThread,
+    p: &crate::theme::Palette,
+    ascii: bool,
+) -> Line<'static> {
     let (glyph, glyph_color, status_text) = if thread.is_outdated {
-        ("\u{25C6}", p.muted, "outdated") // ◆
+        (if ascii { "D" } else { "\u{25C6}" }, p.muted, "outdated")
     } else if thread.is_resolved {
-        ("\u{2713}", p.muted, "resolved") // ✓
+        (if ascii { "+" } else { "\u{2713}" }, p.muted, "resolved")
     } else {
-        ("\u{2691}", p.warning, "unresolved") // ⚑
+        (if ascii { "!" } else { "\u{2691}" }, p.warning, "unresolved")
     };
 
     let location =
@@ -342,7 +370,10 @@ fn comments_lines(
     detail: &PrDetail,
     expanded: bool,
     p: &crate::theme::Palette,
+    ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<u16>) {
+    let gutter = thread_gutter(ascii);
+    let reply_glyph = if ascii { "> " } else { "\u{21b3} " };
     let unresolved_count = detail.review_threads.iter().filter(|t| !t.is_resolved).count();
     let total_threads = detail.review_threads.len();
     let total_comments = detail.issue_comments.len();
@@ -375,17 +406,18 @@ fn comments_lines(
         }
 
         // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
-        lines.push(thread_header_line(thread, p));
+        lines.push(thread_header_line(thread, p, ascii));
 
         for (idx, comment) in thread.comments.iter().enumerate() {
             let age = humanize_delta(&comment.created_at);
 
             // The first comment is the thread opener; subsequent ones are replies.
-            // We signal replies with `↳ ` in palette.dim on the author line.
+            // We signal replies with `↳ ` in palette.dim on the author line,
+            // and additionally step-in reply BODY lines by two extra spaces so
+            // a long reply doesn't blur into the previous comment's body.
             let author_line = if idx == 0 {
-                // Thread opener — gutter only, no reply prefix.
                 Line::from(vec![
-                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
+                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
                     Span::styled(
                         format!("@{}", comment.author),
                         Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
@@ -393,10 +425,9 @@ fn comments_lines(
                     Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
                 ])
             } else {
-                // Reply — gutter + `↳ ` reply prefix.
                 Line::from(vec![
-                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
-                    Span::styled("\u{21b3} ", Style::default().fg(p.dim)), // ↳
+                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
+                    Span::styled(reply_glyph, Style::default().fg(p.dim)),
                     Span::styled(
                         format!("@{}", comment.author),
                         Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
@@ -419,12 +450,19 @@ fn comments_lines(
                 (rendered, false)
             };
 
-            lines.extend(gutter_lines(visible_rendered, p));
+            // Gutter first. For replies, also step-in the body by 2 spaces so
+            // a reply's long markdown body is obviously offset from the prior
+            // comment's body (which sits flush against the gutter).
+            let body_lines = if idx == 0 {
+                gutter_lines(visible_rendered, p, ascii)
+            } else {
+                gutter_lines(indent_lines(visible_rendered, "  "), p, ascii)
+            };
+            lines.extend(body_lines);
 
             if truncated {
-                // Hint line sits inside the gutter so it aligns visually.
                 lines.push(Line::from(vec![
-                    Span::styled(THREAD_GUTTER, Style::default().fg(p.block_quote_border)),
+                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
                     Span::styled("[m] expand", Style::default().fg(p.dim)),
                 ]));
             }
@@ -434,7 +472,7 @@ fn comments_lines(
             // still part of the same conversation.
             if idx + 1 < thread.comments.len() {
                 lines.push(Line::from(vec![Span::styled(
-                    THREAD_GUTTER,
+                    gutter,
                     Style::default().fg(p.block_quote_border),
                 )]));
             }
@@ -473,7 +511,7 @@ fn comments_lines(
             (rendered, false)
         };
 
-        lines.extend(indent_lines(visible_rendered));
+        lines.extend(indent_lines(visible_rendered, "  "));
 
         if truncated {
             lines.push(Line::from(Span::styled("  [m] expand", Style::default().fg(p.dim))));
@@ -520,6 +558,7 @@ pub fn build_content(
     files_expanded: bool,
     comments_expanded: bool,
     p: &crate::theme::Palette,
+    ascii: bool,
 ) -> (Vec<Line<'static>>, SectionAnchors, Vec<u16>) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     let mut section_anchors: SectionAnchors = Vec::new();
@@ -604,7 +643,7 @@ pub fn build_content(
         #[allow(clippy::cast_possible_truncation)]
         let comments_anchor = all_lines.len() as u16;
         section_anchors.push(comments_anchor);
-        let (comment_lines, thread_offsets) = comments_lines(detail, comments_expanded, p);
+        let (comment_lines, thread_offsets) = comments_lines(detail, comments_expanded, p, ascii);
         // Convert thread relative offsets to absolute Y offsets.
         for offset in thread_offsets {
             unresolved_anchors.push(comments_anchor + offset);
@@ -662,8 +701,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let (content_lines, _section_anchors, _unresolved_anchors) =
-        build_content(detail, app.pr_detail_files_expanded, app.pr_detail_comments_expanded, p);
+    let (content_lines, _section_anchors, _unresolved_anchors) = build_content(
+        detail,
+        app.pr_detail_files_expanded,
+        app.pr_detail_comments_expanded,
+        p,
+        app.config.show_ascii_glyphs,
+    );
 
     let scroll = app.pr_detail_scroll;
 
@@ -796,7 +840,7 @@ pub mod tests {
     fn section_anchors_are_monotone() {
         let detail = fixture_pr_detail(3, 2, 4, 2);
         let p = Palette::default();
-        let (_, anchors, _) = build_content(&detail, false, false, &p);
+        let (_, anchors, _) = build_content(&detail, false, false, &p, false);
 
         // We have: banner, title, checks, reviews, files, comments = 6 anchors.
         assert!(!anchors.is_empty(), "anchors should not be empty");
@@ -812,7 +856,7 @@ pub mod tests {
     fn section_anchors_count_matches_content() {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
-        let (_, anchors, _) = build_content(&detail, false, false, &p);
+        let (_, anchors, _) = build_content(&detail, false, false, &p, false);
         // banner + title + checks + reviews + files + comments = 6
         assert_eq!(anchors.len(), 6, "expected 6 anchors for full fixture, got {}", anchors.len());
     }
@@ -822,7 +866,7 @@ pub mod tests {
     fn unresolved_anchors_within_total_lines() {
         let detail = fixture_pr_detail(1, 1, 1, 4); // 4 threads, some unresolved
         let p = Palette::default();
-        let (lines, _, unresolved) = build_content(&detail, false, false, &p);
+        let (lines, _, unresolved) = build_content(&detail, false, false, &p, false);
 
         #[allow(clippy::cast_possible_truncation)]
         let total = lines.len() as u16;
@@ -836,8 +880,8 @@ pub mod tests {
     fn files_expanded_shows_more() {
         let detail = fixture_pr_detail(0, 0, 10, 0);
         let p = Palette::default();
-        let (lines_collapsed, _, _) = build_content(&detail, false, false, &p);
-        let (lines_expanded, _, _) = build_content(&detail, true, false, &p);
+        let (lines_collapsed, _, _) = build_content(&detail, false, false, &p, false);
+        let (lines_expanded, _, _) = build_content(&detail, true, false, &p, false);
         assert!(lines_expanded.len() > lines_collapsed.len(), "expanded should produce more lines");
     }
 
@@ -884,7 +928,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p);
+        let (lines, _, _) = build_content(&detail, false, true, &p, false);
 
         // Count lines whose first non-gutter span has a non-plain style (heading or code).
         // At minimum we expect a heading line (BOLD modifier) and a code-block line.
@@ -954,7 +998,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p);
+        let (lines, _, _) = build_content(&detail, false, true, &p, false);
 
         // Collect all lines that contain an author name.
         // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
@@ -1027,7 +1071,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, unresolved) = build_content(&detail, false, true, &p);
+        let (lines, _, unresolved) = build_content(&detail, false, true, &p, false);
 
         assert_eq!(unresolved.len(), 1, "expected exactly 1 unresolved anchor");
         let anchor = unresolved[0] as usize;
@@ -1088,7 +1132,7 @@ pub mod tests {
         };
 
         // collapsed = false (comments_expanded = false)
-        let (lines, _, _) = build_content(&detail, false, false, &p);
+        let (lines, _, _) = build_content(&detail, false, false, &p, false);
 
         let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
 
@@ -1128,7 +1172,7 @@ pub mod tests {
             }],
         };
 
-        let (lines, _, _) = build_content(&detail, false, true, &p);
+        let (lines, _, _) = build_content(&detail, false, true, &p, false);
 
         // Bold span for "important".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
