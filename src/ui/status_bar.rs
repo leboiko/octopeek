@@ -73,7 +73,7 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         }
         Focus::FirstRun => "Space toggle  Enter confirm  a add  Esc skip",
         Focus::Detail if app.copy_mode.active => {
-            "h/j/k/l move  V select  y yank  Esc exit"
+            "h/j/k/l move  0/$ line ends  V select  y yank  Y yank line  Esc exit"
         }
         Focus::Detail => {
             "j/k scroll  v copy mode  Tab section  n/N unresolved  c checkout  o browser  y URL  Esc back"

@@ -15,7 +15,7 @@
 
 use std::sync::LazyLock;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -71,11 +71,20 @@ struct Builder<'p> {
     list_depth: usize,
     /// Current ordered-list item counter (`None` when in an unordered list).
     list_counter: Vec<Option<u64>>,
-    /// `true` while rendering inside a table (we emit a placeholder once).
+    /// `true` while rendering inside a table block.
     in_table: bool,
-    /// `true` once we have already emitted the `[table]` placeholder for the
-    /// current table block, so we do not repeat it for every cell event.
-    table_placeholder_emitted: bool,
+    /// Column alignments for the current table, from the markdown header line.
+    table_alignments: Vec<Alignment>,
+    /// `true` between `Start(TableHead)` and `End(TableHead)`.
+    table_in_header: bool,
+    /// Spans accumulated for the current cell (one `Span` per text/style run).
+    table_cell_spans: Vec<Span<'static>>,
+    /// Cells accumulated for the row currently being built.
+    table_current_row: Vec<Vec<Span<'static>>>,
+    /// Completed header row (from `End(TableHead)`).
+    table_header_row: Option<Vec<Vec<Span<'static>>>>,
+    /// Completed body rows.
+    table_body_rows: Vec<Vec<Vec<Span<'static>>>>,
 }
 
 impl<'p> Builder<'p> {
@@ -92,7 +101,12 @@ impl<'p> Builder<'p> {
             list_depth: 0,
             list_counter: Vec::new(),
             in_table: false,
-            table_placeholder_emitted: false,
+            table_alignments: Vec::new(),
+            table_in_header: false,
+            table_cell_spans: Vec::new(),
+            table_current_row: Vec::new(),
+            table_header_row: None,
+            table_body_rows: Vec::new(),
         }
     }
 
@@ -224,6 +238,88 @@ impl<'p> Builder<'p> {
         // Blank line after the block.
         self.lines.push(Line::from(vec![]));
     }
+
+    /// Emit the accumulated table as bordered lines using box-drawing chars.
+    ///
+    /// Ported from the sibling `markdown-reader` project's `layout_table`
+    /// (`fair_share_widths` + `border_line` + `span_cell_line`), simplified
+    /// to work without a known viewport width: we target `TABLE_TARGET_TOTAL`
+    /// columns, wide enough for most PR/issue tables and degrades cleanly
+    /// (via ratatui's Paragraph wrapping) on narrower terminals.
+    ///
+    /// Preserves each cell's inline styling (bold / emphasis / inline code)
+    /// so tables containing richly-styled cells look like they do elsewhere
+    /// in the rendered markdown.
+    fn emit_table(&mut self) {
+        // Total render width we target when laying out the table. This sits
+        // at module scope to keep the constant visible if a future caller
+        // wants to thread an actual viewport width through.
+        const TABLE_TARGET_TOTAL: usize = 100;
+        let header = self.table_header_row.take().unwrap_or_default();
+        let rows = std::mem::take(&mut self.table_body_rows);
+        let alignments = std::mem::take(&mut self.table_alignments);
+
+        let num_cols = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+        if num_cols == 0 {
+            return;
+        }
+
+        // Natural width per column: the max display-width of any cell.
+        let mut natural_widths: Vec<usize> = vec![0; num_cols];
+        let measure = |cell: &[Span<'static>]| -> usize {
+            cell.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum()
+        };
+        for (i, cell) in header.iter().enumerate().take(num_cols) {
+            natural_widths[i] = natural_widths[i].max(measure(cell));
+        }
+        for row in &rows {
+            for (i, cell) in row.iter().enumerate().take(num_cols) {
+                natural_widths[i] = natural_widths[i].max(measure(cell));
+            }
+        }
+
+        // Target content width — total layout is content + 2 padding per col
+        // + (num_cols + 1) vertical border chars.
+        let target = TABLE_TARGET_TOTAL
+            .saturating_sub(num_cols + 1) // borders
+            .saturating_sub(2 * num_cols); // padding
+        let col_widths = fair_share_widths(&natural_widths, num_cols, target);
+
+        let p = self.palette;
+        let border_style = Style::default().fg(p.table_border);
+        let header_style = Style::default().fg(p.table_header).add_modifier(Modifier::BOLD);
+        let cell_style = Style::default().fg(p.foreground);
+
+        // Top border.
+        self.lines.push(border_line('\u{250C}', '\u{2500}', '\u{252C}', '\u{2510}', &col_widths, border_style));
+        // Header row — falls back to an empty cell when a table has no
+        // header (rare but possible with some renderers).
+        self.lines.push(span_cell_line(
+            &header,
+            &col_widths,
+            &alignments,
+            border_style,
+            header_style,
+            num_cols,
+            p,
+        ));
+        // Header/body separator.
+        self.lines.push(border_line('\u{251C}', '\u{2500}', '\u{253C}', '\u{2524}', &col_widths, border_style));
+        // Body rows.
+        for row in &rows {
+            self.lines.push(span_cell_line(
+                row,
+                &col_widths,
+                &alignments,
+                border_style,
+                cell_style,
+                num_cols,
+                p,
+            ));
+        }
+        // Bottom border.
+        self.lines.push(border_line('\u{2514}', '\u{2500}', '\u{2534}', '\u{2518}', &col_widths, border_style));
+    }
 }
 
 // ── Syntect theme name heuristic ──────────────────────────────────────────────
@@ -244,6 +340,163 @@ impl Palette {
             _ => "base16-ocean.dark",
         }
     }
+}
+
+// ── Table layout helpers (ported from markdown-reader) ───────────────────────
+
+/// Compute column widths using a proportional fair-share algorithm.
+///
+/// If all naturals fit within `target`, returns natural widths (clamped to
+/// at least 1). Otherwise every column gets a minimum of `min(6, natural)`,
+/// and remaining space is distributed proportionally to each column's
+/// excess over its minimum.
+fn fair_share_widths(natural_widths: &[usize], num_cols: usize, target: usize) -> Vec<usize> {
+    let naturals: Vec<usize> = (0..num_cols)
+        .map(|i| natural_widths.get(i).copied().unwrap_or(1).max(1))
+        .collect();
+
+    let total_natural: usize = naturals.iter().sum();
+    if total_natural <= target {
+        return naturals;
+    }
+
+    let mins: Vec<usize> = naturals.iter().map(|&n| n.clamp(1, 6)).collect();
+    let total_min: usize = mins.iter().sum();
+
+    if total_min >= target {
+        let per_col = (target / num_cols).max(1);
+        return mins.iter().map(|&m| m.min(per_col).max(1)).collect();
+    }
+
+    let remaining = target - total_min;
+    let total_excess: usize =
+        naturals.iter().zip(&mins).map(|(&n, &m)| n.saturating_sub(m)).sum();
+
+    let mut widths = mins.clone();
+    if total_excess > 0 {
+        for (i, (&natural, &min)) in naturals.iter().zip(&mins).enumerate() {
+            let excess = natural.saturating_sub(min);
+            let extra = (excess * remaining) / total_excess;
+            widths[i] = (min + extra).min(natural);
+        }
+    }
+    widths
+}
+
+/// Render a horizontal border (top `┌─┬─┐`, separator `├─┼─┤`, or bottom
+/// `└─┴─┘`). Each column's span is `width + 2` chars to account for the
+/// single-space padding on both sides of cell content.
+fn border_line(
+    left: char,
+    fill: char,
+    mid: char,
+    right: char,
+    col_widths: &[usize],
+    style: Style,
+) -> Line<'static> {
+    let mut s = String::with_capacity(col_widths.iter().sum::<usize>() + col_widths.len() * 4);
+    s.push(left);
+    for (i, &w) in col_widths.iter().enumerate() {
+        for _ in 0..(w + 2) {
+            s.push(fill);
+        }
+        if i + 1 < col_widths.len() {
+            s.push(mid);
+        }
+    }
+    s.push(right);
+    Line::from(Span::styled(s, style))
+}
+
+/// Render one table row (header or body), preserving each cell's inline
+/// styling. `cell_fill_style` applies only to padding; original span styles
+/// are retained on the content spans themselves.
+#[allow(clippy::too_many_arguments)]
+fn span_cell_line(
+    cells: &[Vec<Span<'static>>],
+    col_widths: &[usize],
+    alignments: &[Alignment],
+    border_style: Style,
+    cell_fill_style: Style,
+    num_cols: usize,
+    palette: &Palette,
+) -> Line<'static> {
+    let empty: Vec<Span<'static>> = Vec::new();
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(num_cols * 4 + 1);
+    out.push(Span::styled("\u{2502}".to_owned(), border_style)); // │
+
+    for (i, &w) in col_widths.iter().enumerate().take(num_cols) {
+        let cell = cells.get(i).unwrap_or(&empty);
+        let cell_w: usize =
+            cell.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
+        let alignment = alignments.get(i).copied().unwrap_or(Alignment::None);
+
+        // Left space padding.
+        out.push(Span::styled(" ".to_owned(), cell_fill_style));
+
+        if cell_w <= w {
+            let padding = w - cell_w;
+            let (left_pad, right_pad) = match alignment {
+                Alignment::Right => (padding, 0),
+                Alignment::Center => (padding / 2, padding - padding / 2),
+                Alignment::Left | Alignment::None => (0, padding),
+            };
+            if left_pad > 0 {
+                out.push(Span::styled(" ".repeat(left_pad), cell_fill_style));
+            }
+            out.extend(cell.iter().cloned());
+            if right_pad > 0 {
+                out.push(Span::styled(" ".repeat(right_pad), cell_fill_style));
+            }
+        } else {
+            out.extend(truncate_spans(cell, w, palette));
+        }
+
+        // Right space padding + column border.
+        out.push(Span::styled(" \u{2502}".to_owned(), border_style)); // ` │`
+    }
+
+    Line::from(out)
+}
+
+/// Truncate `spans` to fit in `max_width` display columns, appending an
+/// ellipsis (`…`) in the palette's dim style when truncation occurs.
+fn truncate_spans(spans: &[Span<'static>], max_width: usize, palette: &Palette) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let budget = max_width.saturating_sub(1); // reserve one cell for the ellipsis
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let w = unicode_width::UnicodeWidthStr::width(span.content.as_ref());
+        if used + w <= budget {
+            out.push(span.clone());
+            used += w;
+            continue;
+        }
+        // Partial: cut this span at the last char boundary that fits.
+        let remaining = budget.saturating_sub(used);
+        let mut acc = String::new();
+        let mut acc_w = 0usize;
+        for ch in span.content.chars() {
+            let cw = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
+            if acc_w + cw > remaining {
+                break;
+            }
+            acc.push(ch);
+            acc_w += cw;
+        }
+        if !acc.is_empty() {
+            out.push(Span::styled(acc, span.style));
+        }
+        break;
+    }
+    out.push(Span::styled(
+        "\u{2026}".to_owned(), // …
+        Style::default().fg(palette.dim),
+    ));
+    out
 }
 
 /// Pick the palette colour for a heading level.
@@ -406,11 +659,55 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
         }
 
         // ── Table (GFM) ───────────────────────────────────────────────────
-        Event::Start(Tag::Table(_)) => {
+        //
+        // pulldown-cmark emits table events as:
+        //   Start(Table(alignments))
+        //     Start(TableHead)
+        //       Start(TableCell) Text(...) End(TableCell) ...
+        //     End(TableHead)
+        //     Start(TableRow)
+        //       Start(TableCell) Text(...) End(TableCell) ...
+        //     End(TableRow)
+        //     ...
+        //   End(Table)
+        //
+        // We accumulate cell spans with the currently-active style stack so
+        // bold / italic / inline-code inside cells render correctly, then
+        // emit the whole table as bordered lines at `End(Table)`.
+        Event::Start(Tag::Table(alignments)) => {
             b.in_table = true;
-            b.table_placeholder_emitted = false;
+            b.table_alignments = alignments;
+            b.table_header_row = None;
+            b.table_body_rows.clear();
+            b.table_current_row.clear();
+            b.table_cell_spans.clear();
+            b.table_in_header = false;
+        }
+        Event::Start(Tag::TableHead) => {
+            b.table_in_header = true;
+            b.table_current_row.clear();
+        }
+        Event::Start(Tag::TableRow) => {
+            b.table_current_row.clear();
+        }
+        Event::Start(Tag::TableCell) => {
+            b.table_cell_spans.clear();
+        }
+        Event::End(TagEnd::TableCell) => {
+            let cell = std::mem::take(&mut b.table_cell_spans);
+            b.table_current_row.push(cell);
+        }
+        Event::End(TagEnd::TableHead) => {
+            b.table_header_row = Some(std::mem::take(&mut b.table_current_row));
+            b.table_in_header = false;
+        }
+        Event::End(TagEnd::TableRow) => {
+            if !b.table_in_header {
+                b.table_body_rows.push(std::mem::take(&mut b.table_current_row));
+            }
         }
         Event::End(TagEnd::Table) => {
+            b.emit_table();
             b.in_table = false;
             b.lines.push(Line::from(vec![]));
         }
@@ -436,23 +733,23 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
 
         // ── Inline code ───────────────────────────────────────────────────
         Event::Code(text) => {
-            b.current_spans.push(InlineSpan::new(
-                text.to_string(),
-                Style::default().fg(palette.inline_code).bg(palette.code_bg),
-            ));
+            let style = Style::default().fg(palette.inline_code).bg(palette.code_bg);
+            if b.in_table {
+                b.table_cell_spans.push(Span::styled(text.to_string(), style));
+            } else {
+                b.current_spans.push(InlineSpan::new(text.to_string(), style));
+            }
         }
 
         // ── Text content ──────────────────────────────────────────────────
         Event::Text(text) => {
             if b.code_block_lang.is_some() {
                 b.code_block_buf.push_str(&text);
-            } else if b.in_table && !b.table_placeholder_emitted {
-                b.lines.push(Line::from(vec![Span::styled(
-                    "[table]",
-                    Style::default().fg(palette.dim),
-                )]));
-                b.table_placeholder_emitted = true;
-            } else if !b.in_table {
+            } else if b.in_table {
+                // Capture cell content with whatever style is active from
+                // Strong/Emphasis/Link/etc. wrapping tags.
+                b.table_cell_spans.push(Span::styled(text.to_string(), b.current_style()));
+            } else {
                 b.push_text(&text);
             }
         }
@@ -475,7 +772,7 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
 
         // ── All remaining no-op tags ──────────────────────────────────────
         // Image: alt-text flows through Event::Text, tags are skipped.
-        // Table sub-tags: table content is captured by Event::Text above.
+        // Table-specific Start/End for Head/Row/Cell are handled above.
         // Footnotes, metadata, math, sub/superscript, definition lists:
         // either unsupported or handled via their child text events.
         Event::Html(_)
@@ -487,9 +784,6 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
             Tag::Paragraph
             | Tag::Image { .. }
             | Tag::HtmlBlock
-            | Tag::TableHead
-            | Tag::TableRow
-            | Tag::TableCell
             | Tag::Superscript
             | Tag::Subscript
             | Tag::DefinitionList
@@ -501,9 +795,6 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
         | Event::End(
             TagEnd::Image
             | TagEnd::HtmlBlock
-            | TagEnd::TableHead
-            | TagEnd::TableRow
-            | TagEnd::TableCell
             | TagEnd::FootnoteDefinition
             | TagEnd::Superscript
             | TagEnd::Subscript
@@ -769,11 +1060,56 @@ mod tests {
     }
 
     #[test]
-    fn table_emits_placeholder() {
-        let src = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    fn table_renders_headers_and_rows_as_bordered_lines() {
+        // Minimum viable GFM table — two columns, one header, two body rows.
+        let src = "| Col A | Col B |\n|---|---|\n| a1 | b1 |\n| a2 | b2 |\n";
         let lines = render_markdown(src, &palette());
-        let text: String =
-            lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("[table]"), "table placeholder missing: {text}");
+        let text_lines: Vec<String> = lines.iter().map(line_text).collect();
+        let joined = text_lines.join("\n");
+
+        // Content must be preserved across all four cells plus both headers.
+        for needle in ["Col A", "Col B", "a1", "b1", "a2", "b2"] {
+            assert!(joined.contains(needle), "missing cell {needle:?} in: {joined}");
+        }
+
+        // At least one line must use the heavy box-drawing vertical bar; the
+        // top/bottom borders use `─` (U+2500) so their presence confirms the
+        // table is rendered as a bordered block rather than the old
+        // `[table]` placeholder.
+        assert!(
+            joined.contains('\u{2502}'),
+            "vertical border │ missing — table not rendered as bordered block: {joined}"
+        );
+        assert!(
+            joined.contains('\u{250C}') && joined.contains('\u{2518}'),
+            "corner borders ┌ / ┘ missing: {joined}"
+        );
+
+        // Explicitly verify the old placeholder is gone so a future
+        // regression to "[table]" fails loudly.
+        assert!(
+            !joined.contains("[table]"),
+            "table placeholder leaked back into output: {joined}"
+        );
+    }
+
+    #[test]
+    fn table_preserves_inline_cell_styling() {
+        // Bold + inline code inside a cell must keep their respective styles
+        // when the cell is rendered inside the bordered table.
+        let src = "| Before | Styled |\n|---|---|\n| **bold** | `code` |\n";
+        let p = palette();
+        let lines = render_markdown(src, &p);
+        let has_bold = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(has_bold, "bold cell content lost its BOLD modifier");
+
+        let has_code = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content == "code" && s.style.bg == Some(p.code_bg));
+        assert!(has_code, "inline-code cell lost its code_bg style");
     }
 }

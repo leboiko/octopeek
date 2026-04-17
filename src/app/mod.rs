@@ -634,6 +634,12 @@ impl App {
                 self.detail_error = Some(msg);
             }
         }
+        // Every action path could have mutated `pr_detail_scroll` — explicitly
+        // in the scroll keys, implicitly in focus transitions or new data
+        // arriving. A single clamp here guarantees the offset never points
+        // past the current content's end (which previously left users staring
+        // at a blank frame and punching `k` to recover).
+        self.clamp_pr_detail_scroll();
     }
 
     /// Translate a raw key event into an [`Action`] based on current focus.
@@ -973,9 +979,15 @@ impl App {
             }
             KeyCode::Char('v') => {
                 self.detail_pending_g = false;
-                // Enter copy mode at the top of the current viewport so the
-                // block cursor lands somewhere the user can already see.
-                self.copy_mode.enter(self.pr_detail_scroll as usize, 0);
+                // Enter copy mode at the top of the current viewport, but
+                // clamp to the last real line so we never strand the cursor
+                // on a non-existent row (which previously happened when the
+                // scroll offset had advanced past the content's end before
+                // the clamp was installed).
+                let lines = self.current_detail_lines();
+                let last_row = lines.len().saturating_sub(1);
+                let row = (self.pr_detail_scroll as usize).min(last_row);
+                self.copy_mode.enter(row, 0);
             }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
@@ -1056,32 +1068,71 @@ impl App {
             KeyCode::Char('V' | 'v') => {
                 self.copy_mode.toggle_selection();
             }
+            KeyCode::Char('0') | KeyCode::Home => {
+                self.copy_mode.cursor.col = 0;
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('$') | KeyCode::End => {
+                // Jump to the last character on the current row. Falls back to
+                // 0 when the row is empty so the cursor never falls off the
+                // end. Combined with `Y` below, this is the fastest path to
+                // copy a long error message that overflows the viewport.
+                let row = self.copy_mode.cursor.row;
+                let last_col = lines
+                    .get(row)
+                    .map_or(0, |l| {
+                        l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>()
+                    })
+                    .saturating_sub(1);
+                self.copy_mode.cursor.col = last_col;
+                self.ensure_cursor_visible(&lines);
+            }
+            KeyCode::Char('Y') => {
+                // One-shot "yank the current logical line to clipboard" —
+                // huge QoL win for copying long error strings that wrap off
+                // the right edge, where navigating `V` then `$` then `y` is
+                // five keys for what should be one.
+                let row = self.copy_mode.cursor.row;
+                if let Some(line) = lines.get(row) {
+                    let text: String =
+                        line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    Self::yank_and_flash(&mut self.flash, &text);
+                    self.copy_mode.exit();
+                }
+            }
             KeyCode::Char('y') => {
                 if let Some(text) = self.copy_mode.selected_text(&lines) {
-                    match crate::actions_util::copy_to_clipboard(&text) {
-                        Ok(()) => {
-                            let len = text.chars().count();
-                            self.show_flash(
-                                format!("Copied {len} chars"),
-                                std::time::Duration::from_secs(2),
-                            );
-                        }
-                        Err(e) => {
-                            self.show_flash(
-                                format!("Copy failed: {e}"),
-                                std::time::Duration::from_secs(3),
-                            );
-                        }
-                    }
+                    Self::yank_and_flash(&mut self.flash, &text);
                     self.copy_mode.exit();
                 } else {
                     self.show_flash(
-                        "No selection (press V to start)",
+                        "No selection (press V to start, Y to yank whole line)",
                         std::time::Duration::from_secs(2),
                     );
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Push `text` to the system clipboard and display a flash summarising
+    /// what happened. Takes `&mut flash` rather than `&mut self` so it can be
+    /// used from copy-mode branches that already borrow other parts of self.
+    fn yank_and_flash(flash: &mut Option<crate::ui::status_bar::FlashMessage>, text: &str) {
+        match crate::actions_util::copy_to_clipboard(text) {
+            Ok(()) => {
+                let len = text.chars().count();
+                *flash = Some(crate::ui::status_bar::FlashMessage::new(
+                    format!("Copied {len} chars"),
+                    std::time::Duration::from_secs(2),
+                ));
+            }
+            Err(e) => {
+                *flash = Some(crate::ui::status_bar::FlashMessage::new(
+                    format!("Copy failed: {e}"),
+                    std::time::Duration::from_secs(3),
+                ));
+            }
         }
     }
 
@@ -1214,6 +1265,28 @@ impl App {
             return lines;
         }
         Vec::new()
+    }
+
+    /// Clamp `pr_detail_scroll` so it can never exceed
+    /// `content_height - viewport_height`. Without this, `G`, Ctrl-d, or the
+    /// scroll wheel past the last line leaves the scroll counter pointing
+    /// into the void — the renderer shows a blank screen and the user has
+    /// to press `k` many times to get back to content. Also prevents copy
+    /// mode from landing the cursor on a row that no longer exists.
+    fn clamp_pr_detail_scroll(&mut self) {
+        if !matches!(self.focus, Focus::Detail) {
+            return;
+        }
+        let area = self.pr_detail_viewport.get();
+        if area.height == 0 {
+            return;
+        }
+        let lines = self.current_detail_lines();
+        let content_len = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let max_scroll = content_len.saturating_sub(area.height);
+        if self.pr_detail_scroll > max_scroll {
+            self.pr_detail_scroll = max_scroll;
+        }
     }
 
     /// Adjust `pr_detail_scroll` and `copy_mode.h_scroll` so that the cursor
@@ -2066,18 +2139,23 @@ mod tests {
     }
 
     /// Pressing `v` in detail focus enters copy mode with the cursor anchored
-    /// at the top of the current viewport (so it lands where the user is
-    /// already looking, not scrolled off-screen).
+    /// inside the current content. With no detail loaded the cursor clamps
+    /// to row 0 (rather than landing on the phantom row of a stale scroll
+    /// offset), which is the specific regression we hit when the user
+    /// over-scrolled past the content's end and then entered copy mode.
     #[test]
-    fn v_in_detail_enters_copy_mode() {
+    fn v_in_detail_enters_copy_mode_and_clamps_to_content() {
         let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        app.pr_detail_scroll = 12;
+        app.pr_detail_scroll = 12; // well past the empty content's end
 
         app.handle_key(key(KeyCode::Char('v')));
 
         assert!(app.copy_mode.active);
-        assert_eq!(app.copy_mode.cursor.row, 12, "cursor must start at scroll offset");
+        assert_eq!(
+            app.copy_mode.cursor.row, 0,
+            "cursor must clamp to last real row (0 when no content)"
+        );
         assert_eq!(app.copy_mode.cursor.col, 0);
         assert!(app.copy_mode.anchor.is_none(), "no selection until V pressed");
     }
