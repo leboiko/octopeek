@@ -179,6 +179,15 @@ pub struct PullRequest {
     pub updated_at: DateTime<Utc>,
     /// Roles the viewer holds on this PR (deduplicated union across search buckets).
     pub roles: Vec<Role>,
+    /// Base branch name (e.g. `"main"`).
+    ///
+    /// Populated from the inbox query fragment so that the branch checkout flow
+    /// (`c` key) can work from the dashboard without a separate detail fetch.
+    pub base_ref: Option<String>,
+    /// Head branch name (e.g. `"feat/my-feature"`).
+    ///
+    /// Same as `base_ref` — present at list level to enable `c` from the dashboard.
+    pub head_ref: Option<String>,
 }
 
 // ── Label / Issue ─────────────────────────────────────────────────────────────

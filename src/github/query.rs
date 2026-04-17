@@ -61,6 +61,8 @@ fragment PullRequestFields on PullRequest {
   repository { nameWithOwner }
   author { login }
   updatedAt
+  baseRefName
+  headRefName
   commits(last: 1) {
     totalCount
     nodes {
@@ -192,6 +194,10 @@ pub struct RawPr {
     pub repository: RawRepo,
     pub author: Option<RawActor>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Base branch name, e.g. `"main"`.
+    pub base_ref_name: String,
+    /// Head branch name, e.g. `"feat/my-feature"`.
+    pub head_ref_name: String,
     pub commits: RawCommits,
     pub comments: RawTotalCount,
     pub review_requests: NodeList<RawReviewRequest>,
@@ -531,6 +537,8 @@ fn raw_pr_to_domain(raw: RawPr) -> PullRequest {
         reviews,
         updated_at: raw.updated_at,
         roles: vec![], // populated by the dedup step in to_inbox
+        base_ref: Some(raw.base_ref_name),
+        head_ref: Some(raw.head_ref_name),
     }
 }
 
@@ -577,6 +585,8 @@ mod tests {
             "repository": { "nameWithOwner": "owner/repo" },
             "author": { "login": "author-login" },
             "updatedAt": "2024-01-01T00:00:00Z",
+            "baseRefName": "main",
+            "headRefName": "feat/test-branch",
             "commits": {
                 "totalCount": 1,
                 "nodes": [{

@@ -26,8 +26,6 @@ use crate::ui::tabs::Tabs;
 use actions::Action;
 
 /// Which high-level panel currently owns keyboard focus.
-// `Detail` and `RepoPicker` variants are constructed in Phase 3.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     /// The main dashboard list (PRs or issues).
@@ -39,6 +37,18 @@ pub enum Focus {
     RepoPicker,
     /// The full-screen help overlay.
     Help,
+    /// The generic confirmation overlay.
+    Confirm,
+}
+
+/// Interaction mode for the repo picker overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoPickerMode {
+    /// Cursor is on the repo list (default).
+    #[default]
+    List,
+    /// Cursor is in the text input field.
+    Input,
 }
 
 /// Which kind of item a detail fetch targets.
@@ -98,7 +108,7 @@ pub struct App {
     /// Transient message displayed in the status bar for a short duration.
     ///
     /// Set via [`App::show_flash`]; the status bar renderer clears it once
-    /// [`FlashMessage::is_active`] returns `false`.
+    /// `FlashMessage::is_active` returns `false`.
     pub flash: Option<crate::ui::status_bar::FlashMessage>,
 
     // ── Detail state ──────────────────────────────────────────────────────────
@@ -124,6 +134,23 @@ pub struct App {
     pub pr_detail_unresolved_idx: usize,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
     pub detail_pending_g: bool,
+
+    // ── Repo picker state ─────────────────────────────────────────────────────
+    /// Index of the currently highlighted repo in the picker list.
+    pub repo_picker_list_cursor: usize,
+    /// Text buffer for the repo picker's "Add" input field.
+    pub repo_picker_input: String,
+    /// Whether the picker is in list-navigation or text-input mode.
+    pub repo_picker_mode: RepoPickerMode,
+    /// Focus state the picker should return to on close.
+    pub repo_picker_return_focus: Focus,
+
+    // ── Confirmation overlay state ────────────────────────────────────────────
+    /// When `Some`, the confirmation overlay is displayed and `focus` is
+    /// [`Focus::Confirm`].  Cleared when the user confirms or cancels.
+    pub confirm: Option<crate::ui::confirm::Confirm>,
+    /// Focus state to restore when the confirmation overlay is dismissed.
+    pub confirm_return_focus: Focus,
 }
 
 impl App {
@@ -187,14 +214,18 @@ impl App {
             pr_detail_unresolved_anchors: Vec::new(),
             pr_detail_unresolved_idx: 0,
             detail_pending_g: false,
+            repo_picker_list_cursor: 0,
+            repo_picker_input: String::new(),
+            repo_picker_mode: RepoPickerMode::List,
+            repo_picker_return_focus: Focus::Dashboard,
+            confirm: None,
+            confirm_return_focus: Focus::Dashboard,
         }
     }
 
     /// Display a flash message in the status bar for `duration`.
     ///
     /// Replaces any currently active flash message.
-    // Wired by the Phase 4 detail-UI action handler; allow dead_code until merged.
-    #[allow(dead_code)]
     pub fn show_flash(&mut self, text: impl Into<String>, duration: std::time::Duration) {
         self.flash = Some(crate::ui::status_bar::FlashMessage::new(text, duration));
     }
@@ -488,13 +519,21 @@ impl App {
                 warn!("Action::CopyUrl not yet implemented (Phase 4)");
             }
             Action::CheckoutBranch => {
-                warn!("Action::CheckoutBranch not yet implemented (Phase 5)");
+                self.begin_checkout_from_selection();
             }
-            Action::ConfirmCheckout(_) => {
-                warn!("Action::ConfirmCheckout not yet implemented (Phase 5)");
+            Action::ConfirmCheckout(confirmed) => {
+                if confirmed {
+                    self.execute_confirm();
+                } else {
+                    self.dismiss_confirm();
+                }
             }
             Action::OpenRepoPicker => {
-                warn!("Action::OpenRepoPicker not yet implemented (Phase 3)");
+                self.repo_picker_list_cursor = 0;
+                self.repo_picker_input.clear();
+                self.repo_picker_mode = RepoPickerMode::List;
+                self.repo_picker_return_focus = self.focus;
+                self.focus = Focus::RepoPicker;
             }
             Action::InboxFetchStarted => {
                 self.fetching = true;
@@ -586,9 +625,8 @@ impl App {
         match self.focus {
             Focus::Dashboard => self.handle_key_dashboard(key),
             Focus::Detail => self.handle_key_detail(key),
-            Focus::RepoPicker => {
-                warn!("RepoPicker key handling not yet implemented (Phase 3)");
-            }
+            Focus::RepoPicker => self.handle_key_repo_picker(key),
+            Focus::Confirm => self.handle_key_confirm(key),
             Focus::Help => {
                 // Handled above; unreachable here.
             }
@@ -717,7 +755,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 self.detail_pending_g = false;
-                info!("branch checkout is Phase 5");
+                self.handle_action(Action::CheckoutBranch);
             }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
@@ -750,6 +788,279 @@ impl App {
                 self.detail_pending_g = false;
             }
         }
+    }
+
+    // ── Repo picker ───────────────────────────────────────────────────────────
+
+    /// Close the repo picker and sync tabs to the current config.
+    ///
+    /// Also resets picker state so the next `p` press starts fresh.
+    fn close_repo_picker(&mut self) {
+        self.focus = self.repo_picker_return_focus;
+        self.repo_picker_input.clear();
+        self.repo_picker_mode = RepoPickerMode::List;
+        self.sync_tabs_to_config();
+    }
+
+    /// Ensure `App::tabs` mirrors `config.repos`: open any newly-added repos,
+    /// close any removed repos, and preserve the active tab where possible.
+    fn sync_tabs_to_config(&mut self) {
+        // Close tabs whose repos are no longer in the config.
+        let ids_to_close: Vec<crate::ui::tabs::TabId> = self
+            .tabs
+            .tabs
+            .iter()
+            .filter(|t| !self.config.repos.contains(&t.repo))
+            .map(|t| t.id)
+            .collect();
+        for id in ids_to_close {
+            self.tabs.close(id);
+        }
+
+        // Open tabs for repos not yet represented.
+        for repo in &self.config.repos {
+            self.tabs.open_or_focus(repo);
+        }
+
+        // Restore cursor within bounds.
+        let max_idx = self.config.repos.len().saturating_sub(1);
+        if self.repo_picker_list_cursor > max_idx {
+            self.repo_picker_list_cursor = max_idx;
+        }
+    }
+
+    /// Key handler for the repo picker overlay.
+    fn handle_key_repo_picker(&mut self, key: crossterm::event::KeyEvent) {
+        match self.repo_picker_mode {
+            RepoPickerMode::List => self.handle_repo_picker_list_key(key),
+            RepoPickerMode::Input => self.handle_repo_picker_input_key(key),
+        }
+    }
+
+    /// Key handler for repo picker List mode.
+    fn handle_repo_picker_list_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+        let repo_count = self.config.repos.len();
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_repo_picker();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if repo_count > 0 {
+                    self.repo_picker_list_cursor =
+                        (self.repo_picker_list_cursor + 1).min(repo_count - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.repo_picker_list_cursor = self.repo_picker_list_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('d') | KeyCode::Backspace => {
+                if !self.config.repos.is_empty() {
+                    let idx = self.repo_picker_list_cursor.min(repo_count - 1);
+                    self.config.repos.remove(idx);
+                    self.config.save();
+                    // Clamp cursor after removal.
+                    let new_len = self.config.repos.len();
+                    if new_len > 0 && self.repo_picker_list_cursor >= new_len {
+                        self.repo_picker_list_cursor = new_len - 1;
+                    } else if new_len == 0 {
+                        self.repo_picker_list_cursor = 0;
+                    }
+                    self.sync_tabs_to_config();
+                }
+            }
+            KeyCode::Char('a' | 'i') => {
+                self.repo_picker_mode = RepoPickerMode::Input;
+            }
+            KeyCode::Enter => {
+                // Focus the selected repo's tab and close the picker.
+                if repo_count > 0 {
+                    let idx = self.repo_picker_list_cursor.min(repo_count - 1);
+                    let repo = self.config.repos[idx].clone();
+                    self.tabs.open_or_focus(&repo);
+                    self.close_repo_picker();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Key handler for repo picker Input mode.
+    fn handle_repo_picker_input_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.repo_picker_mode = RepoPickerMode::List;
+                self.repo_picker_input.clear();
+            }
+            KeyCode::Backspace => {
+                self.repo_picker_input.pop();
+            }
+            KeyCode::Enter => {
+                let slug = self.repo_picker_input.trim().to_owned();
+                if !crate::ui::repo_picker::is_valid_repo_slug(&slug) {
+                    self.show_flash(
+                        format!("Invalid repo slug: \"{slug}\". Use owner/name format."),
+                        std::time::Duration::from_secs(3),
+                    );
+                    return;
+                }
+                // Dedup: silently ignore if already tracked.
+                if !self.config.repos.contains(&slug) {
+                    self.config.repos.push(slug.clone());
+                    self.config.save();
+                    self.tabs.open_or_focus(&slug);
+                    self.show_flash(format!("Added {slug}"), std::time::Duration::from_secs(2));
+                }
+                self.repo_picker_input.clear();
+                // Stay in Input mode so the user can add more repos.
+            }
+            KeyCode::Char(c) => {
+                self.repo_picker_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    // ── Confirmation overlay ──────────────────────────────────────────────────
+
+    /// Dismiss the confirmation overlay and restore prior focus.
+    fn dismiss_confirm(&mut self) {
+        self.confirm = None;
+        self.focus = self.confirm_return_focus;
+    }
+
+    /// Execute the pending confirmation action, then dismiss the overlay.
+    fn execute_confirm(&mut self) {
+        let Some(confirm) = self.confirm.take() else {
+            return;
+        };
+        self.focus = self.confirm_return_focus;
+
+        match confirm.pending_action {
+            crate::ui::confirm::ConfirmPending::CheckoutBranch { branch, .. } => {
+                // Check tree cleanliness before running git.
+                match crate::git::is_working_tree_clean() {
+                    Err(e) => {
+                        self.show_flash(
+                            format!("git checkout failed: {e}"),
+                            std::time::Duration::from_secs(4),
+                        );
+                        return;
+                    }
+                    Ok(false) => {
+                        self.show_flash(
+                            "Working tree is not clean; commit or stash first.",
+                            std::time::Duration::from_secs(4),
+                        );
+                        return;
+                    }
+                    Ok(true) => {}
+                }
+
+                match crate::git::checkout_branch(&branch) {
+                    Ok(()) => {
+                        self.show_flash(
+                            format!("Checked out {branch}"),
+                            std::time::Duration::from_secs(3),
+                        );
+                    }
+                    Err(e) => {
+                        self.show_flash(
+                            format!("git checkout failed: {e}"),
+                            std::time::Duration::from_secs(4),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Key handler for the confirmation overlay.
+    fn handle_key_confirm(&mut self, key: crossterm::event::KeyEvent) {
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('y') => {
+                self.handle_action(Action::ConfirmCheckout(true));
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.handle_action(Action::ConfirmCheckout(false));
+            }
+            _ => {}
+        }
+    }
+
+    /// Build a `Confirm` overlay for checking out the selected PR's head branch.
+    ///
+    /// Reads from `pr_detail` when in Detail focus, or from the list-level
+    /// `PullRequest` when in Dashboard focus.  No-ops if no branch can be
+    /// resolved.
+    fn begin_checkout_from_selection(&mut self) {
+        // Prefer the detail view's head_ref when we are in it.
+        let (branch, repo, number) = if let Some(detail) = &self.pr_detail {
+            (detail.head_ref.clone(), detail.repo.clone(), detail.number)
+        } else {
+            // Fall back to the list-level PullRequest.
+            let Some(repo_slug) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
+                return;
+            };
+            let Some(inbox) = &self.inbox else {
+                return;
+            };
+            let sel = self.selection.get(&repo_slug).copied().unwrap_or(0);
+            let prs: Vec<&crate::github::types::PullRequest> =
+                inbox.prs.iter().filter(|pr| pr.repo == repo_slug).collect();
+            let Some(pr) = prs.get(sel) else {
+                return;
+            };
+            let Some(head) = pr.head_ref.clone() else {
+                self.show_flash(
+                    "Branch info not available; open the detail view first.",
+                    std::time::Duration::from_secs(3),
+                );
+                return;
+            };
+            (head, repo_slug, pr.number)
+        };
+
+        // Warn when not in a git repo.
+        if !crate::git::repo_cwd_is_git() {
+            self.show_flash(
+                "Not in a git repository; cannot checkout branch.",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let cwd =
+            std::env::current_dir().map_or_else(|_| ".".to_owned(), |p| p.display().to_string());
+
+        let confirm = crate::ui::confirm::Confirm {
+            title: "Checkout branch".to_owned(),
+            prompt: format!("Checkout `{branch}` in {cwd}?"),
+            pending_action: crate::ui::confirm::ConfirmPending::CheckoutBranch {
+                repo: repo.clone(),
+                number,
+                branch,
+            },
+        };
+
+        self.confirm = Some(confirm);
+        self.confirm_return_focus = self.focus;
+        self.focus = Focus::Confirm;
     }
 
     /// Return to the dashboard, clearing all detail state.
@@ -975,11 +1286,11 @@ impl App {
             }
             KeyCode::Char('c') => {
                 self.pending_g = false;
-                info!("Phase 5: not yet implemented — checkout branch");
+                self.handle_action(Action::CheckoutBranch);
             }
             KeyCode::Char('p') => {
                 self.pending_g = false;
-                info!("Phase 5: not yet implemented — repo picker");
+                self.handle_action(Action::OpenRepoPicker);
             }
             KeyCode::Char('f') => {
                 self.pending_g = false;
@@ -1008,7 +1319,7 @@ impl App {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::github::types::{
@@ -1037,6 +1348,8 @@ mod tests {
             reviews: vec![],
             updated_at: Utc::now(),
             roles: vec![Role::Author],
+            base_ref: Some("main".to_owned()),
+            head_ref: Some("feat/test".to_owned()),
         };
         match flag_variant {
             "conflict" => pr.mergeable = Mergeable::Conflicting,
@@ -1281,5 +1594,216 @@ mod tests {
         let result = crate::actions_util::copy_to_clipboard("https://github.com");
         // On a real desktop this should succeed; on headless it fails gracefully.
         let _ = result;
+    }
+
+    // ── Phase 5 tests ─────────────────────────────────────────────────────────
+
+    /// Pressing `p` on the dashboard must open the repo picker and set
+    /// `Focus::RepoPicker`.
+    #[test]
+    fn pressing_p_opens_repo_picker() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        app.handle_action(Action::OpenRepoPicker);
+
+        assert_eq!(app.focus, Focus::RepoPicker);
+    }
+
+    /// Opening the repo picker must reset input state.
+    #[test]
+    fn open_repo_picker_resets_state() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        // Pre-populate stale picker state.
+        app.repo_picker_input = "stale/input".to_owned();
+        app.repo_picker_mode = RepoPickerMode::Input;
+
+        app.handle_action(Action::OpenRepoPicker);
+
+        assert_eq!(app.focus, Focus::RepoPicker);
+        assert!(app.repo_picker_input.is_empty(), "input buffer should be cleared on open");
+        assert_eq!(app.repo_picker_mode, RepoPickerMode::List);
+    }
+
+    /// Closing the repo picker must restore the previous focus.
+    #[test]
+    fn close_repo_picker_restores_focus() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Dashboard;
+
+        app.handle_action(Action::OpenRepoPicker);
+        assert_eq!(app.focus, Focus::RepoPicker);
+
+        // Close via Esc (simulated by calling close_repo_picker directly).
+        app.close_repo_picker();
+        assert_eq!(app.focus, Focus::Dashboard);
+    }
+
+    /// Adding a valid slug via the picker must append it to `config.repos`.
+    #[test]
+    fn repo_picker_add_valid_slug() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::RepoPicker;
+        app.repo_picker_mode = RepoPickerMode::Input;
+        app.repo_picker_input = "rust-lang/rust".to_owned();
+
+        // Simulate Enter.
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_repo_picker_input_key(key);
+
+        assert!(app.config.repos.contains(&"rust-lang/rust".to_owned()));
+        assert!(app.repo_picker_input.is_empty(), "buffer must be cleared after successful add");
+    }
+
+    /// Adding a duplicate slug must not create a duplicate entry.
+    #[test]
+    fn repo_picker_add_dedup() {
+        let config = crate::config::Config {
+            repos: vec!["rust-lang/rust".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::RepoPicker;
+        app.repo_picker_mode = RepoPickerMode::Input;
+        app.repo_picker_input = "rust-lang/rust".to_owned();
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_repo_picker_input_key(key);
+
+        assert_eq!(
+            app.config.repos.iter().filter(|r| *r == "rust-lang/rust").count(),
+            1,
+            "duplicate repo must not be added"
+        );
+    }
+
+    /// An invalid slug must set a flash error and not append to `config.repos`.
+    #[test]
+    fn repo_picker_add_invalid_slug_sets_flash() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::RepoPicker;
+        app.repo_picker_mode = RepoPickerMode::Input;
+        app.repo_picker_input = "no-slash-here".to_owned();
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_repo_picker_input_key(key);
+
+        assert!(app.config.repos.is_empty(), "invalid slug must not be added");
+        assert!(app.flash.is_some(), "flash message must be set on validation failure");
+    }
+
+    /// Deleting a repo in List mode must remove it from `config.repos` and
+    /// close the corresponding tab.
+    #[test]
+    fn repo_picker_delete_removes_repo_and_tab() {
+        let config = crate::config::Config {
+            repos: vec!["owner/a".to_owned(), "owner/b".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::RepoPicker;
+        app.repo_picker_mode = RepoPickerMode::List;
+        app.repo_picker_list_cursor = 0; // select "owner/a"
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        app.handle_repo_picker_list_key(key);
+
+        assert!(!app.config.repos.contains(&"owner/a".to_owned()), "repo must be removed");
+        assert!(app.config.repos.contains(&"owner/b".to_owned()), "other repo must remain");
+        assert!(
+            app.tabs.tabs.iter().all(|t| t.repo != "owner/a"),
+            "tab for deleted repo must be closed"
+        );
+    }
+
+    /// Pressing `c` on the dashboard when the inbox has a PR with `head_ref`
+    /// must populate `app.confirm` and switch focus to `Focus::Confirm`.
+    #[test]
+    fn pressing_c_on_dashboard_with_pr_opens_confirm() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let inbox = Inbox {
+            viewer_login: "viewer".to_owned(),
+            prs: vec![make_pr("o/r", "clean", "viewer")],
+            issues: vec![],
+        };
+        app.on_inbox_loaded(inbox);
+
+        app.handle_action(Action::CheckoutBranch);
+
+        // Should be in Confirm focus if git repo is available; if not in a git
+        // repo, a flash is shown instead — both are valid.
+        match app.focus {
+            Focus::Confirm => {
+                assert!(app.confirm.is_some(), "confirm must be populated");
+                let confirm = app.confirm.as_ref().unwrap();
+                assert!(
+                    matches!(
+                        &confirm.pending_action,
+                        crate::ui::confirm::ConfirmPending::CheckoutBranch { branch, .. }
+                        if branch == "feat/test"
+                    ),
+                    "confirm must have the correct branch"
+                );
+            }
+            Focus::Dashboard => {
+                // Not in a git repo — flash should explain this.
+                assert!(
+                    app.flash.is_some(),
+                    "a flash must be set when not in a git repo or branch is unavailable"
+                );
+            }
+            other => panic!("unexpected focus {other:?}"),
+        }
+    }
+
+    /// Pressing `n`/`N` dismiss the confirm overlay with no action.
+    #[test]
+    fn confirm_n_cancels_and_restores_focus() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        app.confirm = Some(crate::ui::confirm::Confirm {
+            title: "Test".to_owned(),
+            prompt: "Are you sure?".to_owned(),
+            pending_action: crate::ui::confirm::ConfirmPending::CheckoutBranch {
+                repo: "o/r".to_owned(),
+                number: 1,
+                branch: "feat/x".to_owned(),
+            },
+        });
+        app.confirm_return_focus = Focus::Dashboard;
+        app.focus = Focus::Confirm;
+
+        app.handle_action(Action::ConfirmCheckout(false));
+
+        assert_eq!(app.focus, Focus::Dashboard, "focus must be restored after cancel");
+        assert!(app.confirm.is_none(), "confirm must be cleared after cancel");
     }
 }

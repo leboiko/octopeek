@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
-### Added
+### Added (Phase 5)
+
+- **Repo picker overlay** (`p` key): full-screen modal for adding and removing
+  watched repositories.  List mode (`j`/`k` navigate, `d`/`Backspace` delete,
+  `Enter` focuses that repo's tab, `Esc` closes).  Input mode (`a`/`i` enters,
+  `Enter` validates and commits, `Esc` returns to List mode).
+- **Branch checkout flow** (`c` key on dashboard or detail view): collects the
+  PR's `head_ref` from either the list-level inbox data or the open detail view,
+  shows a confirmation overlay (`[y] yes  [N] no/cancel`), then runs
+  `git checkout <branch>` in the current working directory.
+- `src/git.rs` — synchronous git helpers: `repo_cwd_is_git`,
+  `is_working_tree_clean`, `current_branch`, `checkout_branch`.
+- `src/ui/confirm.rs` — generic confirmation overlay with extensible
+  `ConfirmPending` enum (currently: `CheckoutBranch`; designed to accommodate
+  future actions such as "Confirm merge" or "Confirm close").
+- `headRefName` / `baseRefName` added to the inbox GraphQL `PullRequestFields`
+  fragment and the `PullRequest` domain type so branch checkout works from the
+  dashboard without a separate detail fetch.
+- `Focus::Confirm` and `RepoPickerMode` variants wired throughout the key
+  dispatch, status bar, and UI render loop.
+- 22 new unit tests (108 total, up from 86).
+
+### Added (Phase 1–4 — carried over)
 
 - Initial project scaffold.
 - Async event loop built on `tokio` + a blocking `crossterm` polling thread.

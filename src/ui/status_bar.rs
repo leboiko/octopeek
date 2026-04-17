@@ -47,6 +47,7 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::Detail => "DETAIL",
         Focus::RepoPicker => "REPOS",
         Focus::Help => "HELP",
+        Focus::Confirm => "CONFIRM",
     };
 
     // Left: fetch indicator or nothing.
@@ -62,12 +63,15 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
 
     // Right: compact keybinding hints for current focus.
     let hints = match app.focus {
-        Focus::Dashboard => "j/k nav  Enter detail  i toggle  r refresh  ? help  q quit",
-        Focus::Detail => {
-            "j/k scroll  Tab section  n/N unresolved  o browser  y copy  Esc back  q quit"
+        Focus::Dashboard => {
+            "j/k nav  Enter detail  i toggle  r refresh  c checkout  p repos  ? help  q quit"
         }
-        Focus::RepoPicker => "j/k nav  Enter select  Esc close  ? help  q quit",
+        Focus::Detail => {
+            "j/k scroll  Tab section  n/N unresolved  c checkout  o browser  y copy  Esc back"
+        }
+        Focus::RepoPicker => "j/k nav  a add  d delete  Enter select  Esc close",
         Focus::Help => "? / Esc / q close help",
+        Focus::Confirm => "[y] confirm  [N] / Esc cancel",
     };
 
     let line = Line::from(vec![

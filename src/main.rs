@@ -3,6 +3,7 @@ mod app;
 mod cast;
 mod config;
 mod event;
+mod git;
 mod github;
 mod state;
 mod theme;

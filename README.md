@@ -5,7 +5,7 @@
 <!-- Crates.io badge will be enabled once the first release is published. -->
 <!-- [![crates.io](https://img.shields.io/crates/v/octopeek.svg)](https://crates.io/crates/octopeek) -->
 
-> **Status:** Early development. Phase 1 (scaffolding) is on `main`. Phase 2 (GitHub data layer) is next.
+> **Status:** Phase 5 complete. All core interactive features are implemented. Phase 6 (release binaries) is next.
 
 **A fast, keyboard-driven TUI for your GitHub PR and issue inbox.**
 
@@ -21,7 +21,7 @@ at your fingertips when you're doing triage.
 
 ## Features
 
-### Phase 1 (current — scaffold)
+### Phase 1 — Scaffold
 - [x] Keyboard-driven event loop with panic-safe terminal teardown
 - [x] 8 built-in color themes (Default, Dracula, Solarized Dark/Light, Nord, Gruvbox Dark/Light, GitHub Light)
 - [x] Multi-repository tab bar with overflow indicators
@@ -30,23 +30,25 @@ at your fingertips when you're doing triage.
 - [x] Full keybinding help overlay (`?`)
 - [x] Dual MIT/Apache-2.0 license, CI, issue templates
 
-### Phase 2 (GitHub data layer — coming next)
-- [ ] GitHub GraphQL client (`GITHUB_TOKEN` / `gh auth login`)
-- [ ] PR/issue inbox: author, reviewer, assignee roles with `A`, `R`, `@` glyphs
-- [ ] Rate-limit tracking and exponential backoff
+### Phase 2 — GitHub data layer
+- [x] GitHub GraphQL client (`GITHUB_TOKEN` / `gh auth login`)
+- [x] PR/issue inbox: author, reviewer, assignee roles with `A`, `R`, `@` glyphs
 
-### Phase 3 (dashboard UI)
-- [ ] Scrollable PR/issue list with role-aware sorting
-- [ ] Per-repo toggle between PR and Issue view (`i`)
-- [ ] Repo picker overlay (`p`)
+### Phase 3 — Dashboard UI
+- [x] Scrollable PR/issue list with role-aware sorting and CI status column
+- [x] Per-repo toggle between PR and Issue view (`i`)
 
-### Phase 4 (detail view & actions)
-- [ ] Full PR/issue detail rendered from markdown (pulldown-cmark + syntect)
-- [ ] Open in browser (`o`), copy URL (`y`)
+### Phase 4 — Detail view & actions
+- [x] Full PR/issue detail rendered from markdown (pulldown-cmark + syntect)
+- [x] Open in browser (`o`), copy URL (`y`)
 
-### Phase 5 (checkout & advanced)
-- [ ] Branch checkout with confirmation overlay (`c`)
-- [ ] Mouse support
+### Phase 5 — Checkout & repo management
+- [x] Repo picker overlay (`p`): add/remove watched repos, persisted to config
+- [x] Branch checkout with confirmation overlay (`c`)
+
+### Phase 6 — Distribution (coming next)
+- [ ] Pre-built release binaries via GitHub Actions
+- [ ] Crates.io publication
 
 ## Install
 
@@ -109,7 +111,30 @@ auto_refresh_seconds = 120
 show_ascii_glyphs = false
 ```
 
+## Requirements
+
+- **`gh` CLI** (recommended) or a `GITHUB_TOKEN` environment variable — required for GitHub API access.
+- **`git`** on `$PATH` — required for the branch checkout feature (`c`).
+- A terminal with **256-color support** (most modern terminals qualify).
+
+## Quick demo
+
+No GitHub token?  Use the debug dump command to inspect raw data without launching the TUI:
+
+```sh
+# Print full inbox as JSON (useful for CI/scripts):
+octopeek debug dump
+
+# Print full PR detail:
+octopeek debug dump pr rust-lang/rust 12345
+
+# Print full issue detail:
+octopeek debug dump issue rust-lang/rust 12345
+```
+
 ## Keybindings
+
+### Global
 
 | Key | Action |
 |-----|--------|
@@ -117,21 +142,58 @@ show_ascii_glyphs = false
 | `?` | Toggle help overlay |
 | `Tab` / `Shift+Tab` | Next / previous tab |
 | `1`–`9` | Jump to tab N |
-| `j` / `Down` | Move cursor down (Phase 3) |
-| `k` / `Up` | Move cursor up (Phase 3) |
-| `g` | Jump to top of list (Phase 3) |
-| `G` | Jump to bottom of list (Phase 3) |
-| `Enter` | Open detail view (Phase 3) |
-| `Esc` | Return to dashboard (Phase 3) |
-| `i` | Toggle PR / Issue view (Phase 3) |
-| `r` | Refresh current tab (Phase 2) |
-| `R` | Refresh all tabs (Phase 2) |
-| `n` / `N` | Next / previous match (Phase 3) |
-| `f` | Filter / find (Phase 3) |
-| `o` | Open in browser (Phase 4) |
-| `y` | Copy URL to clipboard (Phase 4) |
-| `c` | Checkout PR branch (Phase 5) |
-| `p` | Open repo picker (Phase 3) |
+
+### Dashboard
+
+| Key | Action |
+|-----|--------|
+| `j` / `Down` | Move cursor down |
+| `k` / `Up` | Move cursor up |
+| `g` `g` | Jump to top of list |
+| `G` | Jump to bottom of list |
+| `Enter` | Open PR / issue detail |
+| `i` | Toggle PR / Issue view |
+| `r` | Refresh current tab |
+| `R` | Refresh all tabs |
+| `o` | Open selected item in browser |
+| `y` | Copy URL to clipboard |
+| `c` | Checkout PR head branch (with confirmation) |
+| `p` | Open repo picker overlay |
+
+### Detail view
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll down / up |
+| `d` / `u` | Page down / up (10 lines) |
+| `g` `g` | Scroll to top |
+| `G` | Scroll to bottom |
+| `Tab` / `Shift+Tab` | Jump to next / previous section |
+| `n` / `N` | Next / previous unresolved review thread |
+| `f` | Toggle files section expanded/collapsed |
+| `m` | Toggle comments section expanded/collapsed |
+| `o` | Open in browser |
+| `y` | Copy URL to clipboard |
+| `c` | Checkout PR head branch (with confirmation) |
+| `r` | Refresh detail |
+| `Esc` / `b` | Return to dashboard |
+
+### Repo picker overlay (`p`)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate list |
+| `Enter` | Focus selected repo's tab and close picker |
+| `d` / `Backspace` | Delete selected repo |
+| `a` / `i` | Enter input mode to add a repo |
+| `Esc` | Close picker (List mode) / return to list (Input mode) |
+
+### Confirmation overlay (`c`)
+
+| Key | Action |
+|-----|--------|
+| `y` | Confirm action |
+| `n` / `N` / `Esc` | Cancel |
 
 ## Contributing
 

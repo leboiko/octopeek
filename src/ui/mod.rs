@@ -1,5 +1,6 @@
 //! UI rendering: one `draw` function composes all panels for a single frame.
 
+pub mod confirm;
 pub mod dashboard;
 pub mod glyphs;
 pub mod help;
@@ -55,6 +56,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     let content_area = outer[1];
 
     // Route to the appropriate panel based on current focus.
+    // RepoPicker and Confirm focus states draw the dashboard beneath them;
+    // the overlay is rendered after the main content area.
     match app.focus {
         Focus::Detail => {
             // If PR detail is populated (or being fetched/errored), render it.
@@ -83,8 +86,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     // ── Status bar ────────────────────────────────────────────────────────────
     status_bar::draw(f, app, app.flash.as_ref(), outer[2]);
 
-    // ── Help overlay (drawn last so it floats above everything) ───────────────
+    // ── Overlays (drawn last so they float above everything) ──────────────────
     if app.show_help {
         help::draw(f, app);
+    }
+
+    if app.focus == Focus::RepoPicker {
+        repo_picker::draw(f, app);
+    }
+
+    if app.focus == Focus::Confirm && app.confirm.is_some() {
+        confirm::draw(f, app);
     }
 }

@@ -114,6 +114,8 @@ mod tests {
             reviews: vec![],
             updated_at: Utc::now(),
             roles: vec![Role::Author],
+            base_ref: Some("main".to_owned()),
+            head_ref: Some("feat/test".to_owned()),
         }
     }
 
