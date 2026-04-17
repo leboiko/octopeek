@@ -1,3 +1,4 @@
+mod actions_util;
 mod app;
 mod cast;
 mod config;
@@ -7,7 +8,7 @@ mod state;
 mod theme;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::App;
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -38,14 +39,32 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// What to dump in `debug dump`.
+///
+/// Without arguments, prints the inbox. With `pr OWNER/NAME NUMBER` or
+/// `issue OWNER/NAME NUMBER`, fetches and prints the respective detail object.
+#[derive(Debug, clap::Args)]
+struct DumpArgs {
+    /// Item kind to fetch detail for: `pr` or `issue`.
+    /// Omit entirely to dump the full inbox.
+    kind: Option<String>,
+    /// Repository slug in `owner/name` form (required when `kind` is set).
+    repo: Option<String>,
+    /// Item number within the repository (required when `kind` is set).
+    number: Option<u32>,
+}
+
 /// Debug subcommands for development and troubleshooting.
 #[derive(Subcommand, Debug)]
 enum DebugCommand {
-    /// Fetch the GitHub inbox and print raw JSON to stdout, then exit.
+    /// Fetch data and print raw JSON to stdout, then exit.
     ///
-    /// Useful for verifying token auth and GraphQL response shape without
-    /// launching the TUI.
-    Dump,
+    /// Without extra args: prints the inbox.
+    ///
+    /// `debug dump pr OWNER/NAME NUMBER` — prints `PrDetail` JSON.
+    ///
+    /// `debug dump issue OWNER/NAME NUMBER` — prints `IssueDetail` JSON.
+    Dump(DumpArgs),
 }
 
 /// Top-level developer-facing subcommands.
@@ -88,8 +107,8 @@ async fn main() -> Result<()> {
         .init();
 
     // Handle the `debug dump` subcommand before entering the TUI.
-    if let Some(Commands::Debug { cmd: DebugCommand::Dump }) = cli.command {
-        return run_debug_dump().await;
+    if let Some(Commands::Debug { cmd: DebugCommand::Dump(args) }) = cli.command {
+        return run_debug_dump(args).await;
     }
 
     // Load config and session from disk (graceful fallback to defaults).
@@ -112,14 +131,40 @@ async fn main() -> Result<()> {
     app.run(&mut terminal).await
 }
 
-/// Fetch the inbox and print it as pretty JSON, then exit without launching the TUI.
+/// Fetch and print data as pretty JSON, then exit without launching the TUI.
 ///
-/// Errors are written to stderr and the process exits with a non-zero status
-/// via the `?` propagation in `main`.
-async fn run_debug_dump() -> Result<()> {
+/// Dispatches to the inbox fetch, PR detail fetch, or issue detail fetch
+/// based on the positional `DumpArgs`.
+async fn run_debug_dump(args: DumpArgs) -> Result<()> {
     let token = github::auth::load_token()?;
     let client = github::Client::new(token)?;
-    let inbox = client.fetch_inbox().await?;
-    println!("{}", serde_json::to_string_pretty(&inbox)?);
+
+    match args.kind.as_deref() {
+        None => {
+            // No kind specified — dump the full inbox.
+            let inbox = client.fetch_inbox().await?;
+            println!("{}", serde_json::to_string_pretty(&inbox)?);
+        }
+        Some("pr") => {
+            let repo = args.repo.context("`repo` argument is required for `debug dump pr`")?;
+            let number =
+                args.number.context("`number` argument is required for `debug dump pr`")?;
+            let detail = client.fetch_pr_detail(&repo, number).await?;
+            println!("{}", serde_json::to_string_pretty(&detail)?);
+        }
+        Some("issue") => {
+            let repo = args.repo.context("`repo` argument is required for `debug dump issue`")?;
+            let number =
+                args.number.context("`number` argument is required for `debug dump issue`")?;
+            let detail = client.fetch_issue_detail(&repo, number).await?;
+            println!("{}", serde_json::to_string_pretty(&detail)?);
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "unknown dump kind `{other}`: expected `pr` or `issue`, or omit for inbox"
+            );
+        }
+    }
+
     Ok(())
 }

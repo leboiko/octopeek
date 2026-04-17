@@ -98,4 +98,24 @@ pub enum Action {
 
     /// A GitHub inbox fetch failed; the string is a human-readable description.
     FetchFailed(String),
+
+    // ── Detail fetching ───────────────────────────────────────────────────────
+    /// Request a background fetch of full PR detail.
+    ///
+    /// Fields: `(repo_slug, pr_number)`.
+    FetchPrDetail(String, u32),
+
+    /// Request a background fetch of full issue detail.
+    ///
+    /// Fields: `(repo_slug, issue_number)`.
+    FetchIssueDetail(String, u32),
+
+    /// Full PR detail was successfully fetched and is ready to display.
+    PrDetailLoaded(Box<github::detail::PrDetail>),
+
+    /// Full issue detail was successfully fetched and is ready to display.
+    IssueDetailLoaded(Box<github::detail::IssueDetail>),
+
+    /// A detail fetch failed; the string is a human-readable description.
+    DetailFetchFailed(String),
 }

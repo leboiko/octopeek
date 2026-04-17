@@ -63,7 +63,9 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
     // Right: compact keybinding hints for current focus.
     let hints = match app.focus {
         Focus::Dashboard => "j/k nav  Enter detail  i toggle  r refresh  ? help  q quit",
-        Focus::Detail => "Esc back  o open  y copy  c checkout  ? help  q quit",
+        Focus::Detail => {
+            "j/k scroll  Tab section  n/N unresolved  o browser  y copy  Esc back  q quit"
+        }
         Focus::RepoPicker => "j/k nav  Enter select  Esc close  ? help  q quit",
         Focus::Help => "? / Esc / q close help",
     };

@@ -3,13 +3,16 @@
 pub mod dashboard;
 pub mod glyphs;
 pub mod help;
+pub mod issue_detail;
+pub mod markdown;
 pub mod pr_detail;
 pub mod repo_picker;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod tabs;
+pub mod util;
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
@@ -50,11 +53,35 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // ── Main content area ─────────────────────────────────────────────────────
     let content_area = outer[1];
-    dashboard::draw(f, app, content_area);
+
+    // Route to the appropriate panel based on current focus.
+    match app.focus {
+        Focus::Detail => {
+            // If PR detail is populated (or being fetched/errored), render it.
+            // If issue detail is populated instead, render the issue detail.
+            // Fall back to dashboard if neither is populated and no fetch is active.
+            if app.pr_detail.is_some()
+                || (app.detail_fetching && app.issue_detail.is_none())
+                || (app.detail_error.is_some() && app.issue_detail.is_none())
+            {
+                pr_detail::draw(f, app, content_area);
+            } else if app.issue_detail.is_some()
+                || app.detail_fetching
+                || app.detail_error.is_some()
+            {
+                issue_detail::draw(f, app, content_area);
+            } else {
+                // Defensive fallback: both are None and no active fetch.
+                dashboard::draw(f, app, content_area);
+            }
+        }
+        _ => {
+            dashboard::draw(f, app, content_area);
+        }
+    }
 
     // ── Status bar ────────────────────────────────────────────────────────────
-    // Phase 2+: wire a real FlashMessage through App state.
-    status_bar::draw(f, app, None, outer[2]);
+    status_bar::draw(f, app, app.flash.as_ref(), outer[2]);
 
     // ── Help overlay (drawn last so it floats above everything) ───────────────
     if app.show_help {

@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod detail;
 pub mod flags;
 pub mod query;
 pub mod types;
