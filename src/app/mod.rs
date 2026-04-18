@@ -709,15 +709,12 @@ impl App {
 
     /// Translate a raw key event into an [`Action`] based on current focus.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        // Global bindings that work in any focus state.
-        // Tab / Shift+Tab in Detail focus are intercepted by `handle_key_detail`
-        // to cycle sidebar sections — they must NOT reach the global tab switcher.
-        //
-        // `[` and `]` are reserved here as the universal prev/next-repo-tab
-        // shortcut because the digit keys (1–5) and Tab are both consumed by
-        // the detail view's sidebar sections. Without these, a user reading
-        // a PR has no keyboard path back to a different repo tab short of
-        // pressing Esc → dashboard → digit.
+        // Global bindings that work in any focus state. Repo-tab switching
+        // takes priority even inside the detail view: switching from detail
+        // pops back to the dashboard so the new tab's content is visible
+        // (see `leave_detail_after_tab_switch`). The section-picker keys in
+        // the detail view are the SHIFT-variants (`!@#$%`, `F`) precisely so
+        // unshifted digits / Tab remain available here for tab switching.
         let typing_in_input =
             self.focus == Focus::RepoPicker && self.repo_picker_mode == RepoPickerMode::Input;
         if key.modifiers == KeyModifiers::NONE {
@@ -730,7 +727,7 @@ impl App {
                     self.handle_action(Action::OpenHelp);
                     return;
                 }
-                KeyCode::Tab if self.focus != Focus::Detail => {
+                KeyCode::Tab => {
                     self.handle_action(Action::NextTab);
                     return;
                 }
@@ -746,22 +743,17 @@ impl App {
             }
         }
 
-        if key.modifiers == KeyModifiers::SHIFT
-            && key.code == KeyCode::BackTab
-            && self.focus != Focus::Detail
-        {
+        if key.modifiers == KeyModifiers::SHIFT && key.code == KeyCode::BackTab {
             self.handle_action(Action::PrevTab);
             return;
         }
 
-        // Digit keys 1–9 jump to the corresponding tab (1-based).
-        //
-        // Suppressed when:
-        // - The user is typing into a text input (repo picker Add field).
-        // - The detail view has focus: keys 1–5 select sections there.
-        let in_detail = self.focus == Focus::Detail;
+        // Digit keys 1–9 jump to the corresponding repo tab (1-based).
+        // Suppressed only when the user is typing into the repo-picker Add
+        // field. In detail focus the digits still dispatch SwitchTab — the
+        // section-picker uses the SHIFT-variants (`!@#$%`) to avoid the
+        // clash that bit us in Phase 1.
         if !typing_in_input
-            && !in_detail
             && key.modifiers == KeyModifiers::NONE
             && let KeyCode::Char(ch) = key.code
             && let Some(digit) = ch.to_digit(10)
@@ -950,15 +942,11 @@ impl App {
             return;
         }
 
-        // Tab/Shift+Tab cycle the sidebar section selection.
-        // Consumed here — NOT forwarded to the global tab-switch handler.
-        if key.modifiers == KeyModifiers::SHIFT && key.code == KeyCode::BackTab {
-            self.detail_pending_g = false;
-            self.cycle_detail_section(-1);
-            return;
-        }
-
-        if key.modifiers != KeyModifiers::NONE {
+        // Allow SHIFT so the section-picker keys (`F`, and `!@#$%` on US
+        // keyboards / SHIFT+digit on those that send it unshifted) reach
+        // the match arms. Reject Ctrl / Alt / Super as before.
+        let blocked_mods = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+        if key.modifiers.intersects(blocked_mods) {
             self.detail_pending_g = false;
             return;
         }
@@ -1011,20 +999,43 @@ impl App {
                 let s = self.pr_detail_selected_section;
                 *self.scroll_mut(s) = u16::MAX;
             }
-            KeyCode::Tab => {
+            // Section picker: `!@#$%` for Description/Checks/Reviews/Files/
+            // Comments (SHIFT+1..5 on US keyboards). Terminals that deliver
+            // SHIFT+digit without translating to punctuation are covered by
+            // the second arm below. `F` is an additional shortcut to the
+            // Files section that matches typical muscle memory.
+            //
+            // `n` / `N` are reserved for Phase 2 unresolved-thread cycling
+            // and fall through to the wildcard no-op at the bottom.
+            KeyCode::Char(ch @ ('!' | '@' | '#' | '$' | '%')) => {
                 self.detail_pending_g = false;
-                self.cycle_detail_section(1);
+                let idx = match ch {
+                    '!' => 0,
+                    '@' => 1,
+                    '#' => 2,
+                    '$' => 3,
+                    '%' => 4,
+                    _ => unreachable!(),
+                };
+                if let Some(&sec) = DetailSection::ALL.get(idx) {
+                    self.pr_detail_selected_section = sec;
+                    self.copy_mode.h_scroll = 0;
+                }
             }
-            // Number keys 1–5 select Description/Checks/Reviews/Files/Comments.
-            // `n` / `N` are reserved for Phase 2 unresolved-thread cycling and
-            // fall through to the wildcard no-op below.
-            KeyCode::Char(ch @ '1'..='5') => {
+            KeyCode::Char(ch @ '1'..='5')
+                if key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
                 self.detail_pending_g = false;
                 let idx = (ch as usize) - ('1' as usize);
                 if let Some(&sec) = DetailSection::ALL.get(idx) {
                     self.pr_detail_selected_section = sec;
                     self.copy_mode.h_scroll = 0;
                 }
+            }
+            KeyCode::Char('F') => {
+                self.detail_pending_g = false;
+                self.pr_detail_selected_section = DetailSection::Files;
+                self.copy_mode.h_scroll = 0;
             }
             KeyCode::Char('f') => {
                 self.detail_pending_g = false;
@@ -1122,22 +1133,6 @@ impl App {
                 self.detail_pending_g = false;
             }
         }
-    }
-
-    /// Cycle the detail sidebar selection by `delta` (+1 forward, −1 backward),
-    /// wrapping at the ends.
-    fn cycle_detail_section(&mut self, delta: i32) {
-        let all = DetailSection::ALL;
-        let current_idx =
-            all.iter().position(|&s| s == self.pr_detail_selected_section).unwrap_or(0);
-        // ALL has exactly 5 elements — fits in i32 without truncation.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        let len = all.len() as i32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        let next_idx = ((current_idx as i32 + delta).rem_euclid(len)) as usize;
-        self.pr_detail_selected_section = all[next_idx];
-        // Reset horizontal scroll when switching sections.
-        self.copy_mode.h_scroll = 0;
     }
 
     /// Key handler active only while `self.copy_mode.active` is `true`.
@@ -2639,29 +2634,11 @@ mod tests {
         assert!(app.pr_detail.is_none(), "stale detail must be cleared");
     }
 
-    /// Pressing a digit in the detail view selects the corresponding section
-    /// (rather than switching tabs). Digit keys 1–5 are captured by the detail
-    /// section switcher; they do NOT return to the dashboard.
-    #[test]
-    fn digit_key_from_detail_selects_section() {
-        let config = crate::config::Config {
-            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
-            ..Default::default()
-        };
-        let session = crate::state::AppSession::default();
-        let mut app = App::new(config, session);
-        app.focus = Focus::Detail;
-
-        // '3' maps to section index 2 → Reviews.
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
-
-        assert_eq!(app.focus, Focus::Detail, "digit key in detail must NOT leave detail");
-        assert_eq!(
-            app.pr_detail_selected_section,
-            DetailSection::Reviews,
-            "digit '3' must select Reviews section"
-        );
-    }
+    // NOTE: the older contract "digit in detail selects section" was
+    // reversed once the SHIFT-variant picker landed — digits now switch
+    // repo tabs again, and sections move to `!@#$%` / SHIFT+digit / F.
+    // See `digit_in_detail_switches_repo_tab_not_section` below for the
+    // current expectation.
 
     /// Typing a digit in the repo-picker input field must land in the input
     /// buffer, not trigger the global 1–9 tab-switch handler. Without this
@@ -3509,55 +3486,84 @@ mod tests {
 
     // ── Phase 6: sidebar sections ─────────────────────────────────────────────
 
-    /// Pressing digit '3' in detail focus selects the Reviews section.
+    /// The SHIFT-digit variants (`!@#$%`) select sections in the detail view.
+    /// Unshifted `1..9` fall through to the global tab switcher instead.
     #[test]
-    fn number_key_selects_section() {
-        let config = crate::config::Config::default();
+    fn shift_digit_variants_select_sections() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
         app.focus = Focus::Detail;
 
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
-
-        assert_eq!(
-            app.pr_detail_selected_section,
-            DetailSection::Reviews,
-            "digit '3' must select Reviews (index 2)"
-        );
+        for (ch, expected) in [
+            ('!', DetailSection::Description),
+            ('@', DetailSection::Checks),
+            ('#', DetailSection::Reviews),
+            ('$', DetailSection::Files),
+            ('%', DetailSection::Comments),
+        ] {
+            app.focus = Focus::Detail;
+            app.pr_detail_selected_section = DetailSection::Description;
+            app.handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::NONE,
+            ));
+            assert_eq!(
+                app.pr_detail_selected_section, expected,
+                "{ch:?} must select {expected:?}"
+            );
+        }
     }
 
-    /// Pressing Tab from Description cycles forward through all 5 sections.
+    /// Terminals that deliver SHIFT+digit without translating to punctuation
+    /// must still hit the section picker via the `Char('1'..='5')` + SHIFT arm.
     #[test]
-    fn tab_cycles_sections() {
+    fn shift_plus_digit_also_selects_section() {
         let config = crate::config::Config::default();
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
         app.focus = Focus::Detail;
-        app.pr_detail_selected_section = DetailSection::Description;
 
-        // Tab → Checks
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.pr_detail_selected_section, DetailSection::Checks);
-
-        // Tab → Reviews
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('3'), KeyModifiers::SHIFT));
         assert_eq!(app.pr_detail_selected_section, DetailSection::Reviews);
+    }
 
-        // Tab → Files
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    /// `F` (SHIFT+f) jumps straight to the Files section.
+    #[test]
+    fn shift_f_selects_files_section() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE));
         assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+    }
 
-        // Tab → Comments
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.pr_detail_selected_section, DetailSection::Comments);
+    /// Unshifted digits in the detail view switch repo tabs (and pop back to
+    /// the dashboard); they do NOT select sections. This is the inverse of
+    /// the Phase 1 behaviour — SHIFT-variants took over section picking so
+    /// digits could return to their global tab-switch role.
+    #[test]
+    fn digit_in_detail_switches_repo_tab_not_section() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail_selected_section = DetailSection::Reviews;
 
-        // Tab wraps back to Description
-        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(
-            app.pr_detail_selected_section,
-            DetailSection::Description,
-            "Tab from last section must wrap back to Description"
-        );
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+
+        assert_eq!(app.focus, Focus::Dashboard, "digit in detail pops to dashboard");
+        assert_eq!(app.tabs.active_index(), Some(1));
+        // The section selection is cleared by back_to_dashboard so checking
+        // it here would be tautological; what matters is the tab switched.
     }
 
     /// `current_detail_lines` returns only the lines for the selected section.
