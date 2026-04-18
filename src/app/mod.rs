@@ -83,6 +83,32 @@ pub enum DetailKind {
     Issue,
 }
 
+/// Identifies the PR or issue the user had open in a given repo tab.
+///
+/// Persisted in [`App::per_tab_state`] so that switching away from a tab and
+/// returning to it restores the detail view the user was reading rather than
+/// dumping them back on the dashboard list.
+#[derive(Debug, Clone)]
+pub struct DetailRef {
+    pub repo: String,
+    pub number: u32,
+    pub kind: DetailKind,
+}
+
+/// State snapshot for a single repo tab, captured when the user switches away
+/// from that tab and replayed when they come back.
+///
+/// We intentionally do NOT cache the fetched `PrDetail` / `IssueDetail`
+/// payload here — only the reference. Restoring re-dispatches a fetch so
+/// data stays fresh, which is usually what users want (check runs move,
+/// reviews arrive, comments get posted). The restore cost is one GraphQL
+/// round-trip, shown as the existing "Fetching pull request…" spinner.
+#[derive(Debug, Clone, Default)]
+pub struct PerTabState {
+    /// PR or issue the user had open. `None` when they were on the list view.
+    pub detail_ref: Option<DetailRef>,
+}
+
 /// Top-level application state.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -120,6 +146,10 @@ pub struct App {
     pub fetching: bool,
     /// Per-repo selected list index. Key = repo slug, value = 0-based row index.
     pub selection: HashMap<String, usize>,
+    /// Per-repo-tab state snapshot used to restore the user's view when they
+    /// switch tabs and come back. Key: repo slug. See [`PerTabState`] for the
+    /// shape and the restore policy (re-fetch, don't cache the payload).
+    pub per_tab_state: HashMap<String, PerTabState>,
     /// When the inbox was last successfully loaded (used to display "last synced" text).
     pub inbox_loaded_at: Option<DateTime<Utc>>,
     /// `true` when the user pressed `g` and is waiting for a second `g` (vim-style gg).
@@ -252,6 +282,7 @@ impl App {
             last_fetch_error,
             fetching: false,
             selection: HashMap::new(),
+            per_tab_state: HashMap::new(),
             inbox_loaded_at: None,
             pending_g: false,
             flash: None,
@@ -584,16 +615,19 @@ impl App {
                 self.handle_mouse(m);
             }
             Action::NextTab => {
+                self.save_current_tab_state();
                 self.tabs.next();
-                self.leave_detail_after_tab_switch();
+                self.restore_active_tab_state();
             }
             Action::PrevTab => {
+                self.save_current_tab_state();
                 self.tabs.prev();
-                self.leave_detail_after_tab_switch();
+                self.restore_active_tab_state();
             }
             Action::SwitchTab(idx) => {
+                self.save_current_tab_state();
                 self.tabs.set_active_by_index(idx);
-                self.leave_detail_after_tab_switch();
+                self.restore_active_tab_state();
             }
             Action::OpenHelp => {
                 self.show_help = !self.show_help;
@@ -1650,18 +1684,69 @@ impl App {
         }
     }
 
-    /// If the user is currently in the detail view, pop back to the dashboard
-    /// so tab switches become visible.
+    /// Record what the user is currently looking at in the active tab, so
+    /// switching away and coming back can land them on the same detail view
+    /// they left.
     ///
-    /// Without this, pressing `1`/`2`/Tab/Shift-Tab inside a PR or issue
-    /// detail just flips `tabs.active_tab_index` while the renderer keeps
-    /// showing the already-loaded `pr_detail` / `issue_detail` — the tab
-    /// bar updates, but the content doesn't. From the user's perspective
-    /// nothing changes, which is what the "tabs aren't working from detail"
-    /// bug report was.
-    fn leave_detail_after_tab_switch(&mut self) {
-        if self.focus == Focus::Detail {
-            self.back_to_dashboard();
+    /// Only the `(repo, number, kind)` reference is stored — the actual
+    /// payload is dropped and re-fetched on restore. That costs one GraphQL
+    /// round-trip (surfacing the existing "Fetching pull request…" spinner)
+    /// but keeps the data fresh: check runs move, reviews arrive, comments
+    /// land, all between a tab round-trip.
+    fn save_current_tab_state(&mut self) {
+        let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
+            return;
+        };
+
+        let detail_ref = if self.focus == Focus::Detail {
+            if let Some(d) = &self.pr_detail {
+                Some(DetailRef { repo: d.repo.clone(), number: d.number, kind: DetailKind::Pr })
+            } else {
+                self.issue_detail.as_ref().map(|d| DetailRef {
+                    repo: d.repo.clone(),
+                    number: d.number,
+                    kind: DetailKind::Issue,
+                })
+            }
+        } else {
+            None
+        };
+
+        self.per_tab_state.insert(repo, PerTabState { detail_ref });
+    }
+
+    /// Restore the saved per-tab state for the active tab, clearing stale
+    /// detail payload and dispatching a fresh fetch when a detail ref is
+    /// present.
+    ///
+    /// Called right after `tabs.next()` / `tabs.prev()` / `set_active_by_index`
+    /// in the tab-switch action handlers. If no saved state exists for the
+    /// new tab (first visit), falls back to the dashboard list view.
+    fn restore_active_tab_state(&mut self) {
+        // Always clear whatever detail was loaded for the previous tab —
+        // the renderer should never show that tab's data under a different
+        // repo's header.
+        self.pr_detail = None;
+        self.issue_detail = None;
+        self.detail_error = None;
+        self.detail_fetching = false;
+
+        let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
+            self.focus = Focus::Dashboard;
+            return;
+        };
+
+        let saved = self.per_tab_state.get(&repo).cloned().unwrap_or_default();
+        if let Some(detail_ref) = saved.detail_ref {
+            self.focus = Focus::Detail;
+            if let Some(tx) = self.action_tx.clone() {
+                // `spawn_detail_fetch` flips `detail_fetching` on itself; we
+                // don't set it manually (see the note in
+                // `open_detail_for_selection`).
+                self.spawn_detail_fetch(detail_ref.kind, detail_ref.repo, detail_ref.number, tx);
+            }
+        } else {
+            self.focus = Focus::Dashboard;
         }
     }
 
@@ -1808,7 +1893,14 @@ impl App {
     }
 
     /// Return to the dashboard, clearing all detail state.
+    ///
+    /// Also clears the per-tab detail ref for the active tab — an explicit
+    /// Esc / `b` means "I'm done with that PR", so a later tab round-trip
+    /// should land on the dashboard list, not auto-reopen what we just left.
     fn back_to_dashboard(&mut self) {
+        if let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) {
+            self.per_tab_state.insert(repo, PerTabState::default());
+        }
         self.focus = Focus::Dashboard;
         self.pr_detail = None;
         self.issue_detail = None;
@@ -2612,14 +2704,12 @@ mod tests {
         assert_eq!(app.tabs.active_index(), Some(0), "[ moves to prev tab");
     }
 
-    /// Switching tabs while in the detail view must bring the user back to
-    /// the dashboard so the new tab's content is actually visible.
-    ///
-    /// Without this, pressing `1`/`2`/Tab from inside an open PR detail only
-    /// flipped the active tab index; the renderer kept showing the same
-    /// loaded detail, so from the user's perspective "tabs did nothing".
+    /// Switching tabs from a detail focus with no loaded detail falls back
+    /// to the dashboard. This is a degenerate case in production (the user
+    /// can't reach `Focus::Detail` without a fetch starting) but pins the
+    /// save-no-ref → restore-no-ref path.
     #[test]
-    fn tab_switch_from_detail_returns_to_dashboard() {
+    fn tab_switch_from_detail_with_no_loaded_detail_falls_back_to_dashboard() {
         let config = crate::config::Config {
             repos: vec!["a/one".to_owned(), "b/two".to_owned()],
             ..Default::default()
@@ -2630,8 +2720,73 @@ mod tests {
 
         app.handle_action(Action::SwitchTab(1));
 
-        assert_eq!(app.focus, Focus::Dashboard, "detail must pop on tab switch");
-        assert!(app.pr_detail.is_none(), "stale detail must be cleared");
+        assert_eq!(app.focus, Focus::Dashboard);
+        assert!(app.pr_detail.is_none());
+    }
+
+    /// Switching away from a tab while viewing a PR, then returning, must
+    /// restore the detail focus — the user should land back on the PR they
+    /// were reading, not on the dashboard list.
+    #[test]
+    fn tab_round_trip_preserves_detail_focus_for_pr() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // Simulate the user having a PR open on tab 0 (repo `a/one`).
+        let pr = fixture_pr_detail(0, 0, 0, 0);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(pr);
+
+        // Switch to tab 1 → saves tab 0's detail ref, clears payload.
+        app.handle_action(Action::SwitchTab(1));
+        assert_eq!(app.focus, Focus::Dashboard, "tab 1 has no saved detail");
+        assert!(app.pr_detail.is_none(), "detail payload must clear between tabs");
+
+        // Switch back to tab 0 → restore must re-enter Detail focus and
+        // dispatch a fresh fetch (no client in tests, so `pr_detail` stays
+        // None — the important thing is the focus and that we tried).
+        app.handle_action(Action::SwitchTab(0));
+        assert_eq!(
+            app.focus,
+            Focus::Detail,
+            "round-tripping back to a tab with a saved detail ref must restore Detail focus"
+        );
+    }
+
+    /// Explicitly exiting a detail via Esc must also forget the saved
+    /// per-tab state, so a later tab round-trip lands on the list (not
+    /// auto-reopens the PR the user just left).
+    #[test]
+    fn back_to_dashboard_clears_saved_detail_ref() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 0, 0));
+
+        // User presses Esc / `b` — the contract says "forget this view".
+        app.back_to_dashboard();
+
+        // Now switch away and back; should land on dashboard, not re-open.
+        app.handle_action(Action::SwitchTab(1));
+        app.handle_action(Action::SwitchTab(0));
+
+        assert_eq!(
+            app.focus,
+            Focus::Dashboard,
+            "after Esc the saved ref is gone so round-trip lands on list"
+        );
     }
 
     // NOTE: the older contract "digit in detail selects section" was
