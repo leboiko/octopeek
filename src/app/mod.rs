@@ -351,8 +351,18 @@ impl App {
         // with `is_panic() == true`, so we can always emit a terminal action —
         // neither `InboxLoaded` nor `FetchFailed` must ever be skipped, or the
         // `fetching` guard would pin itself on `true` forever.
+        // Clone what we need before moving into the async block.
+        let repos = self.config.repos.clone();
+        let show_all = self.config.show_all_prs;
+
         tokio::spawn(async move {
-            let inner = tokio::spawn(async move { client.fetch_inbox().await });
+            let inner = tokio::spawn(async move {
+                if show_all {
+                    client.fetch_inbox_all(&repos).await
+                } else {
+                    client.fetch_inbox().await
+                }
+            });
             let action = match inner.await {
                 Ok(Ok(inbox)) => Action::InboxLoaded(Box::new(inbox)),
                 Ok(Err(e)) => Action::FetchFailed(e.to_string()),
@@ -556,6 +566,20 @@ impl App {
                 }
             }
             Action::Refresh | Action::RefreshAll => {
+                if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_fetch(tx);
+                }
+            }
+            Action::ToggleShowAll => {
+                self.config.show_all_prs = !self.config.show_all_prs;
+                self.config.save();
+                let msg = if self.config.show_all_prs {
+                    "Showing all open PRs/issues"
+                } else {
+                    "Showing only yours"
+                };
+                self.show_flash(msg, std::time::Duration::from_secs(3));
+                // Kick a fresh fetch with the new mode.
                 if let Some(tx) = self.action_tx.clone() {
                     self.spawn_fetch(tx);
                 }
@@ -1871,6 +1895,10 @@ impl App {
                 self.pending_g = false;
                 self.handle_action(Action::OpenRepoPicker);
             }
+            KeyCode::Char('A') => {
+                self.pending_g = false;
+                self.handle_action(Action::ToggleShowAll);
+            }
             KeyCode::Char('f') => {
                 self.pending_g = false;
                 info!("Phase 4: not yet implemented — filter");
@@ -3058,6 +3086,41 @@ mod tests {
             assert_eq!(app.focus, Focus::FirstRun, "wizard must stay open on empty Enter");
             assert!(app.flash.is_some(), "a hint flash must be shown");
             assert!(app.config.repos.is_empty(), "config must not be mutated");
+        });
+    }
+
+    // ── ToggleShowAll tests ───────────────────────────────────────────────────
+
+    /// Dispatching `Action::ToggleShowAll` must flip `config.show_all_prs`,
+    /// persist the change to disk (via `Config::save`), and show a flash message.
+    ///
+    /// Uses `with_config_dir_override` so the save call touches a temp dir and
+    /// never writes to the developer's real config directory.
+    #[test]
+    fn toggle_show_all_flips_flag_and_persists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(dir.path(), || {
+            let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            // Initial state: show_all_prs is false.
+            assert!(!app.config.show_all_prs);
+
+            // Toggle on.
+            app.handle_action(Action::ToggleShowAll);
+            assert!(app.config.show_all_prs, "flag must be true after first toggle");
+            assert!(app.flash.is_some(), "a flash message must be shown");
+
+            // The config must have been persisted.
+            let saved = crate::config::Config::load();
+            assert!(saved.show_all_prs, "persisted config must reflect the toggle");
+
+            // Toggle off.
+            app.handle_action(Action::ToggleShowAll);
+            assert!(!app.config.show_all_prs, "flag must be false after second toggle");
+            let saved2 = crate::config::Config::load();
+            assert!(!saved2.show_all_prs, "persisted config must reflect the second toggle");
         });
     }
 }

@@ -11,7 +11,7 @@ use super::detail::{
     ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailResponse,
     raw_issue_to_detail, raw_pr_to_detail,
 };
-use super::query::{GraphQlResponse, INBOX_QUERY};
+use super::query::{GraphQlResponse, GraphQlResponseAll, INBOX_QUERY, build_show_all_query};
 use super::types::Inbox;
 
 /// Version string embedded in the `User-Agent` header.
@@ -123,6 +123,60 @@ impl Client {
         let _ = self.viewer_login.set(viewer_login.clone());
 
         Ok(super::query::to_inbox(viewer_login, data))
+    }
+
+    /// Fetch every open PR and issue across the given list of repositories.
+    ///
+    /// Unlike [`Self::fetch_inbox`], this query is not scoped to `@me`; it
+    /// returns all open items for each tracked repo so the user gets a
+    /// full-team view. Roles on the returned [`PullRequest`] values are derived
+    /// from author / review-request fields — see [`super::query::to_inbox_all`]
+    /// for the exact derivation logic.
+    ///
+    /// # Arguments
+    ///
+    /// * `repos` - Slice of repo slugs in `owner/name` form. An empty slice
+    ///   produces a valid (but empty) result.
+    ///
+    /// # Errors
+    ///
+    /// Same error conditions as [`Self::fetch_inbox`].
+    pub async fn fetch_inbox_all(&self, repos: &[String]) -> Result<Inbox> {
+        let query = build_show_all_query(repos);
+
+        let response = self
+            .http
+            .post(GRAPHQL_URL)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&NoVarBody { query: &query })
+            .send()
+            .await
+            .context("network error reaching GitHub GraphQL API")?;
+
+        let status = response.status();
+        check_http_status(status, response.headers())?;
+
+        let gql: GraphQlResponseAll =
+            response.json().await.context("failed to parse GitHub GraphQL response")?;
+
+        debug!("GraphQL show-all response received (status {status})");
+
+        if let Some(errors) = gql.errors
+            && !errors.is_empty()
+        {
+            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
+            anyhow::bail!("GitHub GraphQL errors: {}", messages.join("; "));
+        }
+
+        let data = gql.data.context("GitHub GraphQL response had no `data` field")?;
+
+        let viewer_login = data.viewer.login.clone();
+        // Cache the viewer login (best-effort; ignored if already set).
+        let _ = self.viewer_login.set(viewer_login.clone());
+
+        Ok(super::query::to_inbox_all(viewer_login, data))
     }
 
     /// Fetch the full detail for a single pull request.

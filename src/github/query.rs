@@ -127,12 +127,144 @@ fragment IssueFields on Issue {
 }
 "#;
 
+// ── Show-all query builder ────────────────────────────────────────────────────
+
+/// Build a GraphQL query document that fetches every open PR and issue across
+/// the given list of repositories.
+///
+/// The returned document has two top-level search fields (`allPrs` and
+/// `allIssues`) whose queries are constructed by joining each repo as a
+/// `repo:owner/name` qualifier. Both reuse the shared `PullRequestFields` and
+/// `IssueFields` fragments from [`INBOX_QUERY`] so the response mapping
+/// can share [`raw_pr_to_domain`] and [`raw_issue_to_domain`].
+///
+/// # Arguments
+///
+/// * `repos` - Slice of repo slugs in `owner/name` form. An empty slice
+///   produces a valid query but returns no results.
+///
+/// # Returns
+///
+/// A complete GraphQL document string.
+pub fn build_show_all_query(repos: &[String]) -> String {
+    // Build the `repo:owner/name` qualifier list once, shared by both searches.
+    let repo_qualifiers: String =
+        repos.iter().map(|r| format!("repo:{r}")).collect::<Vec<_>>().join(" ");
+
+    // Include the same fragment definitions as INBOX_QUERY so the server-side
+    // type resolution works identically.
+    format!(
+        r#"
+query ShowAllQuery {{
+  allPrs: search(query: "{repo_qualifiers} is:open is:pr", type: ISSUE, first: 50) {{
+    nodes {{
+      ... on PullRequest {{
+        ...PullRequestFields
+      }}
+    }}
+  }}
+  allIssues: search(query: "{repo_qualifiers} is:open is:issue", type: ISSUE, first: 50) {{
+    nodes {{
+      ... on Issue {{
+        ...IssueFields
+      }}
+    }}
+  }}
+  viewer {{ login }}
+}}
+
+fragment PullRequestFields on PullRequest {{
+  number
+  title
+  url
+  isDraft
+  mergeable
+  mergeStateStatus
+  reviewDecision
+  repository {{ nameWithOwner }}
+  author {{ login }}
+  updatedAt
+  baseRefName
+  headRefName
+  commits(last: 1) {{
+    totalCount
+    nodes {{
+      commit {{
+        statusCheckRollup {{
+          state
+          contexts(first: 20) {{
+            nodes {{
+              ... on CheckRun {{
+                name
+                status
+                conclusion
+                checkSuite {{ workflowRun {{ workflow {{ name }} }} }}
+              }}
+              ... on StatusContext {{
+                context
+                state
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+  comments {{ totalCount }}
+  reviewRequests(first: 10) {{
+    nodes {{
+      requestedReviewer {{
+        ... on User {{ login }}
+        ... on Team {{ name }}
+      }}
+    }}
+  }}
+  reviewThreads(first: 30) {{
+    nodes {{
+      isResolved
+      isOutdated
+    }}
+  }}
+  latestReviews(first: 10) {{
+    nodes {{
+      author {{ login }}
+      state
+    }}
+  }}
+}}
+
+fragment IssueFields on Issue {{
+  number
+  title
+  url
+  repository {{ nameWithOwner }}
+  author {{ login }}
+  updatedAt
+  comments {{ totalCount }}
+  labels(first: 20) {{
+    nodes {{
+      name
+      color
+    }}
+  }}
+}}
+"#
+    )
+}
+
 // ── Raw GraphQL response types ────────────────────────────────────────────────
 
-/// Top-level GraphQL response envelope.
+/// Top-level GraphQL response envelope for the standard inbox query.
 #[derive(Debug, Deserialize)]
 pub struct GraphQlResponse {
     pub data: Option<ResponseData>,
+    pub errors: Option<Vec<GraphQlError>>,
+}
+
+/// Top-level GraphQL response envelope for the show-all query.
+#[derive(Debug, Deserialize)]
+pub struct GraphQlResponseAll {
+    pub data: Option<ResponseDataAll>,
     pub errors: Option<Vec<GraphQlError>>,
 }
 
@@ -152,6 +284,24 @@ pub struct ResponseData {
     pub assigned_prs: SearchResult,
     /// `search(...)` for issues assigned to viewer.
     pub assigned_issues: SearchResult,
+}
+
+/// Top-level response for the show-all query built by [`build_show_all_query`].
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseDataAll {
+    /// All open PRs across the tracked repos.
+    pub all_prs: SearchResult,
+    /// All open issues across the tracked repos.
+    pub all_issues: SearchResult,
+    /// Viewer login for role derivation.
+    pub viewer: ViewerLogin,
+}
+
+/// Minimal viewer shape used by the show-all query.
+#[derive(Debug, Deserialize)]
+pub struct ViewerLogin {
+    pub login: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,6 +574,67 @@ pub fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
     Inbox { viewer_login, prs, issues }
 }
 
+/// Convert a [`ResponseDataAll`] (from the show-all query) into a normalised
+/// [`Inbox`].
+///
+/// # Role derivation
+///
+/// In the standard inbox query roles come from *which bucket* a PR appears in.
+/// In show-all mode every PR is in a single flat bucket, so roles are derived
+/// from the PR's content fields:
+/// - `Author` when `pr.author == viewer_login`.
+/// - `Reviewer` when the viewer appears in `reviewRequests`.
+/// - `Assignee` role derivation is not implemented here because the
+///   `PullRequestFields` fragment does not include `assignees`.
+///
+/// TODO: add `assignees(first: 10)` to `PullRequestFields` so that `Assignee`
+/// can be populated here (and in the regular query's dedup step).
+pub fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox {
+    let mut prs: Vec<PullRequest> = data
+        .all_prs
+        .nodes
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            if let SearchNode::Pr(raw) = node { Some(raw) } else { None }
+        })
+        .map(|raw| {
+            // Derive roles from the PR's data fields.
+            let mut roles: Vec<Role> = Vec::new();
+            if raw.author.as_ref().is_some_and(|a| a.login == viewer_login) {
+                roles.push(Role::Author);
+            }
+            // Check if the viewer is among the requested reviewers.
+            let viewer_is_reviewer = raw.review_requests.nodes.iter().any(|rr| {
+                rr.requested_reviewer.as_ref().is_some_and(|rv| match rv {
+                    RawReviewer::User { login } => login == &viewer_login,
+                    RawReviewer::Team { .. } => false,
+                })
+            });
+            if viewer_is_reviewer {
+                roles.push(Role::Reviewer);
+            }
+            let mut pr = raw_pr_to_domain(raw);
+            pr.roles = roles;
+            pr
+        })
+        .collect();
+    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    let mut issues: Vec<Issue> = data
+        .all_issues
+        .nodes
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            if let SearchNode::Issue(raw) = node { Some(raw_issue_to_domain(raw)) } else { None }
+        })
+        .collect();
+    issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    Inbox { viewer_login, prs, issues }
+}
+
 // ── Private helpers ────────────────────────────────────────────────────────────
 
 fn raw_pr_to_domain(raw: RawPr) -> PullRequest {
@@ -638,6 +849,38 @@ mod tests {
         assert_eq!(pr.check_state, Some(CheckState::Success));
         assert_eq!(pr.review_decision, Some(ReviewDecision::Approved));
         assert!(pr.failing_checks.is_empty(), "clean PR should have no failing checks");
+    }
+
+    /// `build_show_all_query` must include each tracked repo as a `repo:`
+    /// qualifier in both the PR and issue search strings.
+    #[test]
+    fn build_show_all_query_includes_repo_qualifiers() {
+        let repos = vec!["owner/alpha".to_owned(), "owner/beta".to_owned()];
+        let query = build_show_all_query(&repos);
+
+        assert!(query.contains("repo:owner/alpha"), "must contain repo:owner/alpha");
+        assert!(query.contains("repo:owner/beta"), "must contain repo:owner/beta");
+        // Both qualifiers must appear in each search (PR and issue).
+        assert!(
+            query.matches("repo:owner/alpha").count() >= 2,
+            "repo:owner/alpha must appear in both PR and issue searches"
+        );
+        assert!(
+            query.matches("repo:owner/beta").count() >= 2,
+            "repo:owner/beta must appear in both PR and issue searches"
+        );
+    }
+
+    /// `build_show_all_query` with an empty repo list must still produce a
+    /// syntactically valid query document (no repo qualifiers, zero results).
+    #[test]
+    fn build_show_all_query_empty_repos() {
+        let query = build_show_all_query(&[]);
+        // Must contain the required structural landmarks.
+        assert!(query.contains("allPrs"), "must contain allPrs alias");
+        assert!(query.contains("allIssues"), "must contain allIssues alias");
+        assert!(query.contains("PullRequestFields"), "must reference PullRequestFields fragment");
+        assert!(query.contains("IssueFields"), "must reference IssueFields fragment");
     }
 
     /// PRs with the same `(repo, number)` appearing in two buckets must be

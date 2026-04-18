@@ -81,6 +81,12 @@ pub enum Action {
     /// Phase 5: runs `git checkout <branch>` in the current working directory.
     ConfirmCheckout(bool),
 
+    // ── View filtering ────────────────────────────────────────────────────────
+    /// Toggle between "inbox" mode (only PRs/issues involving the viewer) and
+    /// "show-all" mode (every open PR and issue in the tracked repos).
+    /// Bound to `A` in dashboard focus.
+    ToggleShowAll,
+
     // ── Overlays ──────────────────────────────────────────────────────────────
     /// Open the repo-picker overlay so the user can add or remove repos.
     /// Phase 3: renders the picker widget.

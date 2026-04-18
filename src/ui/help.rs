@@ -40,6 +40,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         shortcut("i", "Toggle between PR and Issue view", key_style, desc_style),
         shortcut("r", "Refresh current tab", key_style, desc_style),
         shortcut("R", "Refresh all tabs", key_style, desc_style),
+        shortcut("A", "Toggle all-repos / mine-only view", key_style, desc_style),
         shortcut("n / N", "Next / previous match", key_style, desc_style),
         shortcut("f", "Filter / find", key_style, desc_style),
         shortcut("b", "Back", key_style, desc_style),

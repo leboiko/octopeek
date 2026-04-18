@@ -93,6 +93,12 @@ pub struct Config {
     /// for borders. Useful for terminals with limited glyph support.
     #[serde(default)]
     pub show_ascii_glyphs: bool,
+
+    /// When `true`, fetch every open PR and issue in the tracked repos instead
+    /// of filtering to items the viewer authored, is reviewing, or is assigned
+    /// to. Useful for team dashboards where full-repo visibility is wanted.
+    #[serde(default)]
+    pub show_all_prs: bool,
 }
 
 impl Config {
@@ -171,6 +177,7 @@ mod tests {
         assert_eq!(deserialized.repos, config.repos);
         assert_eq!(deserialized.auto_refresh_seconds, config.auto_refresh_seconds);
         assert_eq!(deserialized.show_ascii_glyphs, config.show_ascii_glyphs);
+        assert_eq!(deserialized.show_all_prs, config.show_all_prs);
     }
 
     /// A TOML file missing optional fields must deserialize to the default value
@@ -183,6 +190,7 @@ mod tests {
         assert!(config.repos.is_empty());
         assert_eq!(config.auto_refresh_seconds, None);
         assert!(!config.show_ascii_glyphs);
+        assert!(!config.show_all_prs);
     }
 
     /// `auto_refresh_seconds = 30` must parse correctly as `Some(30)`.
