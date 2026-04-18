@@ -28,6 +28,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::github::detail::{DetailedCheck, FileChangeKind, PrDetail, ReviewThread};
@@ -208,27 +209,41 @@ fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
     ])
 }
 
-/// Apply the palette's `help_bg` tint to every span of `line` AND set the
-/// line-level background so ratatui fills every trailing cell of each
-/// wrapped visual row with the tint.
+/// Apply the palette's comment tint to every span of `line`, right-pad the
+/// row with tinted spaces out to `width` cells, AND set the line-level bg
+/// as a belt-and-suspenders fallback.
 ///
-/// Previously we right-padded with spaces to `width` cells. That fails the
-/// moment a line is longer than `width`: ratatui word-wraps into multiple
-/// visual rows, and the trailing cells of the wrapped rows render with the
-/// paragraph's background instead of our tint — producing the patchy
-/// "tinted only where text is" look from the bug report. `Line::style.bg`
-/// is the ratatui-native way to have the tint fill the entire logical row
-/// no matter how it wraps.
+/// Why both: ratatui 0.30's `Paragraph` word-wrap does NOT fill the trailing
+/// cells of a broken visual row with `Line::style`, so we still need the
+/// explicit padding to make short lines read as a solid rectangle of tint.
+/// The `Line::style.bg` is harmless overhead when wrap doesn't kick in and
+/// future-proofs the renderer against a ratatui update that starts honouring
+/// line-level bg on wrapped rows.
+///
+/// Lines whose content is already wider than `width` still have a patchy
+/// trailing tail on the wrapped visual rows — that's a known limitation of
+/// trying to fake full-row styling through a word-wrapping Paragraph, and
+/// is bounded in scope to code blocks and long error strings that were
+/// rarer than the short comment lines the previous `Line::style`-only fix
+/// visibly regressed.
 ///
 /// Returning `Line<'static>` rather than mutating in place keeps
 /// [`build_content`] callers (tests, copy-mode extraction) working against an
 /// untinted base while the render path applies the visual treatment.
-fn tint_line(line: &Line<'static>, bg: Color) -> Line<'static> {
-    let spans: Vec<Span<'static>> = line
+fn tint_line(line: &Line<'static>, bg: Color, width: u16) -> Line<'static> {
+    let current_width: usize =
+        line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    let target = usize::from(width);
+    let pad = target.saturating_sub(current_width);
+
+    let mut spans: Vec<Span<'static>> = line
         .spans
         .iter()
         .map(|s| Span::styled(s.content.clone(), s.style.bg(bg)))
         .collect();
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+    }
     let mut result = Line::from(spans);
     result.style = Style::default().bg(bg);
     result
@@ -240,8 +255,9 @@ fn apply_alt_bg(
     lines: &[Line<'static>],
     alt_ranges: &[(u16, u16)],
     bg: Color,
+    width: u16,
 ) -> Vec<Line<'static>> {
-    if alt_ranges.is_empty() {
+    if alt_ranges.is_empty() || width == 0 {
         return lines.to_vec();
     }
     lines
@@ -253,7 +269,7 @@ fn apply_alt_bg(
                 let b = usize::from(b);
                 idx >= a && idx < b
             });
-            if in_range { tint_line(line, bg) } else { line.clone() }
+            if in_range { tint_line(line, bg, width) } else { line.clone() }
         })
         .collect()
 }
@@ -905,12 +921,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let scroll = app.pr_detail_scroll;
 
-    // Alternating comment tint. We set each tinted Line's own bg via
-    // `Line::style`, which ratatui applies to every cell of every visual row
-    // the line wraps into — including the trailing blanks after word-wrap
-    // breaks. `help_bg` is a per-theme colour already chosen to differ from
-    // `background` by just a few RGB units (see the overlay-bg feedback memo).
-    let tinted_lines = apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg);
+    // Alternating comment tint. `tint_line` both paints each span's bg and
+    // right-pads short lines to the viewport width so the tinted rectangle
+    // reads as a solid block even on lines whose content is narrower than
+    // the viewport. `help_bg` is a per-theme colour already chosen to differ
+    // from `background` by just a few RGB units (see the overlay-bg feedback
+    // memo).
+    let tinted_lines = apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg, inner.width);
 
     // In copy mode we disable wrapping so that logical lines map 1:1 to screen
     // lines — otherwise the cursor's logical column would not match any
@@ -1213,31 +1230,24 @@ pub mod tests {
         assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
     }
 
-    /// `tint_line` must set the tint bg on every span AND on the line's own
-    /// style so trailing cells of word-wrapped visual rows fill with the
-    /// tint instead of reverting to the paragraph's default bg.
+    /// `tint_line` must recolour every span, right-pad to `width`, and also
+    /// set `Line::style.bg` as a belt-and-suspenders fallback. This pins the
+    /// contract that regressed when we tried relying on `Line::style` alone.
     #[test]
-    fn tint_line_applies_bg_to_spans_and_line_style() {
-        // Every span must carry the tint bg (so existing text renders over
-        // the tint colour) AND the Line's own style must carry the bg so
-        // ratatui fills the trailing cells of wrapped visual rows instead
-        // of reverting to the paragraph's default bg.
+    fn tint_line_applies_bg_and_pads_row() {
         let bg = ratatui::style::Color::Rgb(32, 32, 45);
         let original = Line::from(vec![
             Span::styled("hi ", Style::default().fg(Color::Red)),
             Span::styled("there", Style::default().fg(Color::Blue)),
         ]);
-        let tinted = tint_line(&original, bg);
+        let tinted = tint_line(&original, bg, 20);
         let text: String = tinted.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "hi there", "text preserved verbatim");
+        assert!(text.starts_with("hi there"), "text preserved: {text:?}");
+        assert_eq!(text.chars().count(), 20, "row padded to 20 cells");
         for span in &tinted.spans {
             assert_eq!(span.style.bg, Some(bg), "every span carries the tint bg");
         }
-        assert_eq!(
-            tinted.style.bg,
-            Some(bg),
-            "line-level bg must be set so wrapped visual rows fill with tint"
-        );
+        assert_eq!(tinted.style.bg, Some(bg), "line-level bg set");
     }
 
     /// Files-expanded flag switches from 5 to all files visible.
