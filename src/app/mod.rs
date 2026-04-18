@@ -712,6 +712,14 @@ impl App {
         // Global bindings that work in any focus state.
         // Tab / Shift+Tab in Detail focus are intercepted by `handle_key_detail`
         // to cycle sidebar sections — they must NOT reach the global tab switcher.
+        //
+        // `[` and `]` are reserved here as the universal prev/next-repo-tab
+        // shortcut because the digit keys (1–5) and Tab are both consumed by
+        // the detail view's sidebar sections. Without these, a user reading
+        // a PR has no keyboard path back to a different repo tab short of
+        // pressing Esc → dashboard → digit.
+        let typing_in_input =
+            self.focus == Focus::RepoPicker && self.repo_picker_mode == RepoPickerMode::Input;
         if key.modifiers == KeyModifiers::NONE {
             match key.code {
                 KeyCode::Char('q') => {
@@ -724,6 +732,14 @@ impl App {
                 }
                 KeyCode::Tab if self.focus != Focus::Detail => {
                     self.handle_action(Action::NextTab);
+                    return;
+                }
+                KeyCode::Char(']') if !typing_in_input => {
+                    self.handle_action(Action::NextTab);
+                    return;
+                }
+                KeyCode::Char('[') if !typing_in_input => {
+                    self.handle_action(Action::PrevTab);
                     return;
                 }
                 _ => {}
@@ -743,8 +759,6 @@ impl App {
         // Suppressed when:
         // - The user is typing into a text input (repo picker Add field).
         // - The detail view has focus: keys 1–5 select sections there.
-        let typing_in_input =
-            self.focus == Focus::RepoPicker && self.repo_picker_mode == RepoPickerMode::Input;
         let in_detail = self.focus == Focus::Detail;
         if !typing_in_input
             && !in_detail
@@ -2571,6 +2585,36 @@ mod tests {
         // Close via Esc (simulated by calling close_repo_picker directly).
         app.close_repo_picker();
         assert_eq!(app.focus, Focus::Dashboard);
+    }
+
+    /// `[` and `]` must switch repo tabs from inside the detail view, since
+    /// 1-5 and Tab there are consumed by the section navigator. Without this
+    /// binding, a user reading a PR has no keyboard route to a different
+    /// repo tab short of Esc-ing back to the dashboard.
+    #[test]
+    fn bracket_keys_switch_repo_tabs_from_detail() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        assert_eq!(app.tabs.active_index(), Some(0));
+
+        app.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        ));
+        // Switching tabs from detail pops back to dashboard (existing contract).
+        assert_eq!(app.focus, Focus::Dashboard);
+        assert_eq!(app.tabs.active_index(), Some(1), "] moves to next tab");
+
+        app.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('['),
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.tabs.active_index(), Some(0), "[ moves to prev tab");
     }
 
     /// Switching tabs while in the detail view must bring the user back to
