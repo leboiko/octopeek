@@ -494,8 +494,11 @@ fn thread_gutter(ascii: bool) -> &'static str {
 
 /// Wrap rendered markdown lines with the thread gutter prefix.
 ///
-/// Each `Line` from `render_markdown` gets a leading gutter span
-/// (`palette.block_quote_border`) prepended.
+/// Each `Line` from `render_markdown` gets a leading gutter span prepended,
+/// coloured with `gutter_fg`. The opener uses the default
+/// `palette.block_quote_border`; replies use a distinct colour (normally
+/// `palette.accent_alt`) so the reply's vertical rail visually separates
+/// it from the thread opener sitting right above.
 ///
 /// When the incoming line's first span has a background color (typical for
 /// syntect-highlighted code-block lines), the gutter span inherits that
@@ -503,14 +506,14 @@ fn thread_gutter(ascii: bool) -> &'static str {
 /// gutter column instead of breaking to the terminal default.
 fn gutter_lines(
     md_lines: Vec<Line<'static>>,
-    p: &crate::theme::Palette,
+    gutter_fg: Color,
     ascii: bool,
 ) -> Vec<Line<'static>> {
     md_lines
         .into_iter()
         .map(|mut line| {
             let inherited_bg = line.spans.first().and_then(|s| s.style.bg);
-            let mut style = Style::default().fg(p.block_quote_border);
+            let mut style = Style::default().fg(gutter_fg);
             if let Some(bg) = inherited_bg {
                 style = style.bg(bg);
             }
@@ -656,23 +659,35 @@ fn comments_lines(
         for (idx, comment) in thread.comments.iter().enumerate() {
             let age = humanize_delta(&comment.created_at);
 
-            // The first comment is the thread opener; subsequent ones are replies.
-            // We signal replies with `↳ ` in palette.dim on the author line,
-            // and additionally step-in reply BODY lines by two extra spaces so
-            // a long reply doesn't blur into the previous comment's body.
-            let author_line = if idx == 0 {
+            // The first comment is the thread opener; subsequent ones are
+            // replies. Replies get a distinct colour treatment so the reader
+            // can tell at a glance where the conversation picks up:
+            //   - `↳` glyph + author in `palette.accent_alt` (brighter than
+            //     the foreground, reads as a deliberate visual hook).
+            //   - The vertical `│` gutter rail for the reply's body is also
+            //     tinted with `accent_alt`, producing a coloured "sidebar"
+            //     that frames the reply block.
+            //   - Body content keeps its normal markdown styling so inline
+            //     code / links / bold still render as the user expects.
+            let is_reply = idx > 0;
+            let gutter_fg = if is_reply { p.accent_alt } else { p.block_quote_border };
+
+            let author_line = if is_reply {
                 Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
+                    Span::styled(gutter, Style::default().fg(gutter_fg)),
+                    Span::styled(
+                        reply_glyph,
+                        Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(
                         format!("@{}", comment.author),
-                        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+                        Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
-                    Span::styled(reply_glyph, Style::default().fg(p.dim)),
+                    Span::styled(gutter, Style::default().fg(gutter_fg)),
                     Span::styled(
                         format!("@{}", comment.author),
                         Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
@@ -697,28 +712,32 @@ fn comments_lines(
 
             // Gutter first. For replies, also step-in the body by 2 spaces so
             // a reply's long markdown body is obviously offset from the prior
-            // comment's body (which sits flush against the gutter).
-            let body_lines = if idx == 0 {
-                gutter_lines(visible_rendered, p, ascii)
+            // comment's body (which sits flush against the gutter). The reply
+            // gutter rail carries the accent colour so the whole reply block
+            // reads as visually distinct from the opener above.
+            let body_lines = if is_reply {
+                gutter_lines(indent_lines(visible_rendered, "  "), gutter_fg, ascii)
             } else {
-                gutter_lines(indent_lines(visible_rendered, "  "), p, ascii)
+                gutter_lines(visible_rendered, gutter_fg, ascii)
             };
             lines.extend(body_lines);
 
             if truncated {
                 lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(p.block_quote_border)),
+                    Span::styled(gutter, Style::default().fg(gutter_fg)),
                     Span::styled("[m] expand", Style::default().fg(p.dim)),
                 ]));
             }
 
-            // Blank gutter line between comments within the same thread so code
-            // blocks don't blur into each other, but the `│` rail shows they're
-            // still part of the same conversation.
+            // Blank gutter line between comments within the same thread so
+            // code blocks don't blur into each other. The rail colour here
+            // matches the NEXT comment (always a reply by construction —
+            // only idx 0 is the opener), so the visual break lines up with
+            // the coloured reply rail that follows.
             if idx + 1 < thread.comments.len() {
                 lines.push(Line::from(vec![Span::styled(
                     gutter,
-                    Style::default().fg(p.block_quote_border),
+                    Style::default().fg(p.accent_alt),
                 )]));
             }
         }
@@ -1625,6 +1644,98 @@ pub mod tests {
         assert!(
             header_text.contains('\u{2691}'), // ⚑
             "anchor line should contain ⚑ glyph, got: {header_text:?}"
+        );
+    }
+
+    /// Replies inside a review thread must visually stand out from the
+    /// opener. We pin two parts of the contract:
+    ///   1. The reply's `↳` glyph and @handle render in `accent_alt` (not
+    ///      the regular foreground the opener uses).
+    ///   2. The reply body's gutter rail is tinted with `accent_alt`, so
+    ///      the vertical `│` that flanks every reply line stays visibly
+    ///      coloured even through long bodies.
+    #[test]
+    fn replies_render_in_accent_alt() {
+        let now = Utc::now();
+        let p = Palette::default();
+        let detail = PrDetail {
+            repo: "r".to_owned(),
+            number: 1,
+            title: "T".to_owned(),
+            url: "u".to_owned(),
+            author: "a".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat".to_owned(),
+            is_draft: false,
+            additions: 0,
+            deletions: 0,
+            changed_files_count: 0,
+            updated_at: now,
+            created_at: now,
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(1),
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![
+                    ReviewComment {
+                        author: "opener".to_owned(),
+                        body_markdown: "Opening thought.".to_owned(),
+                        created_at: now,
+                    },
+                    ReviewComment {
+                        author: "replier".to_owned(),
+                        body_markdown: "Counter-point.".to_owned(),
+                        created_at: now,
+                    },
+                ],
+            }],
+            issue_comments: vec![],
+        };
+
+        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
+
+        // The reply @handle span must be in accent_alt.
+        let reply_author = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == "@replier")
+            .expect("reply author span");
+        assert_eq!(
+            reply_author.style.fg,
+            Some(p.accent_alt),
+            "reply @handle must be accent_alt to stand out from opener"
+        );
+
+        // The opener @handle must still be foreground (contract preserved).
+        let opener_author = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == "@opener")
+            .expect("opener author span");
+        assert_eq!(
+            opener_author.style.fg,
+            Some(p.foreground),
+            "opener @handle must stay in plain foreground"
+        );
+
+        // Somewhere in the reply body there must be a gutter span tinted
+        // accent_alt — that's what visually frames the reply block.
+        let reply_gutter_count = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| {
+                s.content.as_ref().contains('\u{2502}') && s.style.fg == Some(p.accent_alt)
+            })
+            .count();
+        assert!(
+            reply_gutter_count > 0,
+            "expected at least one accent_alt gutter rail for the reply"
         );
     }
 
