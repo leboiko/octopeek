@@ -537,12 +537,15 @@ impl App {
             }
             Action::NextTab => {
                 self.tabs.next();
+                self.leave_detail_after_tab_switch();
             }
             Action::PrevTab => {
                 self.tabs.prev();
+                self.leave_detail_after_tab_switch();
             }
             Action::SwitchTab(idx) => {
                 self.tabs.set_active_by_index(idx);
+                self.leave_detail_after_tab_switch();
             }
             Action::OpenHelp => {
                 self.show_help = !self.show_help;
@@ -683,7 +686,7 @@ impl App {
         {
             // digit==0 maps to tab index 9 (vim convention: 0 = 10th tab).
             let idx = if digit == 0 { 9 } else { (digit as usize) - 1 };
-            self.tabs.set_active_by_index(idx);
+            self.handle_action(Action::SwitchTab(idx));
             return;
         }
 
@@ -1475,6 +1478,21 @@ impl App {
                 self.repo_picker_input.push(c);
             }
             _ => {}
+        }
+    }
+
+    /// If the user is currently in the detail view, pop back to the dashboard
+    /// so tab switches become visible.
+    ///
+    /// Without this, pressing `1`/`2`/Tab/Shift-Tab inside a PR or issue
+    /// detail just flips `tabs.active_tab_index` while the renderer keeps
+    /// showing the already-loaded `pr_detail` / `issue_detail` — the tab
+    /// bar updates, but the content doesn't. From the user's perspective
+    /// nothing changes, which is what the "tabs aren't working from detail"
+    /// bug report was.
+    fn leave_detail_after_tab_switch(&mut self) {
+        if self.focus == Focus::Detail {
+            self.back_to_dashboard();
         }
     }
 
@@ -2352,6 +2370,50 @@ mod tests {
         // Close via Esc (simulated by calling close_repo_picker directly).
         app.close_repo_picker();
         assert_eq!(app.focus, Focus::Dashboard);
+    }
+
+    /// Switching tabs while in the detail view must bring the user back to
+    /// the dashboard so the new tab's content is actually visible.
+    ///
+    /// Without this, pressing `1`/`2`/Tab from inside an open PR detail only
+    /// flipped the active tab index; the renderer kept showing the same
+    /// loaded detail, so from the user's perspective "tabs did nothing".
+    #[test]
+    fn tab_switch_from_detail_returns_to_dashboard() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        app.handle_action(Action::SwitchTab(1));
+
+        assert_eq!(app.focus, Focus::Dashboard, "detail must pop on tab switch");
+        assert!(app.pr_detail.is_none(), "stale detail must be cleared");
+    }
+
+    /// Pressing a digit from the detail view must also flow through the
+    /// [`Action::SwitchTab`] path (not bypass it), so the same
+    /// dashboard-return behaviour applies.
+    #[test]
+    fn digit_key_from_detail_returns_to_dashboard() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        app.handle_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('2'),
+            KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.focus, Focus::Dashboard);
+        assert_eq!(app.tabs.active_index(), Some(1), "tab index 2 maps to 1-based '2' key");
     }
 
     /// Typing a digit in the repo-picker input field must land in the input
