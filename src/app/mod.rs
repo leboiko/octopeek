@@ -42,6 +42,8 @@ pub enum Focus {
     Help,
     /// The generic confirmation overlay.
     Confirm,
+    /// The theme picker overlay.
+    ThemePicker,
 }
 
 /// One repo suggestion shown in the first-run wizard.
@@ -184,6 +186,14 @@ pub struct App {
     pub first_run_suggestions: Vec<FirstRunSuggestion>,
     /// Index of the currently highlighted row in the first-run suggestion list.
     pub first_run_cursor: usize,
+
+    // ── Theme picker state ────────────────────────────────────────────────────
+    /// Index of the currently highlighted theme in the picker list.
+    pub theme_picker_cursor: usize,
+    /// Focus state to restore when the theme picker is closed (Enter or Esc).
+    pub theme_picker_return_focus: Focus,
+    /// Theme that was active when the picker was opened; used by `Esc` to revert.
+    pub theme_picker_original: crate::theme::Theme,
 }
 
 impl App {
@@ -257,6 +267,9 @@ impl App {
             confirm_return_focus: Focus::Dashboard,
             first_run_suggestions: Vec::new(),
             first_run_cursor: 0,
+            theme_picker_cursor: 0,
+            theme_picker_return_focus: Focus::Dashboard,
+            theme_picker_original: crate::theme::Theme::default(),
         }
     }
 
@@ -733,6 +746,7 @@ impl App {
             Focus::Detail => self.handle_key_detail(key),
             Focus::RepoPicker => self.handle_key_repo_picker(key),
             Focus::Confirm => self.handle_key_confirm(key),
+            Focus::ThemePicker => self.handle_key_theme_picker(key),
             Focus::Help => {
                 // Handled above; unreachable here.
             }
@@ -1815,6 +1829,83 @@ impl App {
         }
     }
 
+    /// Open the theme picker overlay, recording the current theme so `Esc` can
+    /// revert it.
+    ///
+    /// Initialises `theme_picker_cursor` to the index of the currently active
+    /// theme so the highlight starts on the user's existing choice.
+    pub fn open_theme_picker(&mut self) {
+        use crate::theme::Theme;
+
+        // Find the index of the current theme in the ordered list; default 0.
+        let current_idx =
+            Theme::ALL.iter().position(|&t| t == self.config.theme).unwrap_or(0);
+
+        self.theme_picker_original = self.config.theme;
+        self.theme_picker_cursor = current_idx;
+        self.theme_picker_return_focus = self.focus;
+        self.focus = Focus::ThemePicker;
+    }
+
+    /// Key handler for the theme picker overlay ([`Focus::ThemePicker`]).
+    ///
+    /// Bindings:
+    /// - `j` / `Down`: move cursor down (wraps around).
+    /// - `k` / `Up`: move cursor up (wraps around).
+    /// - `Enter`: apply the highlighted theme, persist config, close.
+    /// - `Esc`: restore the original theme (in-memory, no save), close.
+    fn handle_key_theme_picker(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::theme::{Palette, Theme};
+        use crossterm::event::KeyCode;
+
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+
+        let count = Theme::ALL.len();
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                // Wrap: last item → first item.
+                self.theme_picker_cursor = (self.theme_picker_cursor + 1) % count;
+                // Live preview.
+                self.palette = Palette::from_theme(Theme::ALL[self.theme_picker_cursor]);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                // Wrap: first item → last item.
+                self.theme_picker_cursor =
+                    (self.theme_picker_cursor + count - 1) % count;
+                // Live preview.
+                self.palette = Palette::from_theme(Theme::ALL[self.theme_picker_cursor]);
+            }
+            KeyCode::Enter => {
+                // Apply and persist.
+                let chosen = Theme::ALL[self.theme_picker_cursor];
+                self.config.theme = chosen;
+                self.palette = Palette::from_theme(chosen);
+                self.config.save();
+                self.focus = self.theme_picker_return_focus;
+                self.show_flash(
+                    format!("Theme applied: {}", chosen.label()),
+                    std::time::Duration::from_secs(3),
+                );
+            }
+            KeyCode::Esc => {
+                // Revert to the original theme (in-memory only; no save).
+                let original = self.theme_picker_original;
+                self.palette = Palette::from_theme(original);
+                // config.theme was never written, so it still holds the original
+                // value — no assignment needed here.
+                self.focus = self.theme_picker_return_focus;
+                self.show_flash(
+                    "Theme change cancelled",
+                    std::time::Duration::from_secs(2),
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Key handler for the dashboard (PR/issue list) focus.
     fn handle_key_dashboard(&mut self, key: crossterm::event::KeyEvent) {
         if key.modifiers != KeyModifiers::NONE {
@@ -1888,7 +1979,9 @@ impl App {
             }
             KeyCode::Char('c') => {
                 self.pending_g = false;
-                self.handle_action(Action::CheckoutBranch);
+                // Open the theme picker. The checkout action is available in
+                // the detail view where `c` retains its original binding.
+                self.open_theme_picker();
             }
             KeyCode::Char('p') => {
                 debug!("dashboard: 'p' pressed — dispatching OpenRepoPicker");
@@ -3122,5 +3215,148 @@ mod tests {
             let saved2 = crate::config::Config::load();
             assert!(!saved2.show_all_prs, "persisted config must reflect the second toggle");
         });
+    }
+
+    // ── Theme picker tests ────────────────────────────────────────────────────
+
+    /// Pressing `c` on the dashboard flips focus to `ThemePicker` and
+    /// initialises the cursor to the index of the currently active theme.
+    #[test]
+    fn c_on_dashboard_opens_theme_picker() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        use crate::theme::Theme;
+
+        let config = crate::config::Config { theme: Theme::Nord, ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        assert_eq!(app.focus, Focus::Dashboard);
+
+        let key = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        app.handle_key(key);
+
+        assert_eq!(app.focus, Focus::ThemePicker, "focus must switch to ThemePicker");
+        let expected_idx = Theme::ALL.iter().position(|&t| t == Theme::Nord).unwrap();
+        assert_eq!(
+            app.theme_picker_cursor, expected_idx,
+            "cursor must start on the current theme"
+        );
+    }
+
+    /// Pressing `Enter` in the theme picker applies the highlighted theme to
+    /// `config.theme` and persists it to disk.
+    #[test]
+    fn enter_in_theme_picker_applies_and_persists() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        use crate::theme::Theme;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config =
+                crate::config::Config { theme: Theme::Default, ..Default::default() };
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            // Open picker, then move cursor to Dracula (index 1).
+            app.open_theme_picker();
+            app.theme_picker_cursor = 1; // Dracula
+
+            // Press Enter.
+            let key = KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            };
+            app.handle_key_theme_picker(key);
+
+            assert_eq!(app.config.theme, Theme::Dracula, "in-memory theme must be Dracula");
+            assert_eq!(app.focus, Focus::Dashboard, "picker must close");
+
+            // Verify persistence.
+            let saved = crate::config::Config::load();
+            assert_eq!(saved.theme, Theme::Dracula, "persisted theme must be Dracula");
+        });
+    }
+
+    /// Pressing `Esc` in the theme picker reverts the theme in-memory and does
+    /// NOT update the persisted config.
+    #[test]
+    fn esc_in_theme_picker_restores_original_theme() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        use crate::theme::Theme;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        crate::config::with_config_dir_override(tmp.path(), || {
+            // Start with Nord persisted.
+            let config =
+                crate::config::Config { theme: Theme::Nord, ..Default::default() };
+            config.save();
+
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+
+            // Open picker and move cursor to Dracula — live preview activates.
+            app.open_theme_picker();
+            app.theme_picker_cursor = 1; // Dracula
+
+            // Press Esc to cancel.
+            let key = KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            };
+            app.handle_key_theme_picker(key);
+
+            assert_eq!(app.config.theme, Theme::Nord, "in-memory theme must revert to Nord");
+            assert_eq!(app.focus, Focus::Dashboard, "picker must close");
+
+            // Persisted config must still be Nord (Esc must not save).
+            let saved = crate::config::Config::load();
+            assert_eq!(saved.theme, Theme::Nord, "persisted theme must remain Nord");
+        });
+    }
+
+    /// Moving the cursor past the last item wraps to index 0, and moving up
+    /// from index 0 wraps to the last item.
+    #[test]
+    fn cursor_wraps_around_at_list_edges() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        use crate::theme::Theme;
+
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.open_theme_picker();
+
+        let last = Theme::ALL.len() - 1;
+
+        // Start at index 0; pressing Up must wrap to last.
+        app.theme_picker_cursor = 0;
+        let up = KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        app.handle_key_theme_picker(up);
+        assert_eq!(app.theme_picker_cursor, last, "Up from 0 must wrap to last index");
+
+        // Now at last; pressing Down must wrap to 0.
+        let down = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        app.handle_key_theme_picker(down);
+        assert_eq!(app.theme_picker_cursor, 0, "Down from last must wrap to 0");
     }
 }

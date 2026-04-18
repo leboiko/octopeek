@@ -13,6 +13,7 @@ pub mod repo_picker;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod tabs;
+pub mod theme_picker;
 pub mod util;
 
 use crate::app::{App, Focus};
@@ -103,5 +104,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.focus == Focus::Confirm && app.confirm.is_some() {
         confirm::draw(f, app);
+    }
+
+    if app.focus == Focus::ThemePicker {
+        theme_picker::draw(f, app);
     }
 }
