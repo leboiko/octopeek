@@ -669,7 +669,15 @@ impl App {
         }
 
         // Digit keys 1–9 jump to the corresponding tab (1-based).
-        if key.modifiers == KeyModifiers::NONE
+        //
+        // Suppress when the user is typing into a text input — otherwise
+        // `0` / `1` / etc. typed into the repo picker's Add field get eaten
+        // by the tab switcher and never reach the input buffer. This is
+        // exactly why `0xIntuition/gcp-deployment` couldn't be entered.
+        let typing_in_input = self.focus == Focus::RepoPicker
+            && self.repo_picker_mode == RepoPickerMode::Input;
+        if !typing_in_input
+            && key.modifiers == KeyModifiers::NONE
             && let KeyCode::Char(ch) = key.code
             && let Some(digit) = ch.to_digit(10)
         {
@@ -1427,7 +1435,12 @@ impl App {
     fn handle_repo_picker_input_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
 
-        if key.modifiers != KeyModifiers::NONE {
+        // Allow SHIFT (for uppercase letters in `0xIntuition`-style slugs).
+        // Reject only Ctrl / Alt / Meta, which are not expected inside a
+        // text field and would otherwise insert garbage characters on some
+        // terminals.
+        let blocked_mods = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+        if key.modifiers.intersects(blocked_mods) {
             return;
         }
 
@@ -2339,6 +2352,71 @@ mod tests {
         // Close via Esc (simulated by calling close_repo_picker directly).
         app.close_repo_picker();
         assert_eq!(app.focus, Focus::Dashboard);
+    }
+
+    /// Typing a digit in the repo-picker input field must land in the input
+    /// buffer, not trigger the global 1–9 tab-switch handler. Without this
+    /// guard, typing `0xIntuition/gcp-deployment` into the Add field jumped
+    /// tabs instead of appending `0` to the buffer.
+    #[test]
+    fn repo_picker_input_accepts_digits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+
+            for ch in ['0', 'x', '/', '1', '9'] {
+                app.handle_key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char(ch),
+                    KeyModifiers::NONE,
+                ));
+            }
+            assert_eq!(app.repo_picker_input, "0x/19", "digits must reach input buffer");
+        });
+    }
+
+    /// SHIFT-modified keys (uppercase letters) must still type into the
+    /// repo-picker input. Without this, slugs containing capitals like
+    /// `0xIntuition/gcp-deployment` couldn't be entered at all.
+    #[test]
+    fn repo_picker_input_accepts_shifted_uppercase() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+
+            app.handle_repo_picker_input_key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('I'),
+                KeyModifiers::SHIFT,
+            ));
+            assert_eq!(app.repo_picker_input, "I");
+        });
+    }
+
+    /// CTRL-modified keys must still be swallowed by the input handler so
+    /// stray `Ctrl+A` / `Ctrl+U` / etc. don't append garbage characters.
+    #[test]
+    fn repo_picker_input_rejects_ctrl_modified_keys() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            app.focus = Focus::RepoPicker;
+            app.repo_picker_mode = RepoPickerMode::Input;
+
+            app.handle_repo_picker_input_key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL,
+            ));
+            assert!(app.repo_picker_input.is_empty(), "Ctrl-keys must not type");
+        });
     }
 
     /// Adding a valid slug via the picker must append it to `config.repos`.
