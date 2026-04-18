@@ -1908,7 +1908,10 @@ impl App {
 
     /// Key handler for the dashboard (PR/issue list) focus.
     fn handle_key_dashboard(&mut self, key: crossterm::event::KeyEvent) {
-        if key.modifiers != KeyModifiers::NONE {
+        // Allow SHIFT (used for `A`, `G`, `R`, `N`) but reject Ctrl/Alt/Super
+        // so a stray `Ctrl+c` or `Alt+j` can't silently trigger list moves.
+        let blocked_mods = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+        if key.modifiers.intersects(blocked_mods) {
             self.pending_g = false;
             return;
         }
@@ -3218,6 +3221,31 @@ mod tests {
     }
 
     // ── Theme picker tests ────────────────────────────────────────────────────
+
+    /// Pressing `A` (SHIFT+a) on the dashboard must reach the toggle, not
+    /// get swallowed by the modifier filter. Without this the feature
+    /// appears completely dead from the user's perspective.
+    #[test]
+    fn capital_a_on_dashboard_triggers_show_all_toggle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::with_config_dir_override(tmp.path(), || {
+            let config = crate::config::Config::default();
+            let session = crate::state::AppSession::default();
+            let mut app = App::new(config, session);
+            assert!(!app.config.show_all_prs);
+
+            // Capital 'A' arrives as KeyCode::Char('A') with SHIFT set.
+            app.handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('A'),
+                KeyModifiers::SHIFT,
+            ));
+
+            assert!(
+                app.config.show_all_prs,
+                "SHIFT+a must dispatch ToggleShowAll despite the modifier"
+            );
+        });
+    }
 
     /// Pressing `c` on the dashboard flips focus to `ThemePicker` and
     /// initialises the cursor to the index of the currently active theme.

@@ -505,6 +505,7 @@ fn draw_pr_list(
         Style::default().bg(p.selection_bg).fg(p.selection_fg).add_modifier(Modifier::BOLD);
 
     let table = Table::new(rows, cols)
+        .style(Style::default().fg(p.foreground).bg(p.background))
         .row_highlight_style(selected_style)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
 
@@ -545,6 +546,7 @@ fn draw_issue_list(
         Style::default().bg(p.selection_bg).fg(p.selection_fg).add_modifier(Modifier::BOLD);
 
     let table = Table::new(rows, cols)
+        .style(Style::default().fg(p.foreground).bg(p.background))
         .row_highlight_style(selected_style)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
 
