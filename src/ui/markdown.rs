@@ -527,12 +527,57 @@ fn first_non_blank_line(s: &str) -> &str {
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
 }
 
+/// Resolve a GitHub-flavored-markdown language tag (e.g. `"rust"`,
+/// `"typescript"`, `"bash"`) to a syntect `SyntaxReference`.
+///
+/// Syntect's `find_syntax_by_token` only matches against file extensions,
+/// so the common long-form tags that people actually type in code fences
+/// on GitHub (`"rust"` → extension is `"rs"`, `"python"` → `"py"`, and so
+/// on) silently fail and land in the uncoloured plain-text fallback. This
+/// helper adds a small alias table that covers the 95th percentile of tags
+/// we've seen in real PR / issue comments.
+fn resolve_syntax<'a>(
+    ss: &'a SyntaxSet,
+    tag: &str,
+) -> Option<&'a syntect::parsing::SyntaxReference> {
+    let normalized = tag.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    // 1. Direct match against file extensions (case-insensitive in syntect).
+    if let Some(syntax) = ss.find_syntax_by_token(&normalized) {
+        return Some(syntax);
+    }
+    // 2. Common long-form → extension aliases.
+    let alias = match normalized.as_str() {
+        "rust" => "rs",
+        "python" => "py",
+        "javascript" | "jsx" => "js",
+        "typescript" | "tsx" => "ts",
+        "ruby" => "rb",
+        "golang" => "go",
+        "kotlin" => "kt",
+        "objective-c" | "objc" => "m",
+        "shell" | "bash" | "zsh" | "ksh" => "sh",
+        "c++" | "cxx" => "cpp",
+        "c#" | "csharp" => "cs",
+        "f#" | "fsharp" => "fs",
+        "markdown" => "md",
+        "yaml" => "yml",
+        "dockerfile" => "Dockerfile",
+        "html" => "html",
+        "plaintext" | "text" | "txt" => return Some(ss.find_syntax_plain_text()),
+        _ => return None,
+    };
+    ss.find_syntax_by_token(alias)
+}
+
 /// Attempt to syntax-highlight `source` for language `lang`.
 ///
-/// When `lang` is empty, tries to auto-detect the language by feeding the
-/// first non-blank line to syntect's pattern sniffer (shebangs, keywords).
-/// If detection still fails, falls back to the "Plain Text" syntax so the
-/// code background is applied uniformly even without per-token colours.
+/// Resolution order:
+/// 1. Language tag via [`resolve_syntax`] (extension match + alias table).
+/// 2. First-line sniffing (shebangs, distinctive opening lines).
+/// 3. Plain Text fallback so the code background still applies uniformly.
 ///
 /// Returns `None` only when syntect's theme cannot be resolved, so the
 /// caller can fall back to plain-colour rendering.
@@ -543,15 +588,9 @@ fn try_highlight_code(
     ss: &SyntaxSet,
     ts: &ThemeSet,
 ) -> Option<Vec<Line<'static>>> {
-    let syntax = if lang.is_empty() {
-        // 1. Try sniffing via the first non-blank line (shebangs, etc.).
-        let first = first_non_blank_line(source);
-        ss.find_syntax_by_first_line(first)
-            // 2. Fall back to Plain Text so code_bg is still applied.
-            .or_else(|| ss.find_syntax_plain_text().into())
-    } else {
-        ss.find_syntax_by_token(lang)
-    }?;
+    let syntax = resolve_syntax(ss, lang)
+        .or_else(|| ss.find_syntax_by_first_line(first_non_blank_line(source)))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
 
     let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("base16-ocean.dark"))?;
 
@@ -985,6 +1024,53 @@ mod tests {
         assert!(
             non_empty.iter().any(|l| line_text(l).contains("main")),
             "fn main() not found in highlighted output"
+        );
+    }
+
+    /// Regression test: `syntect::find_syntax_by_token` only matches file
+    /// extensions, so common long-form GFM tags like `rust` / `python` /
+    /// `javascript` used to silently drop into the Plain Text fallback.
+    /// The alias table in `resolve_syntax` now maps them to the matching
+    /// extension so real syntax highlighting kicks in and we see multiple
+    /// distinct foreground colours across tokens within a single line.
+    #[test]
+    fn fenced_code_block_long_tag_produces_multicolor_spans() {
+        let src =
+            "```rust\nfn main() { let x: i32 = 42; println!(\"{}\", x); }\n```\n";
+        let lines = render_markdown(src, &palette());
+        let code_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("main"))
+            .expect("highlighted code line");
+
+        // Collect the unique foreground colours seen across all spans on
+        // the line. A syntax-highlighted line should have several — keyword,
+        // identifier, type, literal, string — whereas Plain Text produces
+        // exactly one colour across the whole line.
+        let unique_fgs: std::collections::HashSet<_> =
+            code_line.spans.iter().filter_map(|s| s.style.fg).collect();
+        assert!(
+            unique_fgs.len() >= 2,
+            "expected multi-colour syntax highlighting, got {} distinct fg(s): {unique_fgs:?}",
+            unique_fgs.len()
+        );
+    }
+
+    /// Same regression guard for `python` (another common long-form tag
+    /// whose extension is `py`, not `python`).
+    #[test]
+    fn fenced_code_block_python_long_tag_highlights() {
+        let src = "```python\ndef f(x):\n    return x + 1\n```\n";
+        let lines = render_markdown(src, &palette());
+        let code_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("def"))
+            .expect("highlighted code line");
+        let unique_fgs: std::collections::HashSet<_> =
+            code_line.spans.iter().filter_map(|s| s.style.fg).collect();
+        assert!(
+            unique_fgs.len() >= 2,
+            "python tag must resolve via alias table; got {unique_fgs:?}"
         );
     }
 
