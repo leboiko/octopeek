@@ -1292,6 +1292,7 @@ pub mod tests {
                 } else {
                     FileChangeKind::Added
                 },
+                patch: None,
             })
             .collect();
 

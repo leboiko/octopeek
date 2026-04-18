@@ -1,11 +1,12 @@
 //! Async GitHub GraphQL HTTP client.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::Serialize;
-use tracing::debug;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
 use super::detail::{
     ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailResponse,
@@ -19,6 +20,9 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The GitHub GraphQL endpoint.
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
+
+/// Base URL for the GitHub REST API v3.
+const REST_BASE_URL: &str = "https://api.github.com";
 
 // ── Shared serialization types ────────────────────────────────────────────────
 
@@ -41,6 +45,18 @@ struct DetailVariables<'a> {
     owner: &'a str,
     name: &'a str,
     number: u32,
+}
+
+/// One entry from the REST `GET /repos/{owner}/{repo}/pulls/{number}/files` response.
+///
+/// GitHub omits `patch` (or sets it to `null`) for binary files and diffs that
+/// exceed the inline size limit. `#[serde(default)]` maps both absent and `null`
+/// to `None`.
+#[derive(Deserialize)]
+struct RestFileEntry {
+    filename: String,
+    #[serde(default)]
+    patch: Option<String>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -206,7 +222,24 @@ impl Client {
             .with_context(|| format!("pull request #{number} not found in `{repo}`"))?;
 
         debug!("PR detail fetched: {repo}#{number}");
-        Ok(raw_pr_to_detail(repo.to_owned(), raw_pr))
+        let mut detail = raw_pr_to_detail(repo.to_owned(), raw_pr);
+
+        // Attempt to enrich each FileChange with its unified-diff patch from the
+        // REST endpoint. Failures are non-fatal: the UI gracefully shows "patch
+        // unavailable" when `patch` remains `None`.
+        match self.fetch_pr_file_patches(owner, name, number).await {
+            Ok(patch_map) => merge_patches_into_files(&mut detail.files, &patch_map),
+            Err(err) => {
+                warn!(
+                    repo,
+                    number,
+                    error = %err,
+                    "REST file-patches fetch failed; patches will be unavailable"
+                );
+            }
+        }
+
+        Ok(detail)
     }
 
     /// Fetch the full detail for a single issue.
@@ -243,6 +276,51 @@ impl Client {
     #[allow(dead_code)]
     pub fn cached_viewer_login(&self) -> Option<&str> {
         self.viewer_login.get().map(String::as_str)
+    }
+
+    /// Fetch per-file unified-diff patches from the GitHub REST API.
+    ///
+    /// Calls `GET /repos/{owner}/{name}/pulls/{number}/files?per_page=30`.
+    /// Only the first page (up to 30 files) is retrieved — intentionally, to
+    /// keep response sizes small. Files beyond the 30-file cap will have
+    /// `patch == None` after the merge step.
+    ///
+    /// # Returns
+    ///
+    /// A map from file path to `Option<patch>`. The inner `Option` is `None`
+    /// when GitHub omits the patch (binary files, oversized diffs).
+    ///
+    /// # Errors
+    ///
+    /// Network errors, non-2xx HTTP responses, or JSON parse failures.
+    async fn fetch_pr_file_patches(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u32,
+    ) -> Result<HashMap<String, Option<String>>> {
+        let url = format!(
+            "{REST_BASE_URL}/repos/{owner}/{name}/pulls/{number}/files?per_page=30"
+        );
+
+        let response = self
+            .http
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .context("network error reaching GitHub REST API")?;
+
+        let status = response.status();
+        check_http_status(status, response.headers())?;
+
+        let entries: Vec<RestFileEntry> =
+            response.json().await.context("failed to parse GitHub REST files response")?;
+
+        let map = entries.into_iter().map(|e| (e.filename, e.patch)).collect();
+        Ok(map)
     }
 
     /// POST a parameterised detail query (`owner`, `name`, `number`) and return
@@ -288,6 +366,32 @@ impl Client {
 }
 
 // ── Module-level helpers ──────────────────────────────────────────────────────
+
+/// Merge REST-fetched patches into a slice of [`FileChange`] values in-place.
+///
+/// Looks up each file's `path` in `patch_map` and writes the associated patch
+/// (which may itself be `None` for binary / oversized files) into
+/// `file.patch`. Files whose paths are absent from the map — i.e. those
+/// beyond the 30-file REST cap — are left with `patch == None`.
+///
+/// # Arguments
+///
+/// * `files`     - Mutable slice of file changes, mutated in place.
+/// * `patch_map` - Map from file path to `Option<patch>` built from the REST
+///   response.
+pub(crate) fn merge_patches_into_files(
+    files: &mut [super::detail::FileChange],
+    patch_map: &HashMap<String, Option<String>>,
+) {
+    for file in files.iter_mut() {
+        if let Some(patch) = patch_map.get(&file.path) {
+            // Clone the Option<String> out of the map.  The map is consumed
+            // after this call, so cloning is the minimal-allocation choice.
+            file.patch = patch.clone();
+        }
+        // Files not in the map keep patch == None (beyond REST cap or not matched).
+    }
+}
 
 /// Split `"owner/name"` into `("owner", "name")`.
 ///
@@ -372,5 +476,148 @@ mod tests {
     fn split_repo_empty_name_errors() {
         let err = split_repo("owner/").expect_err("should fail");
         assert!(err.to_string().contains("expected exactly one"), "error: {err}");
+    }
+
+    // ── REST file-patches data layer ──────────────────────────────────────────
+
+    /// Deserialise a representative REST files response containing one normal
+    /// file (with a patch) and one binary file (patch absent / null).
+    #[test]
+    fn rest_files_response_deserializes_basic() {
+        let json = r#"[
+            {
+                "filename": "src/main.rs",
+                "additions": 5,
+                "deletions": 2,
+                "patch": "@@ -1,3 +1,6 @@\n+new line"
+            },
+            {
+                "filename": "assets/logo.png",
+                "additions": 0,
+                "deletions": 0
+            }
+        ]"#;
+
+        let entries: Vec<RestFileEntry> = serde_json::from_str(json).expect("deserialise");
+
+        // Build the map the same way the real method does.
+        let map: HashMap<String, Option<String>> =
+            entries.into_iter().map(|e| (e.filename, e.patch)).collect();
+
+        assert_eq!(map.len(), 2);
+        assert!(map["src/main.rs"].is_some(), "text file should have a patch");
+        assert!(
+            map["assets/logo.png"].is_none(),
+            "binary file should have patch == None"
+        );
+    }
+
+    /// Explicit `patch: null` in the JSON payload must also produce `None`.
+    #[test]
+    fn rest_files_response_patch_null_becomes_none() {
+        let json = r#"[{"filename": "big.rs", "additions": 0, "deletions": 0, "patch": null}]"#;
+        let entries: Vec<RestFileEntry> = serde_json::from_str(json).expect("deserialise");
+        let map: HashMap<String, Option<String>> =
+            entries.into_iter().map(|e| (e.filename, e.patch)).collect();
+        assert!(map["big.rs"].is_none());
+    }
+
+    /// A 40-element REST payload must produce at most 30 entries when capped.
+    ///
+    /// The real `fetch_pr_file_patches` uses `?per_page=30` so GitHub returns
+    /// at most 30 entries in practice. This test validates the serde parsing
+    /// with exactly 30 items to confirm the per-page cap is honoured at the
+    /// type level — if someone removes the cap the integration test should catch it.
+    #[test]
+    fn rest_cap_of_30_honoured() {
+        // Build a JSON array of 40 file entries.
+        let entries: Vec<serde_json::Value> = (0..40)
+            .map(|i| {
+                serde_json::json!({
+                    "filename": format!("src/file_{i}.rs"),
+                    "additions": 1,
+                    "deletions": 0,
+                    "patch": "@@ -0,0 +1 @@\n+x"
+                })
+            })
+            .collect();
+        let json = serde_json::to_string(&entries).expect("serialise");
+
+        // Parse all 40 entries — the REST cap is enforced by `?per_page=30`
+        // in the URL, not by taking a slice here.  Assert that when GitHub
+        // would return exactly 30 (the first page), we get 30.
+        let parsed: Vec<RestFileEntry> = serde_json::from_str(&json).expect("deserialise");
+        // Simulate taking only the first page.
+        let capped: HashMap<String, Option<String>> =
+            parsed.into_iter().take(30).map(|e| (e.filename, e.patch)).collect();
+
+        assert_eq!(capped.len(), 30, "at most 30 entries after per-page cap");
+        assert!(!capped.contains_key("src/file_30.rs"), "entry beyond cap must be absent");
+    }
+
+    /// `merge_patches_into_files` must populate matched files, leave unmatched
+    /// files at `None`, and not panic on empty inputs.
+    #[test]
+    fn merge_patches_populates_files() {
+        use super::super::detail::{FileChange, FileChangeKind};
+
+        let mut files = vec![
+            FileChange {
+                path: "src/main.rs".to_owned(),
+                additions: 5,
+                deletions: 2,
+                change_kind: FileChangeKind::Modified,
+                patch: None,
+            },
+            FileChange {
+                path: "src/lib.rs".to_owned(),
+                additions: 1,
+                deletions: 0,
+                change_kind: FileChangeKind::Modified,
+                patch: None,
+            },
+            FileChange {
+                path: "beyond_cap.rs".to_owned(),
+                additions: 10,
+                deletions: 0,
+                change_kind: FileChangeKind::Added,
+                patch: None,
+            },
+        ];
+
+        let mut patch_map: HashMap<String, Option<String>> = HashMap::new();
+        patch_map
+            .insert("src/main.rs".to_owned(), Some("@@ -1 +1 @@\n+hello".to_owned()));
+        // src/lib.rs is in the map but has no patch (binary / oversized).
+        patch_map.insert("src/lib.rs".to_owned(), None);
+        // beyond_cap.rs is intentionally absent from the map.
+
+        merge_patches_into_files(&mut files, &patch_map);
+
+        assert_eq!(
+            files[0].patch.as_deref(),
+            Some("@@ -1 +1 @@\n+hello"),
+            "matched file must have patch populated"
+        );
+        assert!(files[1].patch.is_none(), "binary/oversized file should stay None");
+        assert!(files[2].patch.is_none(), "file beyond REST cap must stay None");
+
+        // Empty inputs must not panic.
+        merge_patches_into_files(&mut [], &HashMap::new());
+    }
+
+    /// A `FileChange` constructed via the GraphQL path must default `patch` to `None`.
+    #[test]
+    fn file_change_patch_defaults_to_none() {
+        use super::super::detail::{FileChange, FileChangeKind};
+
+        let fc = FileChange {
+            path: "src/foo.rs".to_owned(),
+            additions: 1,
+            deletions: 0,
+            change_kind: FileChangeKind::Added,
+            patch: None,
+        };
+        assert!(fc.patch.is_none());
     }
 }

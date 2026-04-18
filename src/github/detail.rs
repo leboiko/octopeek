@@ -37,6 +37,12 @@ pub struct FileChange {
     pub deletions: u32,
     /// Nature of the change.
     pub change_kind: FileChangeKind,
+    /// Unified-diff patch text from the REST `pulls/{number}/files` endpoint.
+    ///
+    /// `None` when the file is binary, when the diff is too large for GitHub to
+    /// return inline, or when the supplementary REST fetch was skipped / failed.
+    #[serde(default)]
+    pub patch: Option<String>,
 }
 
 // ── DetailedCheck ─────────────────────────────────────────────────────────────
@@ -553,6 +559,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
             additions: f.additions,
             deletions: f.deletions,
             change_kind: parse_change_kind(&f.change_type),
+            patch: None,
         })
         .collect();
 

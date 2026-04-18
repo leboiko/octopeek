@@ -1,6 +1,7 @@
 //! UI rendering: one `draw` function composes all panels for a single frame.
 
 pub mod confirm;
+pub mod diff;
 pub mod copy_mode;
 pub mod dashboard;
 pub mod first_run;
