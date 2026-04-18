@@ -21,6 +21,7 @@ use crate::event::EventHandler;
 use crate::github;
 use crate::state::AppSession;
 use crate::theme::Palette;
+use crate::ui::pr_detail::DetailSection;
 use crate::ui::tabs::Tabs;
 
 use actions::Action;
@@ -138,30 +139,38 @@ pub struct App {
     pub detail_fetching: bool,
     /// Human-readable description of the last detail fetch error, if any.
     pub detail_error: Option<String>,
-    /// Vertical scroll offset for the detail view (lines from the top).
-    pub pr_detail_scroll: u16,
+    /// Per-section vertical scroll offsets for the PR detail right pane.
+    ///
+    /// Switching sections preserves each section's individual scroll position
+    /// so the user returns to where they left off.
+    pub pr_detail_scroll: HashMap<DetailSection, u16>,
     /// `true` when the files section in the PR detail view is fully expanded.
     pub pr_detail_files_expanded: bool,
     /// `true` when the comments section in the PR detail view is fully expanded.
     pub pr_detail_comments_expanded: bool,
-    /// Section Y-offsets recomputed each frame, used by Tab navigation.
-    pub pr_detail_section_anchors: Vec<u16>,
-    /// Y-offsets of unresolved review thread starts, for `n`/`N` cycling.
-    pub pr_detail_unresolved_anchors: Vec<u16>,
-    /// Index into `pr_detail_unresolved_anchors` for `n`/`N` cycling.
-    pub pr_detail_unresolved_idx: usize,
+    /// Currently selected section in the PR detail sidebar.
+    pub pr_detail_selected_section: DetailSection,
+    /// Index of the highlighted file in the sidebar files list.
+    ///
+    /// Set when clicking a file row; Phase 2 will use this to open the diff view.
+    pub pr_detail_files_cursor: usize,
+    /// Scroll offset for the sidebar files list (not the right pane).
+    pub pr_detail_sidebar_scroll: u16,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
     pub detail_pending_g: bool,
     /// Copy-mode state for the PR/issue detail view. Inactive until the user
     /// presses `v`. When active, normal detail key bindings are suppressed in
     /// favour of cursor movement, selection, and yank.
     pub copy_mode: crate::ui::copy_mode::CopyMode,
-    /// Cached PR-detail viewport rect, written by the renderer each frame so
-    /// key and mouse handlers can map screen coordinates to content positions
-    /// (and auto-scroll the copy-mode cursor) without taking a `&mut` through
-    /// the whole UI layer. Interior mutability via `Cell` keeps the existing
-    /// `&App` render signatures intact.
+    /// Cached PR-detail right-pane viewport rect, written by the renderer each
+    /// frame so copy-mode and mouse handlers can map screen coordinates to
+    /// content positions.  Interior mutability via `Cell` keeps `&App` render
+    /// signatures intact.
     pub pr_detail_viewport: std::cell::Cell<ratatui::layout::Rect>,
+    /// Alias for `pr_detail_viewport` (right-pane inner rect).
+    pub pr_detail_right_viewport: std::cell::Cell<ratatui::layout::Rect>,
+    /// Cached sidebar rects `(sections_rect, files_rect)` for mouse hit-testing.
+    pub pr_detail_sidebar_rects: std::cell::Cell<(ratatui::layout::Rect, ratatui::layout::Rect)>,
 
     // ── Repo picker state ─────────────────────────────────────────────────────
     /// Index of the currently highlighted repo in the picker list.
@@ -250,15 +259,20 @@ impl App {
             issue_detail: None,
             detail_fetching: false,
             detail_error: None,
-            pr_detail_scroll: 0,
+            pr_detail_scroll: HashMap::new(),
             pr_detail_files_expanded: false,
             pr_detail_comments_expanded: false,
-            pr_detail_section_anchors: Vec::new(),
-            pr_detail_unresolved_anchors: Vec::new(),
-            pr_detail_unresolved_idx: 0,
+            pr_detail_selected_section: DetailSection::default(),
+            pr_detail_files_cursor: 0,
+            pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
             copy_mode: crate::ui::copy_mode::CopyMode::default(),
             pr_detail_viewport: std::cell::Cell::new(ratatui::layout::Rect::default()),
+            pr_detail_right_viewport: std::cell::Cell::new(ratatui::layout::Rect::default()),
+            pr_detail_sidebar_rects: std::cell::Cell::new((
+                ratatui::layout::Rect::default(),
+                ratatui::layout::Rect::default(),
+            )),
             repo_picker_list_cursor: 0,
             repo_picker_input: String::new(),
             repo_picker_mode: RepoPickerMode::List,
@@ -271,6 +285,17 @@ impl App {
             theme_picker_return_focus: Focus::Dashboard,
             theme_picker_original: crate::theme::Theme::default(),
         }
+    }
+
+    /// Return the scroll offset for the given section (0 if never set).
+    pub fn scroll_for(&self, section: DetailSection) -> u16 {
+        self.pr_detail_scroll.get(&section).copied().unwrap_or(0)
+    }
+
+    /// Return a mutable reference to the scroll offset for the given section,
+    /// inserting 0 if the section has not been scrolled yet.
+    pub fn scroll_mut(&mut self, section: DetailSection) -> &mut u16 {
+        self.pr_detail_scroll.entry(section).or_insert(0)
     }
 
     /// Display a flash message in the status bar for `duration`.
@@ -685,6 +710,8 @@ impl App {
     /// Translate a raw key event into an [`Action`] based on current focus.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         // Global bindings that work in any focus state.
+        // Tab / Shift+Tab in Detail focus are intercepted by `handle_key_detail`
+        // to cycle sidebar sections — they must NOT reach the global tab switcher.
         if key.modifiers == KeyModifiers::NONE {
             match key.code {
                 KeyCode::Char('q') => {
@@ -695,7 +722,7 @@ impl App {
                     self.handle_action(Action::OpenHelp);
                     return;
                 }
-                KeyCode::Tab => {
+                KeyCode::Tab if self.focus != Focus::Detail => {
                     self.handle_action(Action::NextTab);
                     return;
                 }
@@ -703,20 +730,24 @@ impl App {
             }
         }
 
-        if key.modifiers == KeyModifiers::SHIFT && key.code == KeyCode::BackTab {
+        if key.modifiers == KeyModifiers::SHIFT
+            && key.code == KeyCode::BackTab
+            && self.focus != Focus::Detail
+        {
             self.handle_action(Action::PrevTab);
             return;
         }
 
         // Digit keys 1–9 jump to the corresponding tab (1-based).
         //
-        // Suppress when the user is typing into a text input — otherwise
-        // `0` / `1` / etc. typed into the repo picker's Add field get eaten
-        // by the tab switcher and never reach the input buffer. This is
-        // exactly why `0xIntuition/gcp-deployment` couldn't be entered.
-        let typing_in_input = self.focus == Focus::RepoPicker
-            && self.repo_picker_mode == RepoPickerMode::Input;
+        // Suppressed when:
+        // - The user is typing into a text input (repo picker Add field).
+        // - The detail view has focus: keys 1–5 select sections there.
+        let typing_in_input =
+            self.focus == Focus::RepoPicker && self.repo_picker_mode == RepoPickerMode::Input;
+        let in_detail = self.focus == Focus::Detail;
         if !typing_in_input
+            && !in_detail
             && key.modifiers == KeyModifiers::NONE
             && let KeyCode::Char(ch) = key.code
             && let Some(digit) = ch.to_digit(10)
@@ -905,11 +936,11 @@ impl App {
             return;
         }
 
-        // Tab/Shift+Tab are consumed here for section navigation,
-        // not forwarded to the global tab-switch handler.
+        // Tab/Shift+Tab cycle the sidebar section selection.
+        // Consumed here — NOT forwarded to the global tab-switch handler.
         if key.modifiers == KeyModifiers::SHIFT && key.code == KeyCode::BackTab {
-            // Navigate to previous section anchor.
-            self.detail_jump_section(-1);
+            self.detail_pending_g = false;
+            self.cycle_detail_section(-1);
             return;
         }
 
@@ -933,44 +964,53 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.detail_pending_g = false;
-                self.pr_detail_scroll = self.pr_detail_scroll.saturating_add(1);
+                let s = self.pr_detail_selected_section;
+                *self.scroll_mut(s) = self.scroll_for(s).saturating_add(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.detail_pending_g = false;
-                self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(1);
+                let s = self.pr_detail_selected_section;
+                *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(1);
             }
             KeyCode::Char('d') => {
                 self.detail_pending_g = false;
-                self.pr_detail_scroll = self.pr_detail_scroll.saturating_add(10);
+                let s = self.pr_detail_selected_section;
+                *self.scroll_mut(s) = self.scroll_for(s).saturating_add(10);
             }
             KeyCode::Char('u') => {
                 self.detail_pending_g = false;
-                self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(10);
+                let s = self.pr_detail_selected_section;
+                *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(10);
             }
             KeyCode::Char('g') => {
                 if self.detail_pending_g {
                     self.detail_pending_g = false;
-                    self.pr_detail_scroll = 0;
+                    let s = self.pr_detail_selected_section;
+                    *self.scroll_mut(s) = 0;
                 } else {
                     self.detail_pending_g = true;
                 }
             }
             KeyCode::Char('G') => {
                 self.detail_pending_g = false;
-                // Scroll to a large value; the renderer clamps to valid range.
-                self.pr_detail_scroll = u16::MAX;
+                // Set to a large value; the renderer clamps to valid range.
+                let s = self.pr_detail_selected_section;
+                *self.scroll_mut(s) = u16::MAX;
             }
             KeyCode::Tab => {
                 self.detail_pending_g = false;
-                self.detail_jump_section(1);
+                self.cycle_detail_section(1);
             }
-            KeyCode::Char('n') => {
+            // Number keys 1–5 select Description/Checks/Reviews/Files/Comments.
+            // `n` / `N` are reserved for Phase 2 unresolved-thread cycling and
+            // fall through to the wildcard no-op below.
+            KeyCode::Char(ch @ '1'..='5') => {
                 self.detail_pending_g = false;
-                self.detail_cycle_unresolved(1);
-            }
-            KeyCode::Char('N') => {
-                self.detail_pending_g = false;
-                self.detail_cycle_unresolved(-1);
+                let idx = (ch as usize) - ('1' as usize);
+                if let Some(&sec) = DetailSection::ALL.get(idx) {
+                    self.pr_detail_selected_section = sec;
+                    self.copy_mode.h_scroll = 0;
+                }
             }
             KeyCode::Char('f') => {
                 self.detail_pending_g = false;
@@ -1028,28 +1068,27 @@ impl App {
             }
             KeyCode::Char('v') => {
                 self.detail_pending_g = false;
-                // Enter copy mode at the top of the current viewport, but
-                // clamp to the last real line so we never strand the cursor
-                // on a non-existent row (which previously happened when the
-                // scroll offset had advanced past the content's end before
-                // the clamp was installed).
+                // Enter copy mode at the top of the current viewport. Clamp
+                // to the last real line so the cursor never strands on a
+                // non-existent row.
                 let lines = self.current_detail_lines();
                 let last_row = lines.len().saturating_sub(1);
-                let row = (self.pr_detail_scroll as usize).min(last_row);
+                let scroll = self.scroll_for(self.pr_detail_selected_section);
+                let row = (scroll as usize).min(last_row);
                 self.copy_mode.enter(row, 0);
             }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
-                // Re-fetch the current detail. As in `open_detail_for_selection`,
-                // `detail_fetching` must NOT be set here — `spawn_detail_fetch`
-                // owns the guard, and setting it externally would make it skip.
+                // Re-fetch the current detail. `spawn_detail_fetch` owns the
+                // `detail_fetching` guard — setting it externally would cause
+                // the guard to skip the fetch.
                 if let Some(detail) = &self.pr_detail {
                     let repo = detail.repo.clone();
                     let number = detail.number;
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
-                    self.pr_detail_scroll = 0;
+                    self.pr_detail_scroll.clear();
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
                     }
@@ -1059,7 +1098,7 @@ impl App {
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
-                    self.pr_detail_scroll = 0;
+                    self.pr_detail_scroll.clear();
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
                     }
@@ -1069,6 +1108,22 @@ impl App {
                 self.detail_pending_g = false;
             }
         }
+    }
+
+    /// Cycle the detail sidebar selection by `delta` (+1 forward, −1 backward),
+    /// wrapping at the ends.
+    fn cycle_detail_section(&mut self, delta: i32) {
+        let all = DetailSection::ALL;
+        let current_idx =
+            all.iter().position(|&s| s == self.pr_detail_selected_section).unwrap_or(0);
+        // ALL has exactly 5 elements — fits in i32 without truncation.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let len = all.len() as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let next_idx = ((current_idx as i32 + delta).rem_euclid(len)) as usize;
+        self.pr_detail_selected_section = all[next_idx];
+        // Reset horizontal scroll when switching sections.
+        self.copy_mode.h_scroll = 0;
     }
 
     /// Key handler active only while `self.copy_mode.active` is `true`.
@@ -1129,9 +1184,7 @@ impl App {
                 let row = self.copy_mode.cursor.row;
                 let last_col = lines
                     .get(row)
-                    .map_or(0, |l| {
-                        l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>()
-                    })
+                    .map_or(0, |l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
                     .saturating_sub(1);
                 self.copy_mode.cursor.col = last_col;
                 self.ensure_cursor_visible(&lines);
@@ -1143,8 +1196,7 @@ impl App {
                 // five keys for what should be one.
                 let row = self.copy_mode.cursor.row;
                 if let Some(line) = lines.get(row) {
-                    let text: String =
-                        line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                     Self::yank_and_flash(&mut self.flash, &text);
                     self.copy_mode.exit();
                 }
@@ -1187,47 +1239,71 @@ impl App {
 
     /// Route a raw mouse event to the focused panel.
     ///
-    /// Wheel events always scroll (regardless of copy mode). A left-button
-    /// press inside the detail viewport enters copy mode and drops the cursor
-    /// at the clicked cell; subsequent drag events extend the selection.
+    /// In Detail focus:
+    /// - Wheel over sidebar → scroll the sidebar files list.
+    /// - Wheel over right pane → scroll the active section.
+    /// - Left click on a sidebar section row → select that section.
+    /// - Left click on a sidebar file row → select the Files section and set
+    ///   `pr_detail_files_cursor` (Phase 2 will use this to open the diff view).
+    /// - Left click on the right pane → enter copy mode.
+    /// - Drag on the right pane → extend the copy selection.
     fn handle_mouse(&mut self, m: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
 
         match self.focus {
-            Focus::Detail => match m.kind {
-                MouseEventKind::ScrollUp => {
-                    self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(3);
-                }
-                MouseEventKind::ScrollDown => {
-                    self.pr_detail_scroll = self.pr_detail_scroll.saturating_add(3);
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row) {
-                        // A fresh left-click starts a new cursor position with
-                        // no active selection. The drag handler will set an
-                        // anchor on the first drag event.
-                        self.copy_mode.enter(row, col);
+            Focus::Detail => {
+                let (sections_rect, files_rect) = self.pr_detail_sidebar_rects.get();
+                let right_rect = self.pr_detail_right_viewport.get();
+
+                // Determine where the event landed.
+                let in_sidebar = m.column < right_rect.x;
+
+                match m.kind {
+                    MouseEventKind::ScrollUp => {
+                        if in_sidebar {
+                            self.pr_detail_sidebar_scroll =
+                                self.pr_detail_sidebar_scroll.saturating_sub(3);
+                        } else {
+                            let s = self.pr_detail_selected_section;
+                            *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(3);
+                        }
                     }
+                    MouseEventKind::ScrollDown => {
+                        if in_sidebar {
+                            self.pr_detail_sidebar_scroll =
+                                self.pr_detail_sidebar_scroll.saturating_add(3);
+                        } else {
+                            let s = self.pr_detail_selected_section;
+                            *self.scroll_mut(s) = self.scroll_for(s).saturating_add(3);
+                        }
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if in_sidebar {
+                            self.handle_sidebar_click(m.column, m.row, sections_rect, files_rect);
+                        } else if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row)
+                        {
+                            // A fresh left-click on the right pane enters copy mode.
+                            self.copy_mode.enter(row, col);
+                        }
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        if !self.copy_mode.active || in_sidebar {
+                            return;
+                        }
+                        if self.copy_mode.anchor.is_none() {
+                            self.copy_mode.anchor = Some(self.copy_mode.cursor);
+                        }
+                        if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row) {
+                            let lines = self.current_detail_lines();
+                            let last_row = lines.len().saturating_sub(1);
+                            self.copy_mode.cursor =
+                                crate::ui::copy_mode::Pos { row: row.min(last_row), col };
+                            self.ensure_cursor_visible(&lines);
+                        }
+                    }
+                    _ => {}
                 }
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    if !self.copy_mode.active {
-                        return;
-                    }
-                    if self.copy_mode.anchor.is_none() {
-                        self.copy_mode.anchor = Some(self.copy_mode.cursor);
-                    }
-                    if let Some((row, col)) = self.mouse_to_content_pos(m.column, m.row) {
-                        let lines = self.current_detail_lines();
-                        let last_row = lines.len().saturating_sub(1);
-                        self.copy_mode.cursor = crate::ui::copy_mode::Pos {
-                            row: row.min(last_row),
-                            col,
-                        };
-                        self.ensure_cursor_visible(&lines);
-                    }
-                }
-                _ => {}
-            },
+            }
             Focus::Dashboard => match m.kind {
                 MouseEventKind::ScrollUp => {
                     self.move_dashboard_selection(-1);
@@ -1241,16 +1317,60 @@ impl App {
         }
     }
 
+    /// Handle a left-click in the sidebar area.
+    ///
+    /// Clicks in the sections panel select that section row; clicks in the
+    /// files panel jump to the Files section and set `pr_detail_files_cursor`.
+    fn handle_sidebar_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        sections_rect: ratatui::layout::Rect,
+        files_rect: ratatui::layout::Rect,
+    ) {
+        // Sections panel: row 0 is the "SECTIONS" header; rows 1–5 are sections.
+        if row >= sections_rect.y && row < sections_rect.y.saturating_add(sections_rect.height) {
+            let relative = (row - sections_rect.y) as usize;
+            // relative == 0 is the header row — ignore it.
+            if relative >= 1 {
+                let sec_idx = relative - 1;
+                if let Some(&sec) = DetailSection::ALL.get(sec_idx) {
+                    self.pr_detail_selected_section = sec;
+                    self.copy_mode.h_scroll = 0;
+                }
+            }
+            return;
+        }
+
+        // Files panel: row 0 is the "FILES CHANGED" header; rows 1+ are files.
+        if row >= files_rect.y && row < files_rect.y.saturating_add(files_rect.height) {
+            let relative = (row - files_rect.y) as usize;
+            // Subtract sidebar scroll offset and 1 for the header row.
+            let header_offset = 1;
+            let scroll_offset = usize::from(self.pr_detail_sidebar_scroll);
+            if relative >= header_offset {
+                let file_idx = relative - header_offset + scroll_offset;
+                self.pr_detail_selected_section = DetailSection::Files;
+                self.pr_detail_files_cursor = file_idx;
+                self.copy_mode.h_scroll = 0;
+            }
+        }
+
+        // Suppress unused variable warning — `col` is intentionally unused in
+        // the current logic (we only care about `row`) but is passed for
+        // future-proofing (e.g. inline diff column selection).
+        let _ = col;
+    }
+
     /// Map a (column, row) mouse position to a logical (row, col) position
     /// within the currently rendered detail lines. Returns `None` when the
-    /// event is outside the viewport (including the status bar or tab bar).
+    /// event is outside the right-pane viewport (including sidebar, status bar,
+    /// or tab bar).
     ///
     /// The column mapping uses display cells, not characters: wide characters
-    /// (CJK / emoji) will round to the nearest cell boundary. For an MVP copy
-    /// mode this is acceptable; a follow-up can refine with a proper
-    /// display-to-char column walk.
+    /// (CJK / emoji) will round to the nearest cell boundary.
     fn mouse_to_content_pos(&self, col: u16, row: u16) -> Option<(usize, usize)> {
-        let area = self.pr_detail_viewport.get();
+        let area = self.pr_detail_right_viewport.get();
         if area.width == 0 || area.height == 0 {
             return None;
         }
@@ -1260,13 +1380,9 @@ impl App {
         if col < area.x || col >= area.x.saturating_add(area.width) {
             return None;
         }
-        let content_row = self
-            .pr_detail_scroll
-            .saturating_add(row.saturating_sub(area.y));
-        let content_col = self
-            .copy_mode
-            .h_scroll
-            .saturating_add(col.saturating_sub(area.x));
+        let scroll = self.scroll_for(self.pr_detail_selected_section);
+        let content_row = scroll.saturating_add(row.saturating_sub(area.y));
+        let content_col = self.copy_mode.h_scroll.saturating_add(col.saturating_sub(area.x));
         Some((usize::from(content_row), usize::from(content_col)))
     }
 
@@ -1287,15 +1403,15 @@ impl App {
         *sel = usize::try_from(clamped).unwrap_or(0);
     }
 
-    /// Rebuild the currently focused detail's rendered line buffer.
+    /// Rebuild the rendered line buffer for the currently selected detail section.
     ///
-    /// Copy-mode cursor motion and selection extraction work against the
-    /// exact same `Vec<Line>` the renderer produces, so we call into the
-    /// panel `build_content` helpers on demand. Returns an empty `Vec` when
-    /// no detail is loaded.
+    /// Copy-mode cursor motion and selection extraction work against the exact
+    /// same `Vec<Line>` the renderer produces, so we call the same per-section
+    /// builder here. Returns an empty `Vec` when no detail is loaded.
     fn current_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
         if let Some(detail) = &self.pr_detail {
-            let (lines, _, _, _) = crate::ui::pr_detail::build_content(
+            let (lines, _) = crate::ui::pr_detail::build_section(
+                self.pr_detail_selected_section,
                 detail,
                 self.pr_detail_files_expanded,
                 self.pr_detail_comments_expanded,
@@ -1316,42 +1432,48 @@ impl App {
         Vec::new()
     }
 
-    /// Clamp `pr_detail_scroll` so it can never exceed
-    /// `content_height - viewport_height`. Without this, `G`, Ctrl-d, or the
-    /// scroll wheel past the last line leaves the scroll counter pointing
-    /// into the void — the renderer shows a blank screen and the user has
-    /// to press `k` many times to get back to content. Also prevents copy
-    /// mode from landing the cursor on a row that no longer exists.
+    /// Clamp the active section's scroll offset so it can never exceed
+    /// `content_height - viewport_height`.
+    ///
+    /// Without this, `G`, `d`, or the scroll wheel past the last line leaves
+    /// the scroll counter pointing into the void — the renderer shows a blank
+    /// screen and the user has to press `k` many times to recover.
     fn clamp_pr_detail_scroll(&mut self) {
         if !matches!(self.focus, Focus::Detail) {
             return;
         }
-        let area = self.pr_detail_viewport.get();
+        let area = self.pr_detail_right_viewport.get();
         if area.height == 0 {
             return;
         }
         let lines = self.current_detail_lines();
         let content_len = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let max_scroll = content_len.saturating_sub(area.height);
-        if self.pr_detail_scroll > max_scroll {
-            self.pr_detail_scroll = max_scroll;
+        let section = self.pr_detail_selected_section;
+        let scroll = self.scroll_mut(section);
+        if *scroll > max_scroll {
+            *scroll = max_scroll;
         }
     }
 
-    /// Adjust `pr_detail_scroll` and `copy_mode.h_scroll` so that the cursor
-    /// is always visible within the last-rendered viewport.
+    /// Adjust the active section's scroll offset and `copy_mode.h_scroll` so
+    /// that the cursor is always visible within the last-rendered viewport.
     fn ensure_cursor_visible(&mut self, lines: &[ratatui::text::Line<'static>]) {
-        let area = self.pr_detail_viewport.get();
+        let area = self.pr_detail_right_viewport.get();
         let (vw, vh) = (area.width, area.height);
         if vh == 0 {
             return;
         }
         let cursor_row = u16::try_from(self.copy_mode.cursor.row).unwrap_or(u16::MAX);
-        if cursor_row < self.pr_detail_scroll {
-            self.pr_detail_scroll = cursor_row;
-        } else if cursor_row >= self.pr_detail_scroll.saturating_add(vh) {
-            self.pr_detail_scroll = cursor_row.saturating_sub(vh).saturating_add(1);
+        let section = self.pr_detail_selected_section;
+        let scroll = self.scroll_mut(section);
+        if cursor_row < *scroll {
+            *scroll = cursor_row;
+        } else if cursor_row >= scroll.saturating_add(vh) {
+            *scroll = cursor_row.saturating_sub(vh).saturating_add(1);
         }
+        // Release the mutable borrow before the horizontal scroll section below.
+        let _ = scroll;
 
         if vw == 0 {
             return;
@@ -1683,82 +1805,13 @@ impl App {
         self.issue_detail = None;
         self.detail_error = None;
         self.detail_fetching = false;
-        self.pr_detail_scroll = 0;
+        self.pr_detail_scroll.clear();
         self.pr_detail_files_expanded = false;
         self.pr_detail_comments_expanded = false;
-        self.pr_detail_section_anchors.clear();
-        self.pr_detail_unresolved_anchors.clear();
-        self.pr_detail_unresolved_idx = 0;
+        self.pr_detail_selected_section = DetailSection::default();
+        self.pr_detail_files_cursor = 0;
+        self.pr_detail_sidebar_scroll = 0;
         self.copy_mode.exit();
-    }
-
-    /// Jump to the next (`delta = 1`) or previous (`delta = -1`) section anchor.
-    fn detail_jump_section(&mut self, delta: i32) {
-        // Compute anchors on demand from the current pr_detail instead of
-        // relying on a cached copy populated by the renderer. The renderer
-        // has `&App`, not `&mut App`, so anchors computed during `draw`
-        // cannot be written back — reading a stale cache silently no-ops
-        // Tab navigation.
-        let Some(detail) = &self.pr_detail else {
-            return;
-        };
-        let (_, section_anchors, unresolved, _) = crate::ui::pr_detail::build_content(
-            detail,
-            self.pr_detail_files_expanded,
-            self.pr_detail_comments_expanded,
-            &self.palette,
-            self.config.show_ascii_glyphs,
-        );
-        self.pr_detail_section_anchors = section_anchors;
-        self.pr_detail_unresolved_anchors = unresolved;
-
-        let anchors = &self.pr_detail_section_anchors;
-        if anchors.is_empty() {
-            return;
-        }
-        let current = self.pr_detail_scroll;
-        if delta > 0 {
-            if let Some(&next) = anchors.iter().find(|&&a| a > current) {
-                self.pr_detail_scroll = next;
-            } else {
-                self.pr_detail_scroll = anchors[0];
-            }
-        } else if let Some(&prev) = anchors.iter().rev().find(|&&a| a < current) {
-            self.pr_detail_scroll = prev;
-        } else if let Some(&last) = anchors.last() {
-            self.pr_detail_scroll = last;
-        }
-    }
-
-    /// Cycle the scroll offset between unresolved review thread anchors.
-    fn detail_cycle_unresolved(&mut self, delta: i32) {
-        // Same staleness concern as `detail_jump_section` — recompute anchors
-        // from the current pr_detail so a Tab/n/N press after the first
-        // render actually has data to work with.
-        let Some(detail) = &self.pr_detail else {
-            return;
-        };
-        let (_, section_anchors, unresolved, _) = crate::ui::pr_detail::build_content(
-            detail,
-            self.pr_detail_files_expanded,
-            self.pr_detail_comments_expanded,
-            &self.palette,
-            self.config.show_ascii_glyphs,
-        );
-        self.pr_detail_section_anchors = section_anchors;
-        self.pr_detail_unresolved_anchors = unresolved;
-
-        let anchors = &self.pr_detail_unresolved_anchors;
-        if anchors.is_empty() {
-            return;
-        }
-        let len = anchors.len();
-        if delta > 0 {
-            self.pr_detail_unresolved_idx = (self.pr_detail_unresolved_idx + 1) % len;
-        } else {
-            self.pr_detail_unresolved_idx = (self.pr_detail_unresolved_idx + len - 1) % len;
-        }
-        self.pr_detail_scroll = anchors[self.pr_detail_unresolved_idx];
     }
 
     /// Open the detail view for the currently selected PR or issue.
@@ -1791,12 +1844,12 @@ impl App {
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
-                    self.pr_detail_scroll = 0;
+                    self.pr_detail_scroll.clear();
                     self.pr_detail_files_expanded = false;
                     self.pr_detail_comments_expanded = false;
-                    self.pr_detail_section_anchors.clear();
-                    self.pr_detail_unresolved_anchors.clear();
-                    self.pr_detail_unresolved_idx = 0;
+                    self.pr_detail_selected_section = DetailSection::default();
+                    self.pr_detail_files_cursor = 0;
+                    self.pr_detail_sidebar_scroll = 0;
                     self.focus = Focus::Detail;
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
@@ -1814,12 +1867,12 @@ impl App {
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
-                    self.pr_detail_scroll = 0;
+                    self.pr_detail_scroll.clear();
                     self.pr_detail_files_expanded = false;
                     self.pr_detail_comments_expanded = false;
-                    self.pr_detail_section_anchors.clear();
-                    self.pr_detail_unresolved_anchors.clear();
-                    self.pr_detail_unresolved_idx = 0;
+                    self.pr_detail_selected_section = DetailSection::default();
+                    self.pr_detail_files_cursor = 0;
+                    self.pr_detail_sidebar_scroll = 0;
                     self.focus = Focus::Detail;
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
@@ -1838,8 +1891,7 @@ impl App {
         use crate::theme::Theme;
 
         // Find the index of the current theme in the ordered list; default 0.
-        let current_idx =
-            Theme::ALL.iter().position(|&t| t == self.config.theme).unwrap_or(0);
+        let current_idx = Theme::ALL.iter().position(|&t| t == self.config.theme).unwrap_or(0);
 
         self.theme_picker_original = self.config.theme;
         self.theme_picker_cursor = current_idx;
@@ -1873,8 +1925,7 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 // Wrap: first item → last item.
-                self.theme_picker_cursor =
-                    (self.theme_picker_cursor + count - 1) % count;
+                self.theme_picker_cursor = (self.theme_picker_cursor + count - 1) % count;
                 // Live preview.
                 self.palette = Palette::from_theme(Theme::ALL[self.theme_picker_cursor]);
             }
@@ -1897,10 +1948,7 @@ impl App {
                 // config.theme was never written, so it still holds the original
                 // value — no assignment needed here.
                 self.focus = self.theme_picker_return_focus;
-                self.show_flash(
-                    "Theme change cancelled",
-                    std::time::Duration::from_secs(2),
-                );
+                self.show_flash("Theme change cancelled", std::time::Duration::from_secs(2));
             }
             _ => {}
         }
@@ -2191,7 +2239,8 @@ mod tests {
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
         app.focus = Focus::Detail;
-        app.pr_detail_scroll = 42;
+        // Set a non-zero scroll offset for the Description section.
+        *app.scroll_mut(DetailSection::Description) = 42;
 
         app.back_to_dashboard();
 
@@ -2199,7 +2248,7 @@ mod tests {
         assert!(app.pr_detail.is_none());
         assert!(app.issue_detail.is_none());
         assert!(app.detail_error.is_none());
-        assert_eq!(app.pr_detail_scroll, 0);
+        assert!(app.pr_detail_scroll.is_empty(), "scroll map must be cleared on back_to_dashboard");
     }
 
     /// Pressing Enter on the dashboard when a PR is selected must set
@@ -2225,23 +2274,28 @@ mod tests {
         // is no client so `spawn_detail_fetch` returns early, but focus still
         // switches and the flags are reset).
         assert_eq!(app.focus, Focus::Detail);
-        assert_eq!(app.pr_detail_scroll, 0);
+        assert!(app.pr_detail_scroll.is_empty(), "scroll map should be empty after open");
     }
 
-    /// `pr_detail_scroll` must not exceed a plausible content ceiling.
+    /// Per-section scroll must not exceed a plausible content ceiling.
     ///
-    /// The actual clamp happens in the renderer, but we can verify that the
-    /// scroll field increases monotonically with j presses and that wrapping
-    /// `u16` arithmetic is avoided (saturating add).
+    /// The actual clamp happens in `clamp_pr_detail_scroll`, but we can verify
+    /// that wrapping `u16` arithmetic is avoided (saturating add) for a section.
     #[test]
     fn scroll_clamped_by_saturating_add() {
         let config = crate::config::Config::default();
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
-        app.pr_detail_scroll = u16::MAX;
-        // Pressing j again must not wrap around.
-        app.pr_detail_scroll = app.pr_detail_scroll.saturating_add(1);
-        assert_eq!(app.pr_detail_scroll, u16::MAX, "saturating add must not wrap");
+        // Set Description section scroll to max.
+        *app.scroll_mut(DetailSection::Description) = u16::MAX;
+        // Saturating add must not wrap.
+        let current = app.scroll_for(DetailSection::Description);
+        *app.scroll_mut(DetailSection::Description) = current.saturating_add(1);
+        assert_eq!(
+            app.scroll_for(DetailSection::Description),
+            u16::MAX,
+            "saturating add must not wrap"
+        );
     }
 
     /// Pressing `o` with an invalid URL produces a flash error.
@@ -2300,9 +2354,11 @@ mod tests {
     /// over-scrolled past the content's end and then entered copy mode.
     #[test]
     fn v_in_detail_enters_copy_mode_and_clamps_to_content() {
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        app.pr_detail_scroll = 12; // well past the empty content's end
+        // Set a scroll offset well past the empty content's end.
+        *app.scroll_mut(DetailSection::Description) = 12;
 
         app.handle_key(key(KeyCode::Char('v')));
 
@@ -2319,7 +2375,8 @@ mod tests {
     /// distinct from Esc in normal detail mode, which returns to dashboard.
     #[test]
     fn esc_in_copy_mode_stays_in_detail() {
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
         app.copy_mode.enter(0, 0);
 
@@ -2332,7 +2389,8 @@ mod tests {
     /// Returning to the dashboard via `b` also tears down copy-mode state.
     #[test]
     fn back_to_dashboard_clears_copy_mode() {
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
         app.copy_mode.enter(5, 7);
 
@@ -2343,29 +2401,40 @@ mod tests {
         assert_eq!(app.copy_mode.cursor, crate::ui::copy_mode::Pos::default());
     }
 
-    /// Mouse wheel in detail focus scrolls the content by 3 lines per tick.
+    /// Mouse wheel in the right pane (outside sidebar) scrolls the active
+    /// section by 3 lines per tick.
     #[test]
     fn mouse_wheel_scrolls_detail() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
         use crossterm::event::{MouseEvent, MouseEventKind};
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        app.pr_detail_scroll = 10;
+        // Load a fixture so clamp_pr_detail_scroll does not reset the offset.
+        app.pr_detail = Some(fixture_pr_detail(3, 2, 4, 2));
+        *app.scroll_mut(DetailSection::Description) = 0;
+
+        // Place the right-pane viewport so the column check passes (not in sidebar).
+        // Use height=1 so the clamp ceiling = content_lines - 1 (several lines for
+        // the Description fixture), well above the 0+3=3 target.
+        app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 0, 80, 1));
 
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: 5,
+            column: 40, // inside the right pane (>= x=28)
             row: 5,
             modifiers: KeyModifiers::NONE,
         }));
-        assert_eq!(app.pr_detail_scroll, 13);
+        assert_eq!(app.scroll_for(DetailSection::Description), 3, "scroll down by 3");
 
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: 5,
+            column: 40,
             row: 5,
             modifiers: KeyModifiers::NONE,
         }));
-        assert_eq!(app.pr_detail_scroll, 10);
+        assert_eq!(app.scroll_for(DetailSection::Description), 0, "scroll up by 3 returns to 0");
     }
 
     /// A left-click inside the cached detail viewport enters copy mode and
@@ -2373,17 +2442,19 @@ mod tests {
     #[test]
     fn mouse_click_in_detail_places_cursor() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        // Pretend the detail area is rendered at origin (0,1) with size 80x20.
-        app.pr_detail_viewport
-            .set(ratatui::layout::Rect::new(0, 1, 80, 20));
-        app.pr_detail_scroll = 5;
+        // Pretend the right-pane viewport is at (28,1) with size 80x20.
+        app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
+        // Also set the legacy viewport alias so existing checks pass.
+        app.pr_detail_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
+        *app.scroll_mut(DetailSection::Description) = 5;
 
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
-            row: 3, // inside viewport: row offset 2 -> content row 7
+            column: 38, // inside right pane (starts at x=28); col offset = 38-28=10
+            row: 3,     // inside viewport: row offset = 3-1=2 -> content row = scroll(5)+2=7
             modifiers: KeyModifiers::NONE,
         }));
 
@@ -2398,10 +2469,12 @@ mod tests {
     #[test]
     fn mouse_click_outside_viewport_is_ignored() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        app.pr_detail_viewport
-            .set(ratatui::layout::Rect::new(0, 1, 10, 10));
+        // Set a small right-pane viewport; clicks outside it must be ignored.
+        app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 10, 10));
+        app.pr_detail_viewport.set(ratatui::layout::Rect::new(28, 1, 10, 10));
 
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -2418,15 +2491,18 @@ mod tests {
     #[test]
     fn mouse_drag_starts_selection() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
+        let mut app =
+            App::new(crate::config::Config::default(), crate::state::AppSession::default());
         app.focus = Focus::Detail;
-        app.pr_detail_viewport
-            .set(ratatui::layout::Rect::new(0, 1, 80, 20));
+        // Right pane at x=28..107, y=1..20.
+        app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
+        app.pr_detail_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
 
-        // Initial click to enter copy mode at (0, 2).
+        // Initial click to enter copy mode; column 30 is inside the right pane.
+        // col offset = 30 - 28 = 2; row offset = 1 - 1 = 0.
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 2,
+            column: 30,
             row: 1,
             modifiers: KeyModifiers::NONE,
         }));
@@ -2434,15 +2510,16 @@ mod tests {
         assert!(app.copy_mode.anchor.is_none());
 
         // First drag event sets the anchor at the current cursor position.
+        // column 33 = col offset 5.
         app.handle_action(Action::Mouse(MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
-            column: 5,
+            column: 33,
             row: 1,
             modifiers: KeyModifiers::NONE,
         }));
 
         assert_eq!(app.copy_mode.anchor, Some(crate::ui::copy_mode::Pos { row: 0, col: 2 }));
-        // Cursor moved to click position (row 0 inside content since no lines).
+        // Cursor moved to drag position (row 0 inside content since no lines).
         // Without loaded detail, current_detail_lines() returns an empty Vec,
         // which clamps row to 0. Column is free-form (display cell).
         assert_eq!(app.copy_mode.cursor.col, 5);
@@ -2518,11 +2595,11 @@ mod tests {
         assert!(app.pr_detail.is_none(), "stale detail must be cleared");
     }
 
-    /// Pressing a digit from the detail view must also flow through the
-    /// [`Action::SwitchTab`] path (not bypass it), so the same
-    /// dashboard-return behaviour applies.
+    /// Pressing a digit in the detail view selects the corresponding section
+    /// (rather than switching tabs). Digit keys 1–5 are captured by the detail
+    /// section switcher; they do NOT return to the dashboard.
     #[test]
-    fn digit_key_from_detail_returns_to_dashboard() {
+    fn digit_key_from_detail_selects_section() {
         let config = crate::config::Config {
             repos: vec!["a/one".to_owned(), "b/two".to_owned()],
             ..Default::default()
@@ -2531,13 +2608,15 @@ mod tests {
         let mut app = App::new(config, session);
         app.focus = Focus::Detail;
 
-        app.handle_key(crossterm::event::KeyEvent::new(
-            KeyCode::Char('2'),
-            KeyModifiers::NONE,
-        ));
+        // '3' maps to section index 2 → Reviews.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
 
-        assert_eq!(app.focus, Focus::Dashboard);
-        assert_eq!(app.tabs.active_index(), Some(1), "tab index 2 maps to 1-based '2' key");
+        assert_eq!(app.focus, Focus::Detail, "digit key in detail must NOT leave detail");
+        assert_eq!(
+            app.pr_detail_selected_section,
+            DetailSection::Reviews,
+            "digit '3' must select Reviews section"
+        );
     }
 
     /// Typing a digit in the repo-picker input field must land in the input
@@ -3196,7 +3275,8 @@ mod tests {
     fn toggle_show_all_flips_flag_and_persists() {
         let dir = tempfile::tempdir().expect("tempdir");
         crate::config::with_config_dir_override(dir.path(), || {
-            let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+            let config =
+                crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
             let session = crate::state::AppSession::default();
             let mut app = App::new(config, session);
 
@@ -3251,8 +3331,8 @@ mod tests {
     /// initialises the cursor to the index of the currently active theme.
     #[test]
     fn c_on_dashboard_opens_theme_picker() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
         use crate::theme::Theme;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
 
         let config = crate::config::Config { theme: Theme::Nord, ..Default::default() };
         let session = crate::state::AppSession::default();
@@ -3269,24 +3349,20 @@ mod tests {
 
         assert_eq!(app.focus, Focus::ThemePicker, "focus must switch to ThemePicker");
         let expected_idx = Theme::ALL.iter().position(|&t| t == Theme::Nord).unwrap();
-        assert_eq!(
-            app.theme_picker_cursor, expected_idx,
-            "cursor must start on the current theme"
-        );
+        assert_eq!(app.theme_picker_cursor, expected_idx, "cursor must start on the current theme");
     }
 
     /// Pressing `Enter` in the theme picker applies the highlighted theme to
     /// `config.theme` and persists it to disk.
     #[test]
     fn enter_in_theme_picker_applies_and_persists() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
         use crate::theme::Theme;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
 
         let tmp = tempfile::tempdir().expect("tempdir");
 
         crate::config::with_config_dir_override(tmp.path(), || {
-            let config =
-                crate::config::Config { theme: Theme::Default, ..Default::default() };
+            let config = crate::config::Config { theme: Theme::Default, ..Default::default() };
             let session = crate::state::AppSession::default();
             let mut app = App::new(config, session);
 
@@ -3316,15 +3392,14 @@ mod tests {
     /// NOT update the persisted config.
     #[test]
     fn esc_in_theme_picker_restores_original_theme() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
         use crate::theme::Theme;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
 
         let tmp = tempfile::tempdir().expect("tempdir");
 
         crate::config::with_config_dir_override(tmp.path(), || {
             // Start with Nord persisted.
-            let config =
-                crate::config::Config { theme: Theme::Nord, ..Default::default() };
+            let config = crate::config::Config { theme: Theme::Nord, ..Default::default() };
             config.save();
 
             let session = crate::state::AppSession::default();
@@ -3356,8 +3431,8 @@ mod tests {
     /// from index 0 wraps to the last item.
     #[test]
     fn cursor_wraps_around_at_list_edges() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
         use crate::theme::Theme;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
 
         let config = crate::config::Config::default();
         let session = crate::state::AppSession::default();
@@ -3386,5 +3461,137 @@ mod tests {
         };
         app.handle_key_theme_picker(down);
         assert_eq!(app.theme_picker_cursor, 0, "Down from last must wrap to 0");
+    }
+
+    // ── Phase 6: sidebar sections ─────────────────────────────────────────────
+
+    /// Pressing digit '3' in detail focus selects the Reviews section.
+    #[test]
+    fn number_key_selects_section() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+
+        assert_eq!(
+            app.pr_detail_selected_section,
+            DetailSection::Reviews,
+            "digit '3' must select Reviews (index 2)"
+        );
+    }
+
+    /// Pressing Tab from Description cycles forward through all 5 sections.
+    #[test]
+    fn tab_cycles_sections() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail_selected_section = DetailSection::Description;
+
+        // Tab → Checks
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Checks);
+
+        // Tab → Reviews
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Reviews);
+
+        // Tab → Files
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+
+        // Tab → Comments
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Comments);
+
+        // Tab wraps back to Description
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            app.pr_detail_selected_section,
+            DetailSection::Description,
+            "Tab from last section must wrap back to Description"
+        );
+    }
+
+    /// `current_detail_lines` returns only the lines for the selected section.
+    #[test]
+    fn current_detail_lines_returns_only_selected_section() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        // Use a fixture with distinct content in each section.
+        app.pr_detail = Some(fixture_pr_detail(3, 2, 4, 2));
+
+        app.pr_detail_selected_section = DetailSection::Description;
+        let desc_lines = app.current_detail_lines();
+
+        app.pr_detail_selected_section = DetailSection::Checks;
+        let check_lines = app.current_detail_lines();
+
+        // The two sections must produce different line counts (different content).
+        assert_ne!(
+            desc_lines.len(),
+            check_lines.len(),
+            "Description and Checks must produce different line buffers"
+        );
+        // Neither must be empty for the fixture with content.
+        assert!(!desc_lines.is_empty(), "Description must have lines");
+        assert!(!check_lines.is_empty(), "Checks must have lines for non-empty fixture");
+    }
+
+    /// A simulated left-click on sidebar section row 2 (Reviews) selects Reviews.
+    #[test]
+    fn mouse_click_on_sidebar_section_row_selects_that_section() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        // Set up a sections_rect: x=0, y=4, w=28, h=7 (header + 5 sections + 1).
+        // Row 4 is the header; row 5 = Description, row 6 = Checks, row 7 = Reviews.
+        let sections_rect = ratatui::layout::Rect::new(0, 4, 28, 7);
+        let files_rect = ratatui::layout::Rect::new(0, 11, 28, 20);
+        app.pr_detail_sidebar_rects.set((sections_rect, files_rect));
+
+        // Click on row 7 → relative row 3 → section index 2 → Reviews.
+        app.handle_sidebar_click(5, 7, sections_rect, files_rect);
+
+        assert_eq!(
+            app.pr_detail_selected_section,
+            DetailSection::Reviews,
+            "clicking row 7 in sections panel (relative 3 = section index 2) must select Reviews"
+        );
+    }
+
+    /// Scrolling Description, switching to Checks (scroll starts at 0),
+    /// then switching back to Description restores its scroll offset.
+    #[test]
+    fn scroll_is_preserved_per_section() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        // Scroll Description down to 15.
+        app.pr_detail_selected_section = DetailSection::Description;
+        *app.scroll_mut(DetailSection::Description) = 15;
+
+        // Switch to Checks — its scroll should start at 0.
+        app.pr_detail_selected_section = DetailSection::Checks;
+        assert_eq!(app.scroll_for(DetailSection::Checks), 0, "fresh section starts at scroll 0");
+
+        // Switch back to Description — its scroll must be restored.
+        app.pr_detail_selected_section = DetailSection::Description;
+        assert_eq!(
+            app.scroll_for(DetailSection::Description),
+            15,
+            "switching back to Description must restore scroll 15"
+        );
     }
 }

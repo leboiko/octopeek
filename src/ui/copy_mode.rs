@@ -128,10 +128,8 @@ pub fn apply_overlay(lines: &[Line<'static>], cm: &CopyMode, p: &Palette) -> Vec
         return lines.to_vec();
     }
     let sel = cm.anchor.map(|a| ordered(a, cm.cursor));
-    let cursor_style = Style::default()
-        .bg(p.selection_bg)
-        .fg(p.selection_fg)
-        .add_modifier(Modifier::REVERSED);
+    let cursor_style =
+        Style::default().bg(p.selection_bg).fg(p.selection_fg).add_modifier(Modifier::REVERSED);
     let sel_style = Style::default().bg(p.selection_bg).fg(p.selection_fg);
 
     lines
@@ -268,10 +266,7 @@ mod tests {
     use ratatui::style::Color;
 
     fn lines(texts: &[&str]) -> Vec<Line<'static>> {
-        texts
-            .iter()
-            .map(|t| Line::from(vec![Span::raw((*t).to_owned())]))
-            .collect()
+        texts.iter().map(|t| Line::from(vec![Span::raw((*t).to_owned())])).collect()
     }
 
     fn pal() -> Palette {
@@ -370,11 +365,7 @@ mod tests {
         let out = apply_overlay(&ls, &cm, &pal());
         let txt: String = out[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(txt, "abc");
-        let cursor_span = out[0]
-            .spans
-            .iter()
-            .find(|s| s.content == "b")
-            .expect("cursor span");
+        let cursor_span = out[0].spans.iter().find(|s| s.content == "b").expect("cursor span");
         assert!(cursor_span.style.add_modifier.contains(Modifier::REVERSED));
     }
 
@@ -389,8 +380,7 @@ mod tests {
         // Chars at col 1..=3 ("bcd") should have selection bg.
         let joined: String = out[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "abcdef");
-        let has_selected_bg =
-            out[0].spans.iter().any(|s| s.style.bg == Some(pal().selection_bg));
+        let has_selected_bg = out[0].spans.iter().any(|s| s.style.bg == Some(pal().selection_bg));
         assert!(has_selected_bg, "no span carries selection_bg: {out:?}");
     }
 
@@ -438,10 +428,8 @@ mod tests {
     fn selection_does_not_replace_fg_when_base_is_styled() {
         // A span with an existing fg should keep the selection bg overlaid
         // but the fg preference is overlay's (selection_fg).
-        let ls: Vec<Line<'static>> = vec![Line::from(vec![Span::styled(
-            "xy".to_owned(),
-            Style::default().fg(Color::Red),
-        )])];
+        let ls: Vec<Line<'static>> =
+            vec![Line::from(vec![Span::styled("xy".to_owned(), Style::default().fg(Color::Red))])];
         let mut cm = CopyMode::default();
         cm.enter(0, 0);
         cm.toggle_selection();

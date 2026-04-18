@@ -291,7 +291,14 @@ impl<'p> Builder<'p> {
         let cell_style = Style::default().fg(p.foreground);
 
         // Top border.
-        self.lines.push(border_line('\u{250C}', '\u{2500}', '\u{252C}', '\u{2510}', &col_widths, border_style));
+        self.lines.push(border_line(
+            '\u{250C}',
+            '\u{2500}',
+            '\u{252C}',
+            '\u{2510}',
+            &col_widths,
+            border_style,
+        ));
         // Header row — falls back to an empty cell when a table has no
         // header (rare but possible with some renderers).
         self.lines.push(span_cell_line(
@@ -304,7 +311,14 @@ impl<'p> Builder<'p> {
             p,
         ));
         // Header/body separator.
-        self.lines.push(border_line('\u{251C}', '\u{2500}', '\u{253C}', '\u{2524}', &col_widths, border_style));
+        self.lines.push(border_line(
+            '\u{251C}',
+            '\u{2500}',
+            '\u{253C}',
+            '\u{2524}',
+            &col_widths,
+            border_style,
+        ));
         // Body rows.
         for row in &rows {
             self.lines.push(span_cell_line(
@@ -318,7 +332,14 @@ impl<'p> Builder<'p> {
             ));
         }
         // Bottom border.
-        self.lines.push(border_line('\u{2514}', '\u{2500}', '\u{2534}', '\u{2518}', &col_widths, border_style));
+        self.lines.push(border_line(
+            '\u{2514}',
+            '\u{2500}',
+            '\u{2534}',
+            '\u{2518}',
+            &col_widths,
+            border_style,
+        ));
     }
 }
 
@@ -351,9 +372,8 @@ impl Palette {
 /// and remaining space is distributed proportionally to each column's
 /// excess over its minimum.
 fn fair_share_widths(natural_widths: &[usize], num_cols: usize, target: usize) -> Vec<usize> {
-    let naturals: Vec<usize> = (0..num_cols)
-        .map(|i| natural_widths.get(i).copied().unwrap_or(1).max(1))
-        .collect();
+    let naturals: Vec<usize> =
+        (0..num_cols).map(|i| natural_widths.get(i).copied().unwrap_or(1).max(1)).collect();
 
     let total_natural: usize = naturals.iter().sum();
     if total_natural <= target {
@@ -369,8 +389,7 @@ fn fair_share_widths(natural_widths: &[usize], num_cols: usize, target: usize) -
     }
 
     let remaining = target - total_min;
-    let total_excess: usize =
-        naturals.iter().zip(&mins).map(|(&n, &m)| n.saturating_sub(m)).sum();
+    let total_excess: usize = naturals.iter().zip(&mins).map(|(&n, &m)| n.saturating_sub(m)).sum();
 
     let mut widths = mins.clone();
     if total_excess > 0 {
@@ -461,7 +480,11 @@ fn span_cell_line(
 
 /// Truncate `spans` to fit in `max_width` display columns, appending an
 /// ellipsis (`…`) in the palette's dim style when truncation occurs.
-fn truncate_spans(spans: &[Span<'static>], max_width: usize, palette: &Palette) -> Vec<Span<'static>> {
+fn truncate_spans(
+    spans: &[Span<'static>],
+    max_width: usize,
+    palette: &Palette,
+) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
     }
@@ -938,14 +961,12 @@ mod tests {
         for (line, label) in [(h1, "h1"), (h2, "h2"), (h3, "h3")] {
             let text = line_text(line);
             assert!(!text.starts_with('#'), "{label} must not keep hash prefix: {text:?}");
-            let main_span = line
-                .spans
-                .iter()
-                .find(|s| !s.content.trim().is_empty())
-                .expect("heading span");
+            let main_span =
+                line.spans.iter().find(|s| !s.content.trim().is_empty()).expect("heading span");
             assert!(
                 main_span.style.add_modifier.contains(Modifier::BOLD),
-                "{label} should be bold: {:?}", main_span.style
+                "{label} should be bold: {:?}",
+                main_span.style
             );
         }
 
@@ -967,10 +988,8 @@ mod tests {
         assert!(rule_h2.is_some(), "h2 should emit a ─ rule line");
 
         // H3 must not get a rule.
-        let after_h3 = text_lines
-            .iter()
-            .position(|l| l.contains("NoRule"))
-            .expect("h3 line present");
+        let after_h3 =
+            text_lines.iter().position(|l| l.contains("NoRule")).expect("h3 line present");
         let next = text_lines.get(after_h3 + 1).map_or("", String::as_str);
         assert!(
             !next.starts_with('\u{2500}') && !next.starts_with('\u{2501}'),
@@ -1035,13 +1054,10 @@ mod tests {
     /// distinct foreground colours across tokens within a single line.
     #[test]
     fn fenced_code_block_long_tag_produces_multicolor_spans() {
-        let src =
-            "```rust\nfn main() { let x: i32 = 42; println!(\"{}\", x); }\n```\n";
+        let src = "```rust\nfn main() { let x: i32 = 42; println!(\"{}\", x); }\n```\n";
         let lines = render_markdown(src, &palette());
-        let code_line = lines
-            .iter()
-            .find(|l| line_text(l).contains("main"))
-            .expect("highlighted code line");
+        let code_line =
+            lines.iter().find(|l| line_text(l).contains("main")).expect("highlighted code line");
 
         // Collect the unique foreground colours seen across all spans on
         // the line. A syntax-highlighted line should have several — keyword,
@@ -1062,10 +1078,8 @@ mod tests {
     fn fenced_code_block_python_long_tag_highlights() {
         let src = "```python\ndef f(x):\n    return x + 1\n```\n";
         let lines = render_markdown(src, &palette());
-        let code_line = lines
-            .iter()
-            .find(|l| line_text(l).contains("def"))
-            .expect("highlighted code line");
+        let code_line =
+            lines.iter().find(|l| line_text(l).contains("def")).expect("highlighted code line");
         let unique_fgs: std::collections::HashSet<_> =
             code_line.spans.iter().filter_map(|s| s.style.fg).collect();
         assert!(
@@ -1173,10 +1187,7 @@ mod tests {
 
         // Explicitly verify the old placeholder is gone so a future
         // regression to "[table]" fails loudly.
-        assert!(
-            !joined.contains("[table]"),
-            "table placeholder leaked back into output: {joined}"
-        );
+        assert!(!joined.contains("[table]"), "table placeholder leaked back into output: {joined}");
     }
 
     #[test]

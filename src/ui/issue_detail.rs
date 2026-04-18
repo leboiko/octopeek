@@ -35,7 +35,10 @@ use crate::ui::util::humanize_delta;
 /// The [`IssueDetail`] model carries the state as a free-form `String` (`"OPEN"`,
 /// `"CLOSED"`). We map the known values to palette colours and fall back to
 /// `dim` for anything unexpected so new states don't crash the header.
-fn issue_state_label(detail: &IssueDetail, p: &crate::theme::Palette) -> (String, ratatui::style::Color) {
+fn issue_state_label(
+    detail: &IssueDetail,
+    p: &crate::theme::Palette,
+) -> (String, ratatui::style::Color) {
     match detail.state.as_str() {
         "OPEN" => ("OPEN".to_owned(), p.success),
         "CLOSED" => ("CLOSED".to_owned(), p.accent_alt),
@@ -55,10 +58,7 @@ pub fn build_header(detail: &IssueDetail, p: &crate::theme::Palette) -> Vec<Line
             Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
-        Span::styled(
-            state_text,
-            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(state_text, Style::default().fg(state_color).add_modifier(Modifier::BOLD)),
         Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
         Span::styled(format!("@{}", detail.author), Style::default().fg(p.foreground)),
         Span::styled(format!(" opened {age}"), Style::default().fg(p.dim)),
@@ -89,10 +89,7 @@ fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
     let rule = "\u{2501}".repeat(3); // ━━━
     Line::from(vec![
         Span::styled(format!("{rule} "), Style::default().fg(p.accent)),
-        Span::styled(
-            label.to_owned(),
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(label.to_owned(), Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
     ])
 }
 
@@ -265,7 +262,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(body_area);
     app.pr_detail_viewport.set(inner);
 
-    let scroll = app.pr_detail_scroll;
+    // Issue detail uses a flat scroll (no section switcher). We use the
+    // Description section's scroll slot as the shared scroll offset for
+    // the issue view, consistent with the PR detail's per-section map.
+    let scroll = app.scroll_for(crate::ui::pr_detail::DetailSection::Description);
 
     let widget = if app.copy_mode.active {
         let overlaid = crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p);

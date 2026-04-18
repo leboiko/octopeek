@@ -595,9 +595,7 @@ pub fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox {
         .nodes
         .into_iter()
         .flatten()
-        .filter_map(|node| {
-            if let SearchNode::Pr(raw) = node { Some(raw) } else { None }
-        })
+        .filter_map(|node| if let SearchNode::Pr(raw) = node { Some(raw) } else { None })
         .map(|raw| {
             // Derive roles from the PR's data fields.
             let mut roles: Vec<Role> = Vec::new();

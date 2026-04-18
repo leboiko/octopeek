@@ -54,10 +54,8 @@ fn build_lines(app: &App) -> Vec<Line<'static>> {
     let cursor = app.theme_picker_cursor;
     let active_theme = app.config.theme;
 
-    let cursor_style =
-        Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
-    let active_style =
-        Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD);
+    let cursor_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let active_style = Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD);
     let text_style = Style::default().fg(p.foreground);
     let dim_style = p.dim_style();
 
@@ -67,7 +65,15 @@ fn build_lines(app: &App) -> Vec<Line<'static>> {
     for (idx, &theme) in Theme::ALL.iter().enumerate() {
         let is_cursor = idx == cursor;
         let is_active = theme == active_theme;
-        lines.push(theme_row(is_cursor, is_active, theme.label(), cursor_style, active_style, text_style, dim_style));
+        lines.push(theme_row(
+            is_cursor,
+            is_active,
+            theme.label(),
+            cursor_style,
+            active_style,
+            text_style,
+            dim_style,
+        ));
     }
 
     lines.push(Line::from(""));
@@ -112,8 +118,7 @@ fn theme_row(
 
 /// Compute a centered [`Rect`] of the requested dimensions within `area`.
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let vertical =
-        Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).split(area);
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).split(area);
     Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).split(vertical[0])[0]
 }
 
@@ -130,8 +135,7 @@ mod tests {
         let session = crate::state::AppSession::default();
         let mut app = crate::app::App::new(config, session);
         // Position cursor on the active theme so the highlight is visible.
-        app.theme_picker_cursor =
-            Theme::ALL.iter().position(|&t| t == theme).unwrap_or(0);
+        app.theme_picker_cursor = Theme::ALL.iter().position(|&t| t == theme).unwrap_or(0);
         app.focus = crate::app::Focus::ThemePicker;
         app
     }
@@ -146,8 +150,7 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).expect("draw");
 
         let buffer = terminal.backend().buffer();
-        let rendered: String =
-            buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        let rendered: String = buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
 
         for theme in Theme::ALL {
             assert!(
@@ -168,8 +171,7 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).expect("draw");
 
         let buffer = terminal.backend().buffer();
-        let rendered: String =
-            buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        let rendered: String = buffer.content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(rendered.contains("Theme"), "modal title must be rendered");
     }
 }

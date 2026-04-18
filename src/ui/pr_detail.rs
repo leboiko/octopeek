@@ -1,14 +1,18 @@
 //! PR detail panel — renders all sections for a single pull request.
 //!
-//! Layout (vertically scrollable):
-//! 1. Banner (primary action flag, if not Clean/Draft)
-//! 2. Title
-//! 3. Meta line (author, age, commits, diff stats, comments)
-//! 4. Body (rendered Markdown)
-//! 5. CHECKS section
-//! 6. REVIEWS section
-//! 7. FILES CHANGED section
-//! 8. COMMENTS section
+//! Layout:
+//! ┌─────────── sticky header (unchanged) ──────────┐
+//! ├─── sidebar (28 cols) ───┬── right pane ────────┤
+//! │ SECTIONS                │                      │
+//! │ ▶ Description           │  content for the     │
+//! │   Checks                │  currently selected  │
+//! │   Reviews               │  section             │
+//! │   Files                 │                      │
+//! │   Comments              │                      │
+//! ├─────────────────────────┤                      │
+//! │ FILES CHANGED           │                      │
+//! │   src/a.rs              │                      │
+//! └─────────────────────────┴──────────────────────┘
 //!
 //! ## Thread hierarchy contract
 //!
@@ -16,17 +20,13 @@
 //! reader can see at a glance that all comments belong to one conversation.
 //! The first comment in a thread is the opener; subsequent comments are prefixed
 //! with `↳ ` in `palette.dim` to signal "this is a reply".
-//!
-//! `unresolved_anchors` returned by `build_content` always point at the
-//! thread-header line (the `⚑/✓/◆ path:line` line), never at a comment body
-//! line, so `n`/`N` navigation lands the reader at the right place.
 
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -36,15 +36,61 @@ use crate::github::types::ReviewState;
 use crate::ui::markdown::render_markdown;
 use crate::ui::util::{humanize_delta, truncate};
 
-// ── Section anchor bookkeeping ────────────────────────────────────────────────
+// ── Section enum ──────────────────────────────────────────────────────────────
 
-/// Y-offsets (relative to the content top) where each major section begins.
+/// The five switchable sections in the PR detail sidebar.
 ///
-/// Computed fresh every render frame so they stay accurate as content wraps.
-///
-/// Stored on [`App`] via [`crate::app::App::pr_detail_section_anchors`] and
-/// written out by `collect_anchors` during rendering.
-pub type SectionAnchors = Vec<u16>;
+/// `ALL` gives a stable iteration order; `label()` returns the display string
+/// shown in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DetailSection {
+    /// The PR description (rendered Markdown body).
+    #[default]
+    Description,
+    /// CI check-run results.
+    Checks,
+    /// Review approvals / change-requests.
+    Reviews,
+    /// Files changed listing.
+    Files,
+    /// Review threads and issue comments.
+    Comments,
+}
+
+impl DetailSection {
+    /// All sections in display order.
+    pub const ALL: [DetailSection; 5] = [
+        DetailSection::Description,
+        DetailSection::Checks,
+        DetailSection::Reviews,
+        DetailSection::Files,
+        DetailSection::Comments,
+    ];
+
+    /// Human-readable label used in the sidebar list and help text.
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailSection::Description => "Description",
+            DetailSection::Checks => "Checks",
+            DetailSection::Reviews => "Reviews",
+            DetailSection::Files => "Files",
+            DetailSection::Comments => "Comments",
+        }
+    }
+
+    /// Returns `true` when this section has displayable content in `detail`.
+    pub fn has_content(self, detail: &PrDetail) -> bool {
+        match self {
+            DetailSection::Description => true, // always shown (even if body is empty)
+            DetailSection::Checks => !detail.check_runs.is_empty(),
+            DetailSection::Reviews => !detail.reviews.is_empty(),
+            DetailSection::Files => !detail.files.is_empty(),
+            DetailSection::Comments => {
+                !detail.review_threads.is_empty() || !detail.issue_comments.is_empty()
+            }
+        }
+    }
+}
 
 // ── Check run helpers ─────────────────────────────────────────────────────────
 
@@ -124,10 +170,7 @@ pub fn build_header(detail: &PrDetail, p: &crate::theme::Palette) -> Vec<Line<'s
             Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
-        Span::styled(
-            state_text,
-            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(state_text, Style::default().fg(state_color).add_modifier(Modifier::BOLD)),
         Span::styled("  \u{00B7}  ", Style::default().fg(p.dim)),
         Span::styled(format!("@{}", detail.author), Style::default().fg(p.foreground)),
         Span::styled(format!(" opened {age}"), Style::default().fg(p.dim)),
@@ -152,7 +195,11 @@ pub fn build_header(detail: &PrDetail, p: &crate::theme::Palette) -> Vec<Line<'s
             Style::default().fg(p.danger),
         ),
         Span::styled(
-            format!("  across {} files  \u{00B7}  {} comments", detail.changed_files_count, detail.issue_comments.len()),
+            format!(
+                "  across {} files  \u{00B7}  {} comments",
+                detail.changed_files_count,
+                detail.issue_comments.len()
+            ),
             Style::default().fg(p.dim),
         ),
     ]);
@@ -198,14 +245,8 @@ fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
     // · 7 unresolved)" stay legible instead of wrapping mid-rule.
     let rule = "\u{2501}".repeat(3); // ━━━
     Line::from(vec![
-        Span::styled(
-            format!("{rule} "),
-            Style::default().fg(p.accent),
-        ),
-        Span::styled(
-            label.to_owned(),
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!("{rule} "), Style::default().fg(p.accent)),
+        Span::styled(label.to_owned(), Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
     ])
 }
 
@@ -221,11 +262,8 @@ fn tint_line(line: &Line<'static>, bg: Color, width: u16) -> Line<'static> {
     let target = usize::from(width);
     let pad = target.saturating_sub(current_width);
 
-    let mut spans: Vec<Span<'static>> = line
-        .spans
-        .iter()
-        .map(|s| Span::styled(s.content.clone(), s.style.bg(bg)))
-        .collect();
+    let mut spans: Vec<Span<'static>> =
+        line.spans.iter().map(|s| Span::styled(s.content.clone(), s.style.bg(bg))).collect();
     if pad > 0 {
         spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
     }
@@ -504,11 +542,7 @@ fn thread_gutter(ascii: bool) -> &'static str {
 /// syntect-highlighted code-block lines), the gutter span inherits that
 /// background so the code-block's colored rail extends cleanly through the
 /// gutter column instead of breaking to the terminal default.
-fn gutter_lines(
-    md_lines: Vec<Line<'static>>,
-    gutter_fg: Color,
-    ascii: bool,
-) -> Vec<Line<'static>> {
+fn gutter_lines(md_lines: Vec<Line<'static>>, gutter_fg: Color, ascii: bool) -> Vec<Line<'static>> {
     md_lines
         .into_iter()
         .map(|mut line| {
@@ -833,97 +867,116 @@ fn push_alt_range(ranges: &mut Vec<(u16, u16)>, start: usize, end: usize, alt_on
     ranges.push((start, end));
 }
 
-// ── Top-level content builder ─────────────────────────────────────────────────
+// ── Per-section builders ──────────────────────────────────────────────────────
 
-/// Build all content lines for the PR detail view.
+/// Build lines for the Description section.
 ///
-/// Returns `(lines, section_anchors, unresolved_thread_anchors)` where anchors
-/// are absolute Y offsets within the content.
+/// Returns `(lines, alt_bg_ranges)` — ranges are always empty here (no tinting).
+fn build_description(
+    detail: &PrDetail,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    let mut lines = Vec::new();
+    if !detail.body_markdown.is_empty() {
+        lines.extend(render_markdown(&detail.body_markdown, p));
+        lines.push(Line::from(""));
+    }
+    (lines, Vec::new())
+}
+
+/// Build lines for the Checks section.
 ///
-/// `unresolved_thread_anchors` always point at the thread-header line for each
-/// unresolved thread so `n`/`N` navigation in the key handler works correctly.
-#[allow(clippy::type_complexity)] // Single public API; a named struct would obscure callers more than clarify.
-pub fn build_content(
+/// Returns `(lines, alt_bg_ranges)` — ranges are always empty here.
+fn build_checks(
+    detail: &PrDetail,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    if detail.check_runs.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut lines = checks_lines(detail, p);
+    lines.push(Line::from(""));
+    (lines, Vec::new())
+}
+
+/// Build lines for the Reviews section.
+///
+/// Returns `(lines, alt_bg_ranges)` — ranges are always empty here.
+fn build_reviews(
+    detail: &PrDetail,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    if detail.reviews.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut lines = reviews_lines(detail, p);
+    lines.push(Line::from(""));
+    (lines, Vec::new())
+}
+
+/// Build lines for the Files section.
+///
+/// Returns `(lines, alt_bg_ranges)` — ranges are always empty here.
+fn build_files(
+    detail: &PrDetail,
+    files_expanded: bool,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    if detail.files.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut lines = files_lines(detail, files_expanded, p);
+    lines.push(Line::from(""));
+    (lines, Vec::new())
+}
+
+/// Build lines for the Comments section.
+///
+/// Returns `(lines, alt_bg_ranges)` — ranges carry the alternating-bg tint
+/// coordinates used by `apply_alt_bg` at draw time.
+fn build_comments(
+    detail: &PrDetail,
+    comments_expanded: bool,
+    p: &crate::theme::Palette,
+    ascii: bool,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    let has_comments = !detail.review_threads.is_empty() || !detail.issue_comments.is_empty();
+    if !has_comments {
+        return (Vec::new(), Vec::new());
+    }
+    let (comment_lines, _unresolved, alt_ranges) =
+        comments_lines(detail, comments_expanded, p, ascii);
+    (comment_lines, alt_ranges)
+}
+
+/// Dispatch to the per-section builder for the given [`DetailSection`].
+///
+/// The second tuple element is the alt-bg range list; non-empty only for
+/// [`DetailSection::Comments`].
+///
+/// # Arguments
+///
+/// * `section` - Which section to render.
+/// * `detail` - The loaded PR detail.
+/// * `files_expanded` - Whether the files list is expanded in the Files section.
+/// * `comments_expanded` - Whether comments are expanded in the Comments section.
+/// * `p` - Current colour palette.
+/// * `ascii` - Use ASCII glyphs instead of Unicode box-drawing.
+pub fn build_section(
+    section: DetailSection,
     detail: &PrDetail,
     files_expanded: bool,
     comments_expanded: bool,
     p: &crate::theme::Palette,
     ascii: bool,
-) -> (Vec<Line<'static>>, SectionAnchors, Vec<u16>, Vec<(u16, u16)>) {
-    let mut all_lines: Vec<Line<'static>> = Vec::new();
-    let mut section_anchors: SectionAnchors = Vec::new();
-    let mut unresolved_anchors: Vec<u16> = Vec::new();
-    let mut alt_bg_ranges: Vec<(u16, u16)> = Vec::new();
-
-    // The banner, title, and meta lines used to live at the top of the
-    // scrolling content. They are now rendered by `build_header` into a fixed
-    // region above the body, so the body starts directly with the description
-    // markdown. Tab navigation anchors accordingly begin at BODY / CHECKS /
-    // whichever section is the first with content.
-
-    // ── Body (rendered Markdown) ───────────────────────────────────────────────
-    // The body gets its own anchor (even when empty) so Tab navigation always
-    // has a "top" target to jump to. This preserves the behaviour of the old
-    // banner/title anchors for users who rely on `gg` or Shift+Tab-to-top.
-    #[allow(clippy::cast_possible_truncation)]
-    let body_anchor = all_lines.len() as u16;
-    section_anchors.push(body_anchor);
-    if !detail.body_markdown.is_empty() {
-        let body_lines = render_markdown(&detail.body_markdown, p);
-        all_lines.extend(body_lines);
-        all_lines.push(Line::from(""));
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    match section {
+        DetailSection::Description => build_description(detail, p),
+        DetailSection::Checks => build_checks(detail, p),
+        DetailSection::Reviews => build_reviews(detail, p),
+        DetailSection::Files => build_files(detail, files_expanded, p),
+        DetailSection::Comments => build_comments(detail, comments_expanded, p, ascii),
     }
-
-    // ── CHECKS ───────────────────────────────────────────────────────────────
-    if !detail.check_runs.is_empty() {
-        #[allow(clippy::cast_possible_truncation)]
-        let checks_anchor = all_lines.len() as u16;
-        section_anchors.push(checks_anchor);
-        all_lines.push(section_header("CHECKS", p));
-        all_lines.extend(checks_lines(detail, p));
-        all_lines.push(Line::from(""));
-    }
-
-    // ── REVIEWS ───────────────────────────────────────────────────────────────
-    if !detail.reviews.is_empty() {
-        #[allow(clippy::cast_possible_truncation)]
-        let reviews_anchor = all_lines.len() as u16;
-        section_anchors.push(reviews_anchor);
-        all_lines.push(section_header("REVIEWS", p));
-        all_lines.extend(reviews_lines(detail, p));
-        all_lines.push(Line::from(""));
-    }
-
-    // ── FILES CHANGED ─────────────────────────────────────────────────────────
-    if !detail.files.is_empty() {
-        #[allow(clippy::cast_possible_truncation)]
-        let files_anchor = all_lines.len() as u16;
-        section_anchors.push(files_anchor);
-        all_lines
-            .push(section_header(&format!("FILES CHANGED ({})", detail.changed_files_count), p));
-        all_lines.extend(files_lines(detail, files_expanded, p));
-        all_lines.push(Line::from(""));
-    }
-
-    // ── COMMENTS ─────────────────────────────────────────────────────────────
-    let has_comments = !detail.review_threads.is_empty() || !detail.issue_comments.is_empty();
-    if has_comments {
-        #[allow(clippy::cast_possible_truncation)]
-        let comments_anchor = all_lines.len() as u16;
-        section_anchors.push(comments_anchor);
-        let (comment_lines, thread_offsets, comment_alt_ranges) =
-            comments_lines(detail, comments_expanded, p, ascii);
-        // Convert thread relative offsets to absolute Y offsets.
-        for offset in thread_offsets {
-            unresolved_anchors.push(comments_anchor + offset);
-        }
-        for (a, b) in comment_alt_ranges {
-            alt_bg_ranges.push((comments_anchor + a, comments_anchor + b));
-        }
-        all_lines.extend(comment_lines);
-    }
-
-    (all_lines, section_anchors, unresolved_anchors, alt_bg_ranges)
 }
 
 // ── draw (public entry point) ─────────────────────────────────────────────────
@@ -933,7 +986,8 @@ pub fn build_content(
 /// Handles three states:
 /// - Fetching (no detail yet): centered spinner text.
 /// - Error (fetch failed): error panel with retry hint.
-/// - Loaded: full scrollable detail layout.
+/// - Loaded: full sidebar + right-pane layout beneath a sticky header.
+#[allow(clippy::too_many_lines)]
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let p = &app.palette;
 
@@ -973,26 +1027,125 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // Split the detail area into a fixed-height sticky header and the
-    // scrollable body below it. The header stays visible no matter how far
-    // the reader scrolls, so the repo/number/title/branches context never
-    // drops out of view. A thin rule drawn by `render_pr_header` separates
-    // the two regions so the tint band has a clean lower edge.
+    // ── C1. Sticky header (unchanged) ─────────────────────────────────────────
     let header_lines = build_header(detail, p);
     #[allow(clippy::cast_possible_truncation)]
     let header_rows = (header_lines.len() + 2) as u16; // +2 = top pad + bottom rule
     let header_rows = header_rows.min(area.height);
-    let splits = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(header_rows),
-        ratatui::layout::Constraint::Min(1),
-    ])
-    .split(area);
-    let header_area = splits[0];
-    let body_area = splits[1];
+    let vsplits =
+        ratatui::layout::Layout::vertical([Constraint::Length(header_rows), Constraint::Min(1)])
+            .split(area);
+    let header_area = vsplits[0];
+    let body_area = vsplits[1];
 
     render_pr_header(f, header_lines, header_area, p);
 
-    let (content_lines, _section_anchors, _unresolved_anchors, alt_bg_ranges) = build_content(
+    // ── C2. Sidebar + right pane ───────────────────────────────────────────────
+    // Sidebar is fixed at 28 columns; right pane takes the remainder.
+    let hsplits =
+        ratatui::layout::Layout::horizontal([Constraint::Length(28), Constraint::Min(20)])
+            .split(body_area);
+    let sidebar_area = hsplits[0];
+    let right_area = hsplits[1];
+
+    // Sidebar sub-split: sections list (top) + files list (bottom).
+    // The sections panel always shows 5 rows + 1 header + 1 border line = 7 rows.
+    let sidebar_sections_height: u16 = 7;
+    let vsidebar = ratatui::layout::Layout::vertical([
+        Constraint::Length(sidebar_sections_height.min(sidebar_area.height)),
+        Constraint::Min(0),
+    ])
+    .split(sidebar_area);
+    let sections_area = vsidebar[0];
+    let files_area = vsidebar[1];
+
+    // Cache sidebar and right-pane rects for mouse hit-testing.
+    app.pr_detail_sidebar_rects.set((sections_area, files_area));
+
+    // ── C3. Render sections list ───────────────────────────────────────────────
+    let selected_section = app.pr_detail_selected_section;
+    let indicator = if app.config.show_ascii_glyphs { "> " } else { "\u{25b6} " }; // ▶
+    let placeholder = "  ";
+
+    let mut section_lines: Vec<Line<'static>> = Vec::new();
+    // Header row.
+    section_lines.push(Line::from(Span::styled(
+        "SECTIONS".to_owned(),
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+    )));
+    for sec in DetailSection::ALL {
+        let is_selected = sec == selected_section;
+        let prefix = if is_selected { indicator } else { placeholder };
+        let style = if is_selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else if sec.has_content(detail) {
+            Style::default().fg(p.foreground)
+        } else {
+            Style::default().fg(p.dim)
+        };
+        section_lines.push(Line::from(Span::styled(format!("{prefix}{}", sec.label()), style)));
+    }
+
+    let sections_block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(Style::default().fg(p.border_focused))
+        .style(Style::default().bg(p.background));
+    let sections_inner = sections_block.inner(sections_area);
+    f.render_widget(Paragraph::new(section_lines).block(sections_block), sections_area);
+
+    // ── C4. Render files list ──────────────────────────────────────────────────
+    let mut file_list_lines: Vec<Line<'static>> = Vec::new();
+    let files_header = format!("FILES CHANGED ({})", detail.changed_files_count);
+    file_list_lines.push(Line::from(Span::styled(
+        files_header,
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+    )));
+
+    // Sort files by magnitude (additions + deletions) descending, same as `files_lines`.
+    let mut sorted_files: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
+    sorted_files.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+
+    let sidebar_inner_width = usize::from(sections_inner.width).saturating_sub(1);
+    let files_cursor = app.pr_detail_files_cursor;
+    for (idx, file) in sorted_files.iter().enumerate() {
+        let glyph = file_kind_glyph(file.change_kind);
+        let glyph_color = match file.change_kind {
+            FileChangeKind::Added => p.success,
+            FileChangeKind::Modified => p.warning,
+            FileChangeKind::Deleted => p.danger,
+            FileChangeKind::Renamed => p.accent,
+            FileChangeKind::Copied | FileChangeKind::Changed => p.muted,
+        };
+        // Truncate path to fit within the sidebar.
+        let path_budget = sidebar_inner_width.saturating_sub(2); // 2 = glyph + space
+        let path = truncate(&file.path, path_budget);
+
+        let is_active_file = selected_section == DetailSection::Files && idx == files_cursor;
+        let line_style = if is_active_file {
+            Style::default().bg(p.selection_bg).fg(p.foreground)
+        } else {
+            Style::default()
+        };
+        let line = Line::from(vec![
+            Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
+            Span::styled(path, line_style.fg(p.foreground)),
+        ]);
+        file_list_lines.push(line);
+    }
+
+    let files_block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(Style::default().fg(p.border_focused))
+        .style(Style::default().bg(p.background));
+    let files_scroll = app.pr_detail_sidebar_scroll;
+    f.render_widget(
+        Paragraph::new(file_list_lines).block(files_block).scroll((files_scroll, 0)),
+        files_area,
+    );
+
+    // ── C5. Render right pane ──────────────────────────────────────────────────
+    let (content_lines, alt_bg_ranges) = build_section(
+        selected_section,
         detail,
         app.pr_detail_files_expanded,
         app.pr_detail_comments_expanded,
@@ -1000,43 +1153,22 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.config.show_ascii_glyphs,
     );
 
-    // Reading the detail in a terminal-wide column is visually hostile: long
-    // lines turn into endless sentences and comment blocks blur into each
-    // other. A padded inner rect creates a narrower reading column and a
-    // gutter of breathing room on each side.
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
         .padding(Padding::new(2, 2, 0, 0));
-    let inner = block.inner(body_area);
+    let inner = block.inner(right_area);
 
-    // Cache the inner rect (not the outer area) so key handlers auto-scroll
-    // based on the actual content viewport, and mouse coordinates map into
-    // the content's coordinate system rather than landing on the pad columns.
-    // Note: this is the *body* rect; the header is non-interactive (no copy
-    // mode or cursor lands there), so header clicks are correctly ignored
-    // by the bounds-check in `App::mouse_to_content_pos`.
+    // Cache the right-pane inner rect for copy-mode and mouse coordinate mapping.
     app.pr_detail_viewport.set(inner);
+    app.pr_detail_right_viewport.set(inner);
 
-    let scroll = app.pr_detail_scroll;
+    let scroll = app.scroll_for(selected_section);
 
-    // Alternating comment tint. In the normal view we let `apply_alt_bg`
-    // pre-wrap long tinted lines at character boundaries so each visual row
-    // fills the viewport with the tint — ratatui's word-wrap used to leave
-    // trailing cells of wrapped rows unpainted. In copy mode we keep the
-    // 1:1 line mapping so the cursor row math stays honest; wrap is already
-    // disabled in that branch, so long lines just extend off-screen with a
-    // padded tint (fine, never actually broken into multiple rows).
-    let tinted_lines = apply_alt_bg(
-        &content_lines,
-        &alt_bg_ranges,
-        p.help_bg,
-        inner.width,
-        !app.copy_mode.active,
-    );
+    // Alt-bg tinting for comment threads.
+    let tinted_lines =
+        apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg, inner.width, !app.copy_mode.active);
 
-    // In copy mode we disable wrapping so that logical lines map 1:1 to screen
-    // lines — otherwise the cursor's logical column would not match any
-    // predictable screen column. Horizontal scrolling kicks in for long lines.
+    // In copy mode, disable wrapping so logical lines map 1:1 to screen rows.
     let widget = if app.copy_mode.active {
         let overlaid = crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p);
         Paragraph::new(overlaid)
@@ -1051,7 +1183,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .scroll((scroll, 0))
     };
 
-    f.render_widget(widget, body_area);
+    f.render_widget(widget, right_area);
+
+    // Suppress unused warning on sections_inner — it was computed to derive
+    // sidebar_inner_width and is intentionally not rendered directly.
+    let _ = sections_inner;
 }
 
 /// Render the sticky PR header into `area`.
@@ -1107,7 +1243,7 @@ pub mod tests {
     use crate::theme::Palette;
     use chrono::Utc;
 
-    /// Build a fixture `PrDetail` with a configurable number of checks, reviews, and files.
+    /// Build a fixture `PrDetail` with a configurable number of checks, reviews, files, and threads.
     pub fn fixture_pr_detail(
         num_checks: usize,
         num_reviews: usize,
@@ -1208,34 +1344,44 @@ pub mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// Section anchors must be monotonically non-decreasing and contain one
-    /// entry for each major section that has content.
+    /// Each `build_section` call for a section with content must return at
+    /// least one line.
     #[test]
-    fn section_anchors_are_monotone() {
-        let detail = fixture_pr_detail(3, 2, 4, 2);
-        let p = Palette::default();
-        let (_, anchors, _, _) = build_content(&detail, false, false, &p, false);
-
-        // We have: banner, title, checks, reviews, files, comments = 6 anchors.
-        assert!(!anchors.is_empty(), "anchors should not be empty");
-
-        // Each anchor must be >= the previous (monotone non-decreasing).
-        for window in anchors.windows(2) {
-            assert!(window[1] >= window[0], "anchors not monotone: {anchors:?}");
-        }
-    }
-
-    /// Anchor list includes every body-side section that has content. Since
-    /// the sticky header moved banner/title/meta out of the scrolling body,
-    /// the first anchor is now BODY rather than the old BANNER.
-    #[test]
-    fn section_anchors_count_matches_content() {
+    fn build_section_non_empty_sections_have_lines() {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
-        let (_, anchors, _, _) = build_content(&detail, false, false, &p, false);
-        // body + checks + reviews + files + comments = 5
-        assert_eq!(anchors.len(), 5, "expected 5 anchors for full fixture, got {}", anchors.len());
-        assert_eq!(anchors[0], 0, "body anchor must be the top of the scroll buffer");
+
+        let (desc, _) = build_section(DetailSection::Description, &detail, false, false, &p, false);
+        assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
+
+        let (checks, _) = build_section(DetailSection::Checks, &detail, false, false, &p, false);
+        assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
+
+        let (reviews, _) = build_section(DetailSection::Reviews, &detail, false, false, &p, false);
+        assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
+
+        let (files, _) = build_section(DetailSection::Files, &detail, false, false, &p, false);
+        assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
+
+        let (comments, _) =
+            build_section(DetailSection::Comments, &detail, false, false, &p, false);
+        assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
+    }
+
+    /// `build_section` for an empty section returns an empty line vec.
+    #[test]
+    fn build_section_empty_sections_have_no_lines() {
+        let detail = fixture_pr_detail(0, 0, 0, 0); // only issue comment, no threads
+        let p = Palette::default();
+
+        let (checks, _) = build_section(DetailSection::Checks, &detail, false, false, &p, false);
+        assert!(checks.is_empty(), "Checks must be empty when no check_runs");
+
+        let (reviews, _) = build_section(DetailSection::Reviews, &detail, false, false, &p, false);
+        assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
+
+        let (files, _) = build_section(DetailSection::Files, &detail, false, false, &p, false);
+        assert!(files.is_empty(), "Files must be empty when no files");
     }
 
     /// The sticky header must contain the repo/number, title, state label,
@@ -1279,22 +1425,7 @@ pub mod tests {
         assert!(text.contains("MERGED"), "merged label missing: {text}");
     }
 
-    /// Unresolved thread anchors must be a subset of the total anchor range.
-    #[test]
-    fn unresolved_anchors_within_total_lines() {
-        let detail = fixture_pr_detail(1, 1, 1, 4); // 4 threads, some unresolved
-        let p = Palette::default();
-        let (lines, _, unresolved, _) = build_content(&detail, false, false, &p, false);
-
-        #[allow(clippy::cast_possible_truncation)]
-        let total = lines.len() as u16;
-        for &anchor in &unresolved {
-            assert!(anchor < total, "unresolved anchor {anchor} >= total lines {total}");
-        }
-    }
-
-    /// Alternating-bg ranges must cover every other top-level comment (threads
-    /// + issue comments) and stay within the comments section's line range.
+    /// Alternating-bg ranges from the Comments section must not overlap.
     #[test]
     fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
         // Fixture: 3 threads + 1 issue comment = 4 top-level items.
@@ -1302,18 +1433,18 @@ pub mod tests {
         // and 4 receive alt bg. That's 2 ranges.
         let detail = fixture_pr_detail(0, 0, 0, 3);
         let p = Palette::default();
-        let (lines, anchors, _, alt_ranges) = build_content(&detail, false, true, &p, false);
+        let (lines, alt_ranges) =
+            build_section(DetailSection::Comments, &detail, false, true, &p, false);
 
-        assert_eq!(alt_ranges.len(), 2, "expected 2 alt ranges for 4 items starting off, got {alt_ranges:?}");
+        assert_eq!(
+            alt_ranges.len(),
+            2,
+            "expected 2 alt ranges for 4 items starting off, got {alt_ranges:?}"
+        );
 
-        // Every range must fall within the comments section, which starts at
-        // the last anchor. The comments section header line itself is not in
-        // any range (push_alt_range starts counting after the header).
-        let comments_anchor = *anchors.last().expect("comments anchor");
         #[allow(clippy::cast_possible_truncation)]
         let total = lines.len() as u16;
         for &(start, end) in &alt_ranges {
-            assert!(start > comments_anchor, "range {start}..{end} starts before/at the section header {comments_anchor}");
             assert!(end <= total, "range {start}..{end} exceeds total lines {total}");
             assert!(start < end, "empty range {start}..{end}");
         }
@@ -1331,8 +1462,12 @@ pub mod tests {
     fn alt_bg_empty_when_single_comment() {
         let detail = fixture_pr_detail(0, 0, 0, 0); // 0 threads, only 1 issue comment
         let p = Palette::default();
-        let (_, _, _, alt_ranges) = build_content(&detail, false, true, &p, false);
-        assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
+        let (_, alt_ranges) =
+            build_section(DetailSection::Comments, &detail, false, true, &p, false);
+        assert!(
+            alt_ranges.is_empty(),
+            "first top-level item should not be tinted, got {alt_ranges:?}"
+        );
     }
 
     /// Long lines in the tinted range must be split into multiple fully-
@@ -1359,10 +1494,8 @@ pub mod tests {
             }
         }
         // Content preserved across the split.
-        let joined: String = wrapped
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-            .collect();
+        let joined: String =
+            wrapped.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
         assert!(joined.starts_with("abcdefghijklmnopqrstuvwxy"), "content preserved: {joined}");
     }
 
@@ -1438,8 +1571,10 @@ pub mod tests {
     fn files_expanded_shows_more() {
         let detail = fixture_pr_detail(0, 0, 10, 0);
         let p = Palette::default();
-        let (lines_collapsed, _, _, _) = build_content(&detail, false, false, &p, false);
-        let (lines_expanded, _, _, _) = build_content(&detail, true, false, &p, false);
+        let (lines_collapsed, _) =
+            build_section(DetailSection::Files, &detail, false, false, &p, false);
+        let (lines_expanded, _) =
+            build_section(DetailSection::Files, &detail, true, false, &p, false);
         assert!(lines_expanded.len() > lines_collapsed.len(), "expanded should produce more lines");
     }
 
@@ -1486,7 +1621,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
 
         // Count lines whose first non-gutter span has a non-plain style (heading or code).
         // At minimum we expect a heading line (BOLD modifier) and a code-block line.
@@ -1556,7 +1691,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
 
         // Collect all lines that contain an author name.
         // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
@@ -1629,7 +1764,9 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, unresolved, _) = build_content(&detail, false, true, &p, false);
+        // The unresolved thread must appear in the Comments section.
+        // comments_lines returns (lines, unresolved_offsets, alt_ranges); we call it directly.
+        let (lines, unresolved, _) = comments_lines(&detail, true, &p, false);
 
         assert_eq!(unresolved.len(), 1, "expected exactly 1 unresolved anchor");
         let anchor = unresolved[0] as usize;
@@ -1698,7 +1835,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
 
         // The reply @handle span must be in accent_alt.
         let reply_author = lines
@@ -1729,9 +1866,7 @@ pub mod tests {
         let reply_gutter_count = lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .filter(|s| {
-                s.content.as_ref().contains('\u{2502}') && s.style.fg == Some(p.accent_alt)
-            })
+            .filter(|s| s.content.as_ref().contains('\u{2502}') && s.style.fg == Some(p.accent_alt))
             .count();
         assert!(
             reply_gutter_count > 0,
@@ -1782,7 +1917,7 @@ pub mod tests {
         };
 
         // collapsed = false (comments_expanded = false)
-        let (lines, _, _, _) = build_content(&detail, false, false, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, false, false, &p, false);
 
         let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
 
@@ -1822,7 +1957,7 @@ pub mod tests {
             }],
         };
 
-        let (lines, _, _, _) = build_content(&detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
 
         // Bold span for "important".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
@@ -1837,5 +1972,30 @@ pub mod tests {
 
         assert!(has_bold, "issue comment body must render **bold** with BOLD modifier");
         assert!(has_code, "issue comment body must render `code_snippet` with code_bg");
+    }
+
+    // ── New tests: sidebar sections ───────────────────────────────────────────
+
+    /// `DetailSection::has_content` returns `true` for Description always, and
+    /// `false` for Checks/Reviews/Files/Comments on an empty fixture.
+    #[test]
+    fn has_content_reflects_fixture_content() {
+        let empty = fixture_pr_detail(0, 0, 0, 0);
+        assert!(DetailSection::Description.has_content(&empty), "Description always has content");
+        assert!(!DetailSection::Checks.has_content(&empty));
+        assert!(!DetailSection::Reviews.has_content(&empty));
+        assert!(!DetailSection::Files.has_content(&empty));
+        // fixture_pr_detail always adds 1 issue comment, so Comments has content.
+        assert!(DetailSection::Comments.has_content(&empty));
+    }
+
+    /// `DetailSection::label()` returns the correct display strings.
+    #[test]
+    fn section_labels_are_correct() {
+        assert_eq!(DetailSection::Description.label(), "Description");
+        assert_eq!(DetailSection::Checks.label(), "Checks");
+        assert_eq!(DetailSection::Reviews.label(), "Reviews");
+        assert_eq!(DetailSection::Files.label(), "Files");
+        assert_eq!(DetailSection::Comments.label(), "Comments");
     }
 }
