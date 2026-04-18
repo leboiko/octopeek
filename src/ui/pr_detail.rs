@@ -209,27 +209,12 @@ fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
     ])
 }
 
-/// Apply the palette's comment tint to every span of `line`, right-pad the
-/// row with tinted spaces out to `width` cells, AND set the line-level bg
-/// as a belt-and-suspenders fallback.
+/// Apply the tint to every span of `line` and right-pad to `width` cells,
+/// so short lines render as a solid tinted rectangle.
 ///
-/// Why both: ratatui 0.30's `Paragraph` word-wrap does NOT fill the trailing
-/// cells of a broken visual row with `Line::style`, so we still need the
-/// explicit padding to make short lines read as a solid rectangle of tint.
-/// The `Line::style.bg` is harmless overhead when wrap doesn't kick in and
-/// future-proofs the renderer against a ratatui update that starts honouring
-/// line-level bg on wrapped rows.
-///
-/// Lines whose content is already wider than `width` still have a patchy
-/// trailing tail on the wrapped visual rows — that's a known limitation of
-/// trying to fake full-row styling through a word-wrapping Paragraph, and
-/// is bounded in scope to code blocks and long error strings that were
-/// rarer than the short comment lines the previous `Line::style`-only fix
-/// visibly regressed.
-///
-/// Returning `Line<'static>` rather than mutating in place keeps
-/// [`build_content`] callers (tests, copy-mode extraction) working against an
-/// untinted base while the render path applies the visual treatment.
+/// Used in copy mode where line-wrap is disabled and the logical line maps
+/// one-to-one to a screen row. Outside copy mode, [`char_wrap_tint`] is
+/// used instead so long content wraps into multiple fully-tinted rows.
 fn tint_line(line: &Line<'static>, bg: Color, width: u16) -> Line<'static> {
     let current_width: usize =
         line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
@@ -249,29 +234,123 @@ fn tint_line(line: &Line<'static>, bg: Color, width: u16) -> Line<'static> {
     result
 }
 
+/// Pre-wrap `line` at character boundaries into one-or-more `Line`s, each
+/// exactly `width` cells wide and fully tinted with `bg`.
+///
+/// This side-steps the ratatui-Paragraph-word-wrap problem that caused the
+/// patchy tint bug: when a line is longer than `width` we split it
+/// ourselves (no word-boundary gaps) and emit multiple lines that do not
+/// need further wrapping, so every visual row of the tinted range is
+/// completely filled with the tint — not just the cells containing text.
+///
+/// Uses display width (unicode-width) so CJK and emoji don't blow through
+/// the column budget.
+fn char_wrap_tint(line: &Line<'static>, bg: Color, width: u16) -> Vec<Line<'static>> {
+    let w = usize::from(width).max(1);
+    let bg_style = Style::default().bg(bg);
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_w = 0usize;
+
+    for span in &line.spans {
+        let tinted = span.style.bg(bg);
+        // Fast path: the whole span fits in the remainder of the current row.
+        let span_w = UnicodeWidthStr::width(span.content.as_ref());
+        if current_w + span_w <= w {
+            current.push(Span::styled(span.content.clone(), tinted));
+            current_w += span_w;
+            continue;
+        }
+        // Slow path: walk the span char-by-char, splitting at the column
+        // boundary. `buf` accumulates the in-progress piece of this span so
+        // we emit a single Span per contiguous run, not one per character.
+        let mut buf = String::new();
+        let mut buf_w = 0usize;
+        for ch in span.content.chars() {
+            // Treat zero-width chars as width 1 so they still make progress
+            // and don't create infinite loops in pathological inputs.
+            let cw = UnicodeWidthStr::width(ch.to_string().as_str()).max(1);
+            if current_w + buf_w + cw > w {
+                // Emit accumulated buf into the current line, then flush.
+                if !buf.is_empty() {
+                    current.push(Span::styled(std::mem::take(&mut buf), tinted));
+                    current_w += buf_w;
+                    buf_w = 0;
+                }
+                flush_tinted_line(&mut current, current_w, w, bg_style, &mut out);
+                current_w = 0;
+            }
+            buf.push(ch);
+            buf_w += cw;
+        }
+        if !buf.is_empty() {
+            current.push(Span::styled(buf, tinted));
+            current_w += buf_w;
+        }
+    }
+
+    flush_tinted_line(&mut current, current_w, w, bg_style, &mut out);
+    out
+}
+
+/// Push `current` as a finished, `width`-cell tinted line and reset.
+/// Factored out to keep [`char_wrap_tint`] under the pedantic line limit.
+fn flush_tinted_line(
+    current: &mut Vec<Span<'static>>,
+    current_w: usize,
+    width: usize,
+    bg_style: Style,
+    out: &mut Vec<Line<'static>>,
+) {
+    let pad = width.saturating_sub(current_w);
+    if pad > 0 {
+        current.push(Span::styled(" ".repeat(pad), bg_style));
+    }
+    let mut line = Line::from(std::mem::take(current));
+    line.style = bg_style;
+    out.push(line);
+}
+
 /// Return a copy of `lines` with `alt_bg` applied to every line whose index
 /// falls within any `(start, end)` half-open range in `alt_ranges`.
+///
+/// `wrap_enabled` controls the tinting strategy for lines longer than
+/// `width`:
+/// - `true` (normal view): pre-wrap at character boundaries into multiple
+///   fully-tinted lines. Safe because ratatui's Paragraph won't re-wrap a
+///   line that already fits its target width.
+/// - `false` (copy mode): just pad short lines. Long lines extend past the
+///   viewport and the horizontal scroll offset slides them around; no
+///   wrapping happens, so the tint is never broken across rows.
+///   Critically, preserving the 1:1 mapping between `content_lines` indices
+///   and rendered lines keeps the copy-mode cursor row math correct.
 fn apply_alt_bg(
     lines: &[Line<'static>],
     alt_ranges: &[(u16, u16)],
     bg: Color,
     width: u16,
+    wrap_enabled: bool,
 ) -> Vec<Line<'static>> {
     if alt_ranges.is_empty() || width == 0 {
         return lines.to_vec();
     }
-    lines
-        .iter()
-        .enumerate()
-        .map(|(idx, line)| {
-            let in_range = alt_ranges.iter().any(|&(a, b)| {
-                let a = usize::from(a);
-                let b = usize::from(b);
-                idx >= a && idx < b
-            });
-            if in_range { tint_line(line, bg, width) } else { line.clone() }
-        })
-        .collect()
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let in_range = alt_ranges.iter().any(|&(a, b)| {
+            let a = usize::from(a);
+            let b = usize::from(b);
+            idx >= a && idx < b
+        });
+        if !in_range {
+            out.push(line.clone());
+        } else if wrap_enabled {
+            out.extend(char_wrap_tint(line, bg, width));
+        } else {
+            out.push(tint_line(line, bg, width));
+        }
+    }
+    out
 }
 
 // ── Section renderers ─────────────────────────────────────────────────────────
@@ -921,13 +1000,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     let scroll = app.pr_detail_scroll;
 
-    // Alternating comment tint. `tint_line` both paints each span's bg and
-    // right-pads short lines to the viewport width so the tinted rectangle
-    // reads as a solid block even on lines whose content is narrower than
-    // the viewport. `help_bg` is a per-theme colour already chosen to differ
-    // from `background` by just a few RGB units (see the overlay-bg feedback
-    // memo).
-    let tinted_lines = apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg, inner.width);
+    // Alternating comment tint. In the normal view we let `apply_alt_bg`
+    // pre-wrap long tinted lines at character boundaries so each visual row
+    // fills the viewport with the tint — ratatui's word-wrap used to leave
+    // trailing cells of wrapped rows unpainted. In copy mode we keep the
+    // 1:1 line mapping so the cursor row math stays honest; wrap is already
+    // disabled in that branch, so long lines just extend off-screen with a
+    // padded tint (fine, never actually broken into multiple rows).
+    let tinted_lines = apply_alt_bg(
+        &content_lines,
+        &alt_bg_ranges,
+        p.help_bg,
+        inner.width,
+        !app.copy_mode.active,
+    );
 
     // In copy mode we disable wrapping so that logical lines map 1:1 to screen
     // lines — otherwise the cursor's logical column would not match any
@@ -1228,6 +1314,84 @@ pub mod tests {
         let p = Palette::default();
         let (_, _, _, alt_ranges) = build_content(&detail, false, true, &p, false);
         assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
+    }
+
+    /// Long lines in the tinted range must be split into multiple fully-
+    /// tinted lines of exactly `width` cells each. This is the core fix for
+    /// the patchy-tint bug where ratatui's word-wrap left trailing cells
+    /// uncoloured.
+    #[test]
+    fn char_wrap_tint_splits_long_lines_into_full_width_rows() {
+        let bg = ratatui::style::Color::Rgb(32, 32, 45);
+        // 25 chars of content, width 10 → expect three lines of exactly 10
+        // chars each, the third padded with 5 spaces.
+        let original = Line::from(vec![Span::styled(
+            "abcdefghijklmnopqrstuvwxy".to_owned(),
+            Style::default().fg(Color::Red),
+        )]);
+        let wrapped = char_wrap_tint(&original, bg, 10);
+        assert_eq!(wrapped.len(), 3, "25 chars at width 10 → 3 rows: {wrapped:?}");
+        for (i, line) in wrapped.iter().enumerate() {
+            let txt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(txt.chars().count(), 10, "row {i} width != 10: {txt:?}");
+            assert_eq!(line.style.bg, Some(bg), "row {i} missing line-level bg");
+            for span in &line.spans {
+                assert_eq!(span.style.bg, Some(bg), "row {i} span missing bg");
+            }
+        }
+        // Content preserved across the split.
+        let joined: String = wrapped
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(joined.starts_with("abcdefghijklmnopqrstuvwxy"), "content preserved: {joined}");
+    }
+
+    /// An empty line (e.g. a paragraph break inside a comment body) must
+    /// still emit one fully-tinted row, not vanish.
+    #[test]
+    fn char_wrap_tint_empty_line_yields_one_padded_row() {
+        let bg = ratatui::style::Color::Rgb(1, 2, 3);
+        let original: Line<'static> = Line::from(vec![]);
+        let wrapped = char_wrap_tint(&original, bg, 8);
+        assert_eq!(wrapped.len(), 1, "empty line must still produce one tinted row");
+        let txt: String = wrapped[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(txt.chars().count(), 8, "row padded to width");
+        assert_eq!(wrapped[0].style.bg, Some(bg));
+    }
+
+    /// Span styles must survive the split: a bold-red span that spans the
+    /// wrap boundary should remain bold-red on both resulting rows, with
+    /// the tint bg applied on top.
+    #[test]
+    fn char_wrap_tint_preserves_span_styling_across_split() {
+        let bg = ratatui::style::Color::Rgb(10, 10, 10);
+        let original = Line::from(vec![Span::styled(
+            "red-text-that-spans".to_owned(),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]);
+        let wrapped = char_wrap_tint(&original, bg, 8);
+        assert_eq!(wrapped.len(), 3, "19 chars at width 8 → 3 rows");
+        // Every content-bearing span should retain the red/bold fg from the
+        // original. Padding spans (end of last row) carry only the bg.
+        let mut saw_red_bold = false;
+        for line in &wrapped {
+            for span in &line.spans {
+                if span.content.contains("red")
+                    || span.content.contains("text")
+                    || span.content.contains("that")
+                {
+                    assert_eq!(span.style.fg, Some(Color::Red), "fg lost: {span:?}");
+                    assert!(
+                        span.style.add_modifier.contains(Modifier::BOLD),
+                        "bold lost: {span:?}"
+                    );
+                    saw_red_bold = true;
+                }
+                assert_eq!(span.style.bg, Some(bg), "bg missing: {span:?}");
+            }
+        }
+        assert!(saw_red_bold, "never saw a styled content span");
     }
 
     /// `tint_line` must recolour every span, right-pad to `width`, and also
