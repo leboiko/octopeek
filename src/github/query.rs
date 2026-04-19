@@ -4,6 +4,7 @@
 //! callers receive [`super::types::Inbox`] from [`to_inbox`].
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -12,44 +13,13 @@ use super::types::{
     ReviewDecision, ReviewState, Role,
 };
 
-// ── Query string ──────────────────────────────────────────────────────────────
+// ── Shared GraphQL fragments ──────────────────────────────────────────────────
+//
+// Both query builders reference these two fragments. Keeping them as `const`
+// strings (no `{...}` escaping for `format!`) removes the 90+-line copy that
+// the agent audit flagged: a PR-field addition only has to land in one place.
 
-/// The single GraphQL document sent to `api.github.com/graphql`.
-///
-/// Four aliased top-level fields are merged by [`to_inbox`] into one [`Inbox`].
-pub const INBOX_QUERY: &str = r#"
-query InboxQuery {
-  authored: viewer {
-    login
-    pullRequests(first: 50, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      nodes {
-        ...PullRequestFields
-      }
-    }
-  }
-  reviewRequested: search(query: "is:open is:pr review-requested:@me", type: ISSUE, first: 50) {
-    nodes {
-      ... on PullRequest {
-        ...PullRequestFields
-      }
-    }
-  }
-  assignedPrs: search(query: "is:open is:pr assignee:@me", type: ISSUE, first: 50) {
-    nodes {
-      ... on PullRequest {
-        ...PullRequestFields
-      }
-    }
-  }
-  assignedIssues: search(query: "is:open is:issue assignee:@me", type: ISSUE, first: 50) {
-    nodes {
-      ... on Issue {
-        ...IssueFields
-      }
-    }
-  }
-}
-
+const PR_FRAGMENT: &str = r"
 fragment PullRequestFields on PullRequest {
   number
   title
@@ -109,7 +79,9 @@ fragment PullRequestFields on PullRequest {
     }
   }
 }
+";
 
+const ISSUE_FRAGMENT: &str = r"
 fragment IssueFields on Issue {
   number
   title
@@ -125,7 +97,60 @@ fragment IssueFields on Issue {
     }
   }
 }
-"#;
+";
+
+// ── Inbox query ───────────────────────────────────────────────────────────────
+
+/// The single GraphQL document sent to `api.github.com/graphql` on startup
+/// and refresh. Four aliased top-level fields are merged by [`to_inbox`]
+/// into one [`Inbox`].
+///
+/// Built lazily from the shared [`PR_FRAGMENT`] / [`ISSUE_FRAGMENT`] so any
+/// fragment change is picked up automatically without editing two places.
+pub fn inbox_query() -> &'static str {
+    static Q: OnceLock<String> = OnceLock::new();
+    Q.get_or_init(|| {
+        let mut s = String::from(
+            r#"
+query InboxQuery {
+  authored: viewer {
+    login
+    pullRequests(first: 50, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        ...PullRequestFields
+      }
+    }
+  }
+  reviewRequested: search(query: "is:open is:pr review-requested:@me", type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        ...PullRequestFields
+      }
+    }
+  }
+  assignedPrs: search(query: "is:open is:pr assignee:@me", type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        ...PullRequestFields
+      }
+    }
+  }
+  assignedIssues: search(query: "is:open is:issue assignee:@me", type: ISSUE, first: 50) {
+    nodes {
+      ... on Issue {
+        ...IssueFields
+      }
+    }
+  }
+}
+"#,
+        );
+        s.push_str(PR_FRAGMENT);
+        s.push_str(ISSUE_FRAGMENT);
+        s
+    })
+    .as_str()
+}
 
 // ── Show-all query builder ────────────────────────────────────────────────────
 
@@ -134,26 +159,19 @@ fragment IssueFields on Issue {
 ///
 /// The returned document has two top-level search fields (`allPrs` and
 /// `allIssues`) whose queries are constructed by joining each repo as a
-/// `repo:owner/name` qualifier. Both reuse the shared `PullRequestFields` and
-/// `IssueFields` fragments from [`INBOX_QUERY`] so the response mapping
-/// can share [`raw_pr_to_domain`] and [`raw_issue_to_domain`].
+/// `repo:owner/name` qualifier. Both reuse the shared [`PR_FRAGMENT`] and
+/// [`ISSUE_FRAGMENT`] constants so the response mapping can share
+/// [`raw_pr_to_domain`] and [`raw_issue_to_domain`].
 ///
 /// # Arguments
 ///
 /// * `repos` - Slice of repo slugs in `owner/name` form. An empty slice
 ///   produces a valid query but returns no results.
-///
-/// # Returns
-///
-/// A complete GraphQL document string.
 pub fn build_show_all_query(repos: &[String]) -> String {
-    // Build the `repo:owner/name` qualifier list once, shared by both searches.
     let repo_qualifiers: String =
         repos.iter().map(|r| format!("repo:{r}")).collect::<Vec<_>>().join(" ");
 
-    // Include the same fragment definitions as INBOX_QUERY so the server-side
-    // type resolution works identically.
-    format!(
+    let header = format!(
         r#"
 query ShowAllQuery {{
   allPrs: search(query: "{repo_qualifiers} is:open is:pr", type: ISSUE, first: 50) {{
@@ -172,84 +190,14 @@ query ShowAllQuery {{
   }}
   viewer {{ login }}
 }}
+"#,
+    );
 
-fragment PullRequestFields on PullRequest {{
-  number
-  title
-  url
-  isDraft
-  mergeable
-  mergeStateStatus
-  reviewDecision
-  repository {{ nameWithOwner }}
-  author {{ login }}
-  updatedAt
-  baseRefName
-  headRefName
-  commits(last: 1) {{
-    totalCount
-    nodes {{
-      commit {{
-        statusCheckRollup {{
-          state
-          contexts(first: 20) {{
-            nodes {{
-              ... on CheckRun {{
-                name
-                status
-                conclusion
-                checkSuite {{ workflowRun {{ workflow {{ name }} }} }}
-              }}
-              ... on StatusContext {{
-                context
-                state
-              }}
-            }}
-          }}
-        }}
-      }}
-    }}
-  }}
-  comments {{ totalCount }}
-  reviewRequests(first: 10) {{
-    nodes {{
-      requestedReviewer {{
-        ... on User {{ login }}
-        ... on Team {{ name }}
-      }}
-    }}
-  }}
-  reviewThreads(first: 30) {{
-    nodes {{
-      isResolved
-      isOutdated
-    }}
-  }}
-  latestReviews(first: 10) {{
-    nodes {{
-      author {{ login }}
-      state
-    }}
-  }}
-}}
-
-fragment IssueFields on Issue {{
-  number
-  title
-  url
-  repository {{ nameWithOwner }}
-  author {{ login }}
-  updatedAt
-  comments {{ totalCount }}
-  labels(first: 20) {{
-    nodes {{
-      name
-      color
-    }}
-  }}
-}}
-"#
-    )
+    let mut s = String::with_capacity(header.len() + PR_FRAGMENT.len() + ISSUE_FRAGMENT.len());
+    s.push_str(&header);
+    s.push_str(PR_FRAGMENT);
+    s.push_str(ISSUE_FRAGMENT);
+    s
 }
 
 // ── Raw GraphQL response types ────────────────────────────────────────────────

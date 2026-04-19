@@ -12,7 +12,7 @@ use super::detail::{
     ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailResponse,
     raw_issue_to_detail, raw_pr_to_detail,
 };
-use super::query::{GraphQlResponse, GraphQlResponseAll, INBOX_QUERY, build_show_all_query};
+use super::query::{GraphQlResponse, GraphQlResponseAll, build_show_all_query, inbox_query};
 use super::types::Inbox;
 
 /// Version string embedded in the `User-Agent` header.
@@ -120,7 +120,7 @@ impl Client {
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
             .header(ACCEPT, "application/vnd.github+json")
-            .json(&NoVarBody { query: INBOX_QUERY })
+            .json(&NoVarBody { query: inbox_query() })
             .send()
             .await
             .context("network error reaching GitHub GraphQL API")?;
