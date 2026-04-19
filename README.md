@@ -1,11 +1,10 @@
 # octopeek
 
+[![crates.io](https://img.shields.io/crates/v/octopeek.svg)](https://crates.io/crates/octopeek)
 [![CI](https://github.com/leboiko/octopeek/actions/workflows/ci.yml/badge.svg)](https://github.com/leboiko/octopeek/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/leboiko/octopeek#license)
-<!-- Crates.io badge will be enabled once the first release is published. -->
-<!-- [![crates.io](https://img.shields.io/crates/v/octopeek.svg)](https://crates.io/crates/octopeek) -->
 
-> **Status:** Phase 5 complete. All core interactive features are implemented. Phase 6 (release binaries) is next.
+> **Status:** 0.1.0 — first public release. All core interactive features are implemented.
 
 **A fast, keyboard-driven TUI for your GitHub PR and issue inbox.**
 
@@ -17,7 +16,10 @@ at your fingertips when you're doing triage.
 
 ## Screenshot
 
-> Screenshot coming in Phase 2 once the data layer populates the dashboard.
+<!-- TODO: record an asciicast and embed it here before the screenshot
+     URL ships in the crates.io README. A 30-second demo showing the
+     inbox → detail → diff flow is most useful. -->
+> Asciicast demo coming shortly — run `octopeek` locally in the meantime.
 
 ## Features
 
@@ -52,7 +54,11 @@ at your fingertips when you're doing triage.
 
 ## Install
 
-No crates.io release yet. Install from git:
+```sh
+cargo install octopeek
+```
+
+Or install the latest `main` branch directly:
 
 ```sh
 cargo install --git https://github.com/leboiko/octopeek
@@ -209,16 +215,18 @@ octopeek debug dump issue rust-lang/rust 12345
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/leboiko/octopeek/blob/main/CONTRIBUTING.md).
 
 ## License
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or
-  <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0
+  ([LICENSE-APACHE](https://github.com/leboiko/octopeek/blob/main/LICENSE-APACHE)
+  or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license
+  ([LICENSE-MIT](https://github.com/leboiko/octopeek/blob/main/LICENSE-MIT)
+  or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

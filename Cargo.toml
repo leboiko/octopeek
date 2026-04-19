@@ -8,9 +8,21 @@ description = "A fast, keyboard-driven TUI for your GitHub PR and issue inbox."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/leboiko/octopeek"
 homepage = "https://github.com/leboiko/octopeek"
+documentation = "https://docs.rs/octopeek"
 readme = "README.md"
 keywords = ["tui", "github", "pull-request", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
+
+# Keep the published tarball lean: non-runtime project-hygiene files don't
+# need to ship to users running `cargo install octopeek`.
+exclude = [
+    ".github/*",
+    "docs/*",
+    "rust-toolchain.toml",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    ".gitignore",
+]
 
 [dependencies]
 anyhow = "1.0.102"

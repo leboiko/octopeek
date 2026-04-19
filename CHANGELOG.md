@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-04-19
+
+First public release on crates.io. Install with `cargo install octopeek`.
+
 ### Added (Phase 5)
 
 - **Repo picker overlay** (`p` key): full-screen modal for adding and removing
@@ -44,5 +48,35 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Release workflow skeleton driven by git tags.
 - OSS project hygiene: dual MIT/Apache-2.0 licensing, Contributor Covenant, security policy, contributing guide, issue and PR templates, CODEOWNERS, Dependabot.
 
-<!-- Comparison links will be populated once the first version is tagged. -->
+### Added — pre-release hardening pass
+
+- Manual `Debug` impl on the GitHub HTTP client that redacts the bearer token.
+- `open_url_in_browser` now rejects any URL that doesn't start with `https://`,
+  refusing `file://`, `ssh://`, and other schemes that could dispatch native
+  commands on macOS / Linux.
+- Malformed `config.toml` / session TOML now logs a `warn!` with the parse
+  error before falling back to defaults, instead of silently resetting every
+  user setting.
+- `[deleted]` sentinel replaces the empty-string author rendering for GitHub
+  accounts that have been deleted or suspended.
+- Crate-level `//!` documentation and `#![warn(missing_docs)]` lint.
+
+### Changed — pre-release refactor pass
+
+- Monolithic `src/app/mod.rs` (4687 LoC) split into nine focused submodules.
+- Monolithic `src/ui/pr_detail.rs` (2138 LoC) split into eight per-section
+  modules.
+- GraphQL `PullRequestFields` / `IssueFields` fragments extracted as shared
+  `const` strings; both query builders now format from one source of truth.
+- Generic `GqlEnvelope<T>` and `Client::post_graphql<B, T>` helper collapse
+  three copies of the HTTP-plumbing code into one.
+- `spawn_detail_fetch` + `spawn_detail_fetch_background` now share
+  `spawn_supervised_detail_fetch`; the `tx.send` calls log a warn on a
+  closed channel instead of silently dropping the result.
+- `restore_detail_kind` collapses its PR and issue arms into one SWR flow.
+- GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
+  the crate is a binary and should not expose implementation details.
+
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/leboiko/octopeek/releases/tag/v0.1.0
 
