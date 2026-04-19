@@ -26,7 +26,7 @@ impl App {
         };
 
         self.fetching = true;
-        let _ = tx.send(Action::InboxFetchStarted);
+        send_or_warn(&tx, Action::InboxFetchStarted);
 
         // Spawn a supervisor task that awaits an inner task's JoinHandle. If
         // the inner task panics, `JoinHandle::await` returns an `Err(JoinError)`
@@ -53,7 +53,7 @@ impl App {
                 }
                 Err(join_err) => Action::FetchFailed(format!("fetch task aborted: {join_err}")),
             };
-            let _ = tx.send(action);
+            send_or_warn(&tx, action);
         });
     }
 
@@ -156,37 +156,15 @@ impl App {
         }
         let Some(client) = self.client.clone() else {
             debug!("no GitHub client; skipping detail fetch");
-            let _ = tx.send(Action::DetailFetchFailed("no GitHub client configured".to_owned()));
+            send_or_warn(
+                &tx,
+                Action::DetailFetchFailed("no GitHub client configured".to_owned()),
+            );
             return;
         };
 
         self.detail_fetching = true;
-
-        tokio::spawn(async move {
-            let inner: tokio::task::JoinHandle<anyhow::Result<Action>> = tokio::spawn(async move {
-                match kind {
-                    DetailKind::Pr => {
-                        let detail = client.fetch_pr_detail(&repo, number).await?;
-                        Ok(Action::PrDetailLoaded(Box::new(detail)))
-                    }
-                    DetailKind::Issue => {
-                        let detail = client.fetch_issue_detail(&repo, number).await?;
-                        Ok(Action::IssueDetailLoaded(Box::new(detail)))
-                    }
-                }
-            });
-            let action = match inner.await {
-                Ok(Ok(action)) => action,
-                Ok(Err(e)) => Action::DetailFetchFailed(e.to_string()),
-                Err(join_err) if join_err.is_panic() => {
-                    Action::DetailFetchFailed(format!("detail fetch task panicked: {join_err}"))
-                }
-                Err(join_err) => {
-                    Action::DetailFetchFailed(format!("detail fetch task aborted: {join_err}"))
-                }
-            };
-            let _ = tx.send(action);
-        });
+        spawn_supervised_detail_fetch(client, kind, repo, number, tx, "detail fetch");
     }
 
     /// Background variant of [`Self::spawn_detail_fetch`] used for
@@ -212,32 +190,7 @@ impl App {
         // Intentionally no `detail_fetching` guard: background SWR fetches are
         // allowed to run even while a foreground fetch is in progress (the
         // arriving action handler checks the active tab before overwriting state).
-        tokio::spawn(async move {
-            let inner: tokio::task::JoinHandle<anyhow::Result<Action>> = tokio::spawn(async move {
-                match kind {
-                    DetailKind::Pr => {
-                        let detail = client.fetch_pr_detail(&repo, number).await?;
-                        Ok(Action::PrDetailLoaded(Box::new(detail)))
-                    }
-                    DetailKind::Issue => {
-                        let detail = client.fetch_issue_detail(&repo, number).await?;
-                        Ok(Action::IssueDetailLoaded(Box::new(detail)))
-                    }
-                }
-            });
-            let action = match inner.await {
-                Ok(Ok(action)) => action,
-                Ok(Err(e)) => Action::DetailFetchFailed(e.to_string()),
-                Err(join_err) if join_err.is_panic() => {
-                    Action::DetailFetchFailed(format!("bg detail fetch task panicked: {join_err}"))
-                }
-                Err(join_err) => {
-                    Action::DetailFetchFailed(format!("bg detail fetch task aborted: {join_err}"))
-                }
-            };
-            let _ = tx.send(action);
-        });
-
+        spawn_supervised_detail_fetch(client, kind, repo, number, tx, "bg detail fetch");
         true
     }
 
@@ -510,4 +463,62 @@ impl App {
             }
         }
     }
+}
+
+// ── Free helpers shared by the spawn_* methods ────────────────────────────────
+
+/// Send `action` on the action channel, logging a warning if the receiver is
+/// gone rather than silently dropping the message.
+///
+/// Every fetch task terminates by handing one action back to the event loop;
+/// a dropped receiver means the TUI has already quit or the event thread
+/// crashed. Neither case is recoverable here — but a warn-level log surfaces
+/// receiver-shutdown races during development instead of leaving them
+/// invisible under a `let _ =`.
+fn send_or_warn(tx: &tokio::sync::mpsc::UnboundedSender<Action>, action: Action) {
+    if let Err(err) = tx.send(action) {
+        warn!("action channel closed; dropping fetch result: {err}");
+    }
+}
+
+/// Spawn the supervisor + inner-task pair that performs a PR or issue detail
+/// fetch and sends the resulting [`Action`] back on `tx`.
+///
+/// Shared by [`App::spawn_detail_fetch`] (foreground) and
+/// [`App::spawn_detail_fetch_background`] (SWR / auto-refresh). The `label`
+/// is used only in panic / abort error messages so foreground and background
+/// failures are distinguishable in logs.
+fn spawn_supervised_detail_fetch(
+    client: std::sync::Arc<github::Client>,
+    kind: DetailKind,
+    repo: String,
+    number: u32,
+    tx: tokio::sync::mpsc::UnboundedSender<Action>,
+    label: &'static str,
+) {
+    tokio::spawn(async move {
+        let inner: tokio::task::JoinHandle<anyhow::Result<Action>> = tokio::spawn(async move {
+            match kind {
+                DetailKind::Pr => {
+                    let detail = client.fetch_pr_detail(&repo, number).await?;
+                    Ok(Action::PrDetailLoaded(Box::new(detail)))
+                }
+                DetailKind::Issue => {
+                    let detail = client.fetch_issue_detail(&repo, number).await?;
+                    Ok(Action::IssueDetailLoaded(Box::new(detail)))
+                }
+            }
+        });
+        let action = match inner.await {
+            Ok(Ok(action)) => action,
+            Ok(Err(e)) => Action::DetailFetchFailed(e.to_string()),
+            Err(join_err) if join_err.is_panic() => {
+                Action::DetailFetchFailed(format!("{label} task panicked: {join_err}"))
+            }
+            Err(join_err) => {
+                Action::DetailFetchFailed(format!("{label} task aborted: {join_err}"))
+            }
+        };
+        send_or_warn(&tx, action);
+    });
 }
