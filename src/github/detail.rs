@@ -511,6 +511,19 @@ pub(super) struct RawCommentNode {
     pub created_at: DateTime<Utc>,
 }
 
+/// Convert a raw GraphQL comment node into the public [`IssueComment`] type.
+///
+/// The same shape appears on a PR (`raw_pr_to_detail`) and on an issue
+/// (`raw_issue_to_detail`); this helper keeps the deleted-author sentinel
+/// and the `body.unwrap_or_default()` handling in one place.
+fn map_comment_node(c: RawCommentNode) -> IssueComment {
+    IssueComment {
+        author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
+        body_markdown: c.body.unwrap_or_default(),
+        created_at: c.created_at,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct RawLabelNode {
     pub name: String,
@@ -661,16 +674,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         })
         .collect();
 
-    let issue_comments = raw
-        .comments
-        .nodes
-        .into_iter()
-        .map(|c| IssueComment {
-            author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
-            body_markdown: c.body.unwrap_or_default(),
-            created_at: c.created_at,
-        })
-        .collect();
+    let issue_comments = raw.comments.nodes.into_iter().map(map_comment_node).collect();
 
     PrDetail {
         repo,
@@ -707,16 +711,7 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
 
     let assignees = raw.assignees.nodes.into_iter().map(|a| a.login).collect();
 
-    let comments = raw
-        .comments
-        .nodes
-        .into_iter()
-        .map(|c| IssueComment {
-            author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
-            body_markdown: c.body.unwrap_or_default(),
-            created_at: c.created_at,
-        })
-        .collect();
+    let comments = raw.comments.nodes.into_iter().map(map_comment_node).collect();
 
     IssueDetail {
         repo,

@@ -19,45 +19,68 @@ use crate::ui::glyphs;
 use crate::ui::util::{humanize_delta, truncate};
 
 // ── Column layout helpers ─────────────────────────────────────────────────────
+//
+// Keeping the widths in `const`s — instead of duplicating them in `pr_row` —
+// guarantees the layout constraints and the title-truncation arithmetic stay
+// in sync when a column is added, removed, or resized.
+
+const PR_ST_WIDTH: u16 = 4;
+const PR_COMMENTS_WIDTH: u16 = 5;
+const PR_CI_WIDTH: u16 = 7;
+const PR_COMMITS_WIDTH: u16 = 4;
+const PR_UPDATED_WIDTH: u16 = 14;
 
 /// Compute column `Constraint`s for the PR list based on terminal width.
 ///
 /// Column set priorities (never drop St, Title, CI):
-/// - >= 120: St(4), Title(flex), Comments(5), CI(7), Commits(4), Updated(14)
+/// - >= 120: St, Title, Comments, CI, Commits, Updated
 /// - 100–119: drop Commits
 /// - 80–99: drop Commits + Updated
-/// - < 80: St(4), Title(flex), CI(7)
+/// - < 80: St, Title, CI
 pub fn pr_columns(width: u16) -> Vec<Constraint> {
+    pr_layout(width).iter().map(|c| c.constraint).collect()
+}
+
+/// Sum of fixed column widths for the layout chosen at `width`. Used by
+/// `pr_row` to budget the flex `Title` column so the two places that depend
+/// on the column set can never drift out of sync.
+fn pr_fixed_cols_width(width: u16) -> u16 {
+    pr_layout(width).iter().map(|c| c.fixed_width).sum()
+}
+
+/// One column in the PR layout: its layout constraint and, for fixed-width
+/// columns, how much horizontal space it consumes. `Fill(1)` columns
+/// contribute `0` — their size is whatever's left after the fixed columns.
+struct PrColumn {
+    constraint: Constraint,
+    fixed_width: u16,
+}
+
+fn pr_layout(width: u16) -> Vec<PrColumn> {
+    let st = PrColumn { constraint: Constraint::Length(PR_ST_WIDTH), fixed_width: PR_ST_WIDTH };
+    let title = PrColumn { constraint: Constraint::Fill(1), fixed_width: 0 };
+    let comments = PrColumn {
+        constraint: Constraint::Length(PR_COMMENTS_WIDTH),
+        fixed_width: PR_COMMENTS_WIDTH,
+    };
+    let ci = PrColumn { constraint: Constraint::Length(PR_CI_WIDTH), fixed_width: PR_CI_WIDTH };
+    let commits = PrColumn {
+        constraint: Constraint::Length(PR_COMMITS_WIDTH),
+        fixed_width: PR_COMMITS_WIDTH,
+    };
+    let updated = PrColumn {
+        constraint: Constraint::Length(PR_UPDATED_WIDTH),
+        fixed_width: PR_UPDATED_WIDTH,
+    };
+
     if width >= 120 {
-        vec![
-            Constraint::Length(4),  // St cluster
-            Constraint::Fill(1),    // Title (flex)
-            Constraint::Length(5),  // #comments
-            Constraint::Length(7),  // CI
-            Constraint::Length(4),  // Commits
-            Constraint::Length(14), // Updated
-        ]
+        vec![st, title, comments, ci, commits, updated]
     } else if width >= 100 {
-        vec![
-            Constraint::Length(4),  // St cluster
-            Constraint::Fill(1),    // Title
-            Constraint::Length(5),  // #comments
-            Constraint::Length(7),  // CI
-            Constraint::Length(14), // Updated
-        ]
+        vec![st, title, comments, ci, updated]
     } else if width >= 80 {
-        vec![
-            Constraint::Length(4), // St cluster
-            Constraint::Fill(1),   // Title
-            Constraint::Length(5), // #comments
-            Constraint::Length(7), // CI
-        ]
+        vec![st, title, comments, ci]
     } else {
-        vec![
-            Constraint::Length(4), // St cluster
-            Constraint::Fill(1),   // Title
-            Constraint::Length(7), // CI
-        ]
+        vec![st, title, ci]
     }
 }
 
@@ -170,14 +193,7 @@ fn pr_row<'a>(
     // Col 1: Title (always present).
     let draft_prefix = if pr.is_draft { "[D] " } else { "" };
     let raw_title = format!("{draft_prefix}{}", pr.title);
-    // Estimate available title width.
-    let fixed_cols_width: u16 = match col_count {
-        6 => 4 + 5 + 7 + 4 + 14, // St + Comments + CI + Commits + Updated
-        5 => 4 + 5 + 7 + 14,     // St + Comments + CI + Updated
-        4 => 4 + 5 + 7,          // St + Comments + CI
-        _ => 4 + 7,              // St + CI
-    };
-    let title_width = (width.saturating_sub(fixed_cols_width)) as usize;
+    let title_width = usize::from(width.saturating_sub(pr_fixed_cols_width(width)));
     let title_text = truncate(&raw_title, title_width.max(6));
     cells.push(Cell::from(title_text));
 

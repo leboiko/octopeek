@@ -382,44 +382,16 @@ impl App {
             }
             KeyCode::Char('o') => {
                 self.detail_pending_g = false;
-                let url = self
-                    .pr_detail
-                    .as_ref()
-                    .map(|d| d.url.clone())
-                    .or_else(|| self.issue_detail.as_ref().map(|d| d.url.clone()));
-                if let Some(url) = url {
-                    match crate::actions_util::open_url_in_browser(&url) {
-                        Ok(()) => {
-                            self.show_flash("Opened in browser", std::time::Duration::from_secs(2));
-                        }
-                        Err(e) => {
-                            self.show_flash(
-                                format!("Open failed: {e}"),
-                                std::time::Duration::from_secs(3),
-                            );
-                        }
-                    }
+                if let Some(url) = self.active_detail_url() {
+                    let result = crate::actions_util::open_url_in_browser(&url);
+                    self.flash_result(result, "Opened in browser", "Open failed");
                 }
             }
             KeyCode::Char('y') => {
                 self.detail_pending_g = false;
-                let url = self
-                    .pr_detail
-                    .as_ref()
-                    .map(|d| d.url.clone())
-                    .or_else(|| self.issue_detail.as_ref().map(|d| d.url.clone()));
-                if let Some(url) = url {
-                    match crate::actions_util::copy_to_clipboard(&url) {
-                        Ok(()) => {
-                            self.show_flash("URL copied", std::time::Duration::from_secs(2));
-                        }
-                        Err(e) => {
-                            self.show_flash(
-                                format!("Copy failed: {e}"),
-                                std::time::Duration::from_secs(3),
-                            );
-                        }
-                    }
+                if let Some(url) = self.active_detail_url() {
+                    let result = crate::actions_util::copy_to_clipboard(&url);
+                    self.flash_result(result, "URL copied", "Copy failed");
                 }
             }
             KeyCode::Char('c') => {
@@ -444,31 +416,24 @@ impl App {
                 // stale-while-revalidate serve. `spawn_detail_fetch` owns the
                 // `detail_fetching` guard — setting it externally would cause
                 // the guard to skip the fetch.
-                if let Some(detail) = &self.pr_detail {
-                    let repo = detail.repo.clone();
-                    let number = detail.number;
-                    self.detail_cache.invalidate_pr(&repo, number);
-                    self.detail_refreshing = None;
-                    self.pr_detail = None;
-                    self.issue_detail = None;
-                    self.detail_error = None;
-                    self.pr_detail_scroll.clear();
-                    self.pr_detail_diff_scroll.clear();
-                    if let Some(tx) = self.action_tx.clone() {
-                        self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
+                let target: Option<(DetailKind, String, u32)> = if let Some(detail) =
+                    &self.pr_detail
+                {
+                    Some((DetailKind::Pr, detail.repo.clone(), detail.number))
+                } else {
+                    self.issue_detail
+                        .as_ref()
+                        .map(|detail| (DetailKind::Issue, detail.repo.clone(), detail.number))
+                };
+
+                if let Some((kind, repo, number)) = target {
+                    match kind {
+                        DetailKind::Pr => self.detail_cache.invalidate_pr(&repo, number),
+                        DetailKind::Issue => self.detail_cache.invalidate_issue(&repo, number),
                     }
-                } else if let Some(detail) = &self.issue_detail {
-                    let repo = detail.repo.clone();
-                    let number = detail.number;
-                    self.detail_cache.invalidate_issue(&repo, number);
-                    self.detail_refreshing = None;
-                    self.pr_detail = None;
-                    self.issue_detail = None;
-                    self.detail_error = None;
-                    self.pr_detail_scroll.clear();
-                    self.pr_detail_diff_scroll.clear();
+                    self.clear_detail_state();
                     if let Some(tx) = self.action_tx.clone() {
-                        self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
+                        self.spawn_detail_fetch(kind, repo, number, tx);
                     }
                 }
             }
@@ -837,6 +802,7 @@ impl App {
     }
 
     /// Key handler for the dashboard (PR/issue list) focus.
+    #[allow(clippy::too_many_lines)] // dispatcher: each arm is one key binding
     pub(super) fn handle_key_dashboard(&mut self, key: crossterm::event::KeyEvent) {
         // Allow SHIFT (used for `A`, `G`, `R`, `N`) but reject Ctrl/Alt/Super
         // so a stray `Ctrl+c` or `Alt+j` can't silently trigger list moves.
@@ -904,11 +870,17 @@ impl App {
             }
             KeyCode::Char('o') => {
                 self.pending_g = false;
-                tracing::info!("Phase 4: not yet implemented — open in browser");
+                if let Some(url) = self.dashboard_selected_url() {
+                    let result = crate::actions_util::open_url_in_browser(&url);
+                    self.flash_result(result, "Opened in browser", "Open failed");
+                }
             }
             KeyCode::Char('y') => {
                 self.pending_g = false;
-                tracing::info!("Phase 4: not yet implemented — copy URL");
+                if let Some(url) = self.dashboard_selected_url() {
+                    let result = crate::actions_util::copy_to_clipboard(&url);
+                    self.flash_result(result, "URL copied", "Copy failed");
+                }
             }
             KeyCode::Char('c') => {
                 self.pending_g = false;
@@ -946,5 +918,66 @@ impl App {
                 self.pending_g = false;
             }
         }
+    }
+
+    // ── Detail-view helpers ────────────────────────────────────────────────────
+
+    /// Return the URL of whichever detail object is currently loaded (PR first,
+    /// issue as fallback). `None` when neither is populated — which can happen
+    /// if the user hits a URL-consuming key before the first detail fetch
+    /// lands.
+    fn active_detail_url(&self) -> Option<String> {
+        self.pr_detail
+            .as_ref()
+            .map(|d| d.url.clone())
+            .or_else(|| self.issue_detail.as_ref().map(|d| d.url.clone()))
+    }
+
+    /// Return the URL of the PR or issue currently highlighted on the
+    /// dashboard. `None` when no inbox is loaded, no tab is active, or the
+    /// selection index is out of range.
+    fn dashboard_selected_url(&self) -> Option<String> {
+        let repo = self.tabs.active_tab()?.repo.clone();
+        let inbox = self.inbox.as_ref()?;
+        let sel = self.selection.get(&repo).copied().unwrap_or(0);
+        match self.session.view_mode(&repo) {
+            crate::state::ViewMode::Prs => inbox
+                .prs
+                .iter()
+                .filter(|pr| pr.repo == repo)
+                .nth(sel)
+                .map(|pr| pr.url.clone()),
+            crate::state::ViewMode::Issues => inbox
+                .issues
+                .iter()
+                .filter(|i| i.repo == repo)
+                .nth(sel)
+                .map(|i| i.url.clone()),
+        }
+    }
+
+    /// Show a status-bar flash for a `Result<()>` OS action. The success
+    /// message gets a 2s duration; the error message gets 3s so users have
+    /// time to read the wrapped error detail.
+    fn flash_result(&mut self, result: anyhow::Result<()>, ok_msg: &str, err_prefix: &str) {
+        match result {
+            Ok(()) => self.show_flash(ok_msg.to_owned(), std::time::Duration::from_secs(2)),
+            Err(e) => self.show_flash(
+                format!("{err_prefix}: {e}"),
+                std::time::Duration::from_secs(3),
+            ),
+        }
+    }
+
+    /// Reset every per-detail scroll / payload / refresh-flag field. Shared
+    /// by the `'r'` manual-refresh path so a future detail kind doesn't
+    /// silently skip part of the reset.
+    fn clear_detail_state(&mut self) {
+        self.detail_refreshing = None;
+        self.pr_detail = None;
+        self.issue_detail = None;
+        self.detail_error = None;
+        self.pr_detail_scroll.clear();
+        self.pr_detail_diff_scroll.clear();
     }
 }
