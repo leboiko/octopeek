@@ -1,0 +1,43 @@
+# cargo-deny config for supply-chain checks run in CI.
+# See https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+[advisories]
+version = 2
+# Fail on any unmaintained or vulnerable crate; treat informational-only
+# advisories (e.g. API deprecation) as warnings rather than errors so they
+# don't immediately block releases.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Allowed license identifiers, matched SPDX-style against each dependency's
+# declared license. Add new entries here when a dependency with a compatible
+# but not-yet-listed license is introduced.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+    "MPL-2.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Allow multiple versions of the same dependency (common in a fresh tree
+# with transitive diamond deps). Promote to `deny` once the graph is stable.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
