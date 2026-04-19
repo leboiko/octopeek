@@ -1,7 +1,7 @@
 //! Review line builder for the Reviews section.
 
 use ratatui::{
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
 };
 
@@ -41,11 +41,6 @@ pub(super) fn reviews_lines(detail: &PrDetail, p: &Palette) -> Vec<Line<'static>
             )));
         }
     }
-
-    // Suppress unused import warning: `Modifier` is referenced below in case
-    // reviews ever get bold treatment, and is imported for consistency with
-    // other section renderers.
-    let _ = Modifier::BOLD;
 
     lines
 }

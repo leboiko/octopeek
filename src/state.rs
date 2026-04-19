@@ -130,6 +130,9 @@ impl From<SessionCompat> for AppSession {
 
 impl AppSession {
     /// Load session state from disk, returning defaults on any failure.
+    ///
+    /// A missing file is treated as first-run and silently returns defaults.
+    /// A malformed file logs a `warn!` with the parse error before defaulting.
     pub fn load() -> Self {
         let Some(path) = state_path() else {
             return Self::default();
@@ -137,7 +140,16 @@ impl AppSession {
         let Ok(text) = fs::read_to_string(&path) else {
             return Self::default();
         };
-        toml::from_str(&text).unwrap_or_default()
+        match toml::from_str(&text) {
+            Ok(session) => session,
+            Err(e) => {
+                warn!(
+                    "failed to parse session at {}: {e}; falling back to defaults",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 
     /// Persist session state to disk.

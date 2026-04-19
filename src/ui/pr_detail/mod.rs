@@ -251,8 +251,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(file_list_lines).block(files_block).scroll((files_scroll, 0)),
             files_area,
         );
-
-        let _ = sections_inner;
     }
 
     // ── C5. Render right pane ──────────────────────────────────────────────────

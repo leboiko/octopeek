@@ -269,6 +269,23 @@ fn open_browser_error_message_includes_url() {
     );
 }
 
+/// `open_url_in_browser` rejects non-`https://` URLs without invoking the
+/// OS command. The guard stops a hypothetical malicious API response from
+/// triggering `file://`, `ssh://`, or custom-scheme handlers.
+#[test]
+fn open_browser_refuses_non_https_scheme() {
+    for hostile in ["file:///etc/passwd", "http://example.com", "ssh://bad", ""] {
+        let err = crate::actions_util::open_url_in_browser(hostile)
+            .expect_err("non-https URL must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("refusing to open non-https URL"),
+            "rejection message must name the guard, got: {msg}"
+        );
+        assert!(msg.contains(hostile), "rejection message must echo the URL");
+    }
+}
+
 /// `copy_to_clipboard` is skipped in headless environments; this test
 /// verifies the function returns a typed Result without panicking.
 #[test]

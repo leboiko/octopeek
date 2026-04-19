@@ -320,12 +320,4 @@ impl App {
     pub fn show_flash(&mut self, text: impl Into<String>, duration: std::time::Duration) {
         self.flash = Some(crate::ui::status_bar::FlashMessage::new(text, duration));
     }
-
-    /// Suppress `dim_flash` — name referenced from status_bar; kept as a no-op
-    /// stub so existing callers compile.
-    #[allow(dead_code)]
-    pub(super) fn dim_flash(&mut self) {
-        // Flash expiry is handled by `FlashMessage::is_active`; this stub
-        // satisfies references in the brief without changing behaviour.
-    }
 }

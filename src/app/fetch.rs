@@ -326,14 +326,14 @@ impl App {
         }
         let cursor_row = u16::try_from(self.copy_mode.cursor.row).unwrap_or(u16::MAX);
         let section = self.pr_detail_selected_section;
-        let scroll = self.scroll_mut(section);
-        if cursor_row < *scroll {
-            *scroll = cursor_row;
-        } else if cursor_row >= scroll.saturating_add(vh) {
-            *scroll = cursor_row.saturating_sub(vh).saturating_add(1);
+        {
+            let scroll = self.scroll_mut(section);
+            if cursor_row < *scroll {
+                *scroll = cursor_row;
+            } else if cursor_row >= scroll.saturating_add(vh) {
+                *scroll = cursor_row.saturating_sub(vh).saturating_add(1);
+            }
         }
-        // Release the mutable borrow before the horizontal scroll section below.
-        let _ = scroll;
 
         if vw == 0 {
             return;

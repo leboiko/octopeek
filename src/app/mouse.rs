@@ -92,7 +92,7 @@ impl App {
     /// files panel jump to the Files section and set `pr_detail_files_cursor`.
     pub fn handle_sidebar_click(
         &mut self,
-        col: u16,
+        _col: u16,
         row: u16,
         sections_rect: ratatui::layout::Rect,
         files_rect: ratatui::layout::Rect,
@@ -126,11 +126,6 @@ impl App {
                 self.copy_mode.h_scroll = 0;
             }
         }
-
-        // Suppress unused variable warning — `col` is intentionally unused in
-        // the current logic (we only care about `row`) but is passed for
-        // future-proofing (e.g. inline diff column selection).
-        let _ = col;
     }
 
     /// Map a (column, row) mouse position to a logical (row, col) position

@@ -104,8 +104,9 @@ pub struct Config {
 impl Config {
     /// Load settings from disk, returning defaults on any I/O or parse failure.
     ///
-    /// Failures are silently swallowed: if the config file is missing or
-    /// malformed the app launches with defaults rather than crashing.
+    /// A missing file is treated as first-run and silently returns defaults.
+    /// A malformed file logs a `warn!` with the parse error before defaulting,
+    /// so users who corrupt their config don't silently lose every setting.
     pub fn load() -> Self {
         let Some(path) = config_path() else {
             return Self::default();
@@ -113,7 +114,16 @@ impl Config {
         let Ok(text) = fs::read_to_string(&path) else {
             return Self::default();
         };
-        toml::from_str(&text).unwrap_or_default()
+        match toml::from_str(&text) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!(
+                    "failed to parse config at {}: {e}; falling back to defaults",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 
     /// Persist settings to disk.

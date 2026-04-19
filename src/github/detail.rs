@@ -654,7 +654,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                 .nodes
                 .into_iter()
                 .map(|c| ReviewComment {
-                    author: c.author.map(|a| a.login).unwrap_or_default(),
+                    author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
                     body_markdown: c.body.unwrap_or_default(),
                     created_at: c.created_at,
                 })
@@ -675,7 +675,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         .nodes
         .into_iter()
         .map(|c| IssueComment {
-            author: c.author.map(|a| a.login).unwrap_or_default(),
+            author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
             body_markdown: c.body.unwrap_or_default(),
             created_at: c.created_at,
         })
@@ -686,7 +686,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         number: raw.number,
         title: raw.title,
         url: raw.url,
-        author: raw.author.map(|a| a.login).unwrap_or_default(),
+        author: crate::github::author_or_deleted(raw.author.map(|a| a.login)),
         body_markdown: raw.body.unwrap_or_default(),
         base_ref: raw.base_ref_name,
         head_ref: raw.head_ref_name,
@@ -721,7 +721,7 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
         .nodes
         .into_iter()
         .map(|c| IssueComment {
-            author: c.author.map(|a| a.login).unwrap_or_default(),
+            author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
             body_markdown: c.body.unwrap_or_default(),
             created_at: c.created_at,
         })
@@ -732,7 +732,7 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
         number: raw.number,
         title: raw.title,
         url: raw.url,
-        author: raw.author.map(|a| a.login).unwrap_or_default(),
+        author: crate::github::author_or_deleted(raw.author.map(|a| a.login)),
         body_markdown: raw.body.unwrap_or_default(),
         state: raw.state,
         updated_at: raw.updated_at,

@@ -732,7 +732,7 @@ fn raw_pr_to_domain(raw: RawPr) -> PullRequest {
         title: raw.title,
         url: raw.url,
         repo: raw.repository.name_with_owner,
-        author: raw.author.map(|a| a.login).unwrap_or_default(),
+        author: super::author_or_deleted(raw.author.map(|a| a.login)),
         is_draft: raw.is_draft,
         mergeable: raw.mergeable,
         merge_state: raw.merge_state_status,
@@ -757,7 +757,7 @@ fn raw_issue_to_domain(raw: RawIssue) -> Issue {
         title: raw.title,
         url: raw.url,
         repo: raw.repository.name_with_owner,
-        author: raw.author.map(|a| a.login).unwrap_or_default(),
+        author: super::author_or_deleted(raw.author.map(|a| a.login)),
         comments_count: raw.comments.total_count,
         updated_at: raw.updated_at,
         labels: raw

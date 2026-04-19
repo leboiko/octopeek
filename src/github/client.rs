@@ -65,11 +65,25 @@ struct RestFileEntry {
 ///
 /// Cheap to clone — the inner [`reqwest::Client`] uses an `Arc` internally
 /// and the token is a plain `String`.
+///
+/// The [`Debug`] impl redacts the `token` field, so a stray `{:?}` format
+/// (or a future `tracing::debug!(?client, …)`) cannot leak the bearer token
+/// into logs. Do not add `#[derive(Debug)]` — it would undo this guard.
 pub struct Client {
     http: reqwest::Client,
     token: String,
     /// Cached viewer login, populated lazily on the first successful fetch.
     viewer_login: OnceLock<String>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("http", &"reqwest::Client")
+            .field("token", &"[REDACTED]")
+            .field("viewer_login", &self.viewer_login)
+            .finish()
+    }
 }
 
 impl Client {
@@ -474,6 +488,27 @@ mod tests {
     fn split_repo_empty_name_errors() {
         let err = split_repo("owner/").expect_err("should fail");
         assert!(err.to_string().contains("expected exactly one"), "error: {err}");
+    }
+
+    /// The manual `Debug` impl redacts the bearer token.
+    ///
+    /// Guards against a regression where `#[derive(Debug)]` silently exposes
+    /// the token in any `tracing::debug!(?client, …)` or `format!("{:?}")`
+    /// call. If this test breaks, do not "fix" it by tweaking the assertion
+    /// — restore the manual `Debug` impl.
+    #[test]
+    fn debug_impl_redacts_token() {
+        let secret = "ghp_supersecret_must_not_leak";
+        let client = Client::new(secret.to_owned()).expect("client build");
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains(secret),
+            "Debug output must not contain the token; got: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug output must show a [REDACTED] placeholder; got: {rendered}"
+        );
     }
 
     // ── REST file-patches data layer ──────────────────────────────────────────
