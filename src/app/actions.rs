@@ -50,6 +50,14 @@ pub enum Action {
     /// Phase 2: triggers GitHub GraphQL fetches for every configured repo.
     RefreshAll,
 
+    /// Periodic auto-refresh tick fired by the background interval task.
+    ///
+    /// Triggers an inbox refresh for all repos AND a stale-while-revalidate
+    /// background re-fetch for the currently-open detail (when `focus ==
+    /// Focus::Detail`). Distinct from `RefreshAll` so the handler can apply
+    /// different logic (SWR vs forced cold-miss) without checking the call site.
+    AutoRefresh,
+
     // ── Navigation within a tab ───────────────────────────────────────────────
     /// Open the PR/issue detail view for the currently selected item.
     /// Phase 3: populates the detail panel from cached data.

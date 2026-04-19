@@ -278,10 +278,7 @@ pub fn render_diff(file: &DiffFile, palette: &Palette) -> Vec<Line<'static>> {
         )];
         if !hunk.section.is_empty() {
             header_spans.push(Span::raw(" "));
-            header_spans.push(Span::styled(
-                hunk.section.clone(),
-                Style::default().fg(palette.dim),
-            ));
+            header_spans.push(Span::styled(hunk.section.clone(), Style::default().fg(palette.dim)));
         }
         output.push(Line::from(header_spans));
 
@@ -531,11 +528,8 @@ index abc123..def456 100644
         let lines = render_diff(&file, &palette);
 
         // Collect all fg colors from every span in every rendered line.
-        let all_fgs: Vec<ratatui::style::Color> = lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .filter_map(|s| s.style.fg)
-            .collect();
+        let all_fgs: Vec<ratatui::style::Color> =
+            lines.iter().flat_map(|l| l.spans.iter()).filter_map(|s| s.style.fg).collect();
 
         assert!(
             all_fgs.contains(&palette.git_new),

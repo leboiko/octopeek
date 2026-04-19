@@ -902,10 +902,7 @@ fn build_files(
     // stats — tells the reader exactly which file in the list they're on
     // when they cycle with `J`/`K`.
     let header = Line::from(vec![
-        Span::styled(
-            format!("[{}/{}] ", idx + 1, total),
-            Style::default().fg(p.dim),
-        ),
+        Span::styled(format!("[{}/{}] ", idx + 1, total), Style::default().fg(p.dim)),
         Span::styled(
             file.path.clone(),
             Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
@@ -1378,8 +1375,7 @@ pub mod tests {
         let (files, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
         assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
-        let (comments, _) =
-            build_section(DetailSection::Comments, &detail, 0, false, &p, false);
+        let (comments, _) = build_section(DetailSection::Comments, &detail, 0, false, &p, false);
         assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
     }
 
@@ -1399,8 +1395,8 @@ pub mod tests {
         // Files section now always produces at least a placeholder line
         // ("No files changed") rather than returning empty, so the user
         // sees feedback instead of a blank pane. Assert on the content.
-        let text: String = files.iter().flat_map(|l| l.spans.iter())
-            .map(|s| s.content.as_ref()).collect();
+        let text: String =
+            files.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("No files"),
             "Files placeholder must explain emptiness, got: {text:?}"
@@ -1485,8 +1481,7 @@ pub mod tests {
     fn alt_bg_empty_when_single_comment() {
         let detail = fixture_pr_detail(0, 0, 0, 0); // 0 threads, only 1 issue comment
         let p = Palette::default();
-        let (_, alt_ranges) =
-            build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (_, alt_ranges) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
         assert!(
             alt_ranges.is_empty(),
             "first top-level item should not be tinted, got {alt_ranges:?}"

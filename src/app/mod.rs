@@ -98,11 +98,12 @@ pub struct DetailRef {
 /// State snapshot for a single repo tab, captured when the user switches away
 /// from that tab and replayed when they come back.
 ///
-/// We intentionally do NOT cache the fetched `PrDetail` / `IssueDetail`
-/// payload here — only the reference. Restoring re-dispatches a fetch so
-/// data stays fresh, which is usually what users want (check runs move,
-/// reviews arrive, comments get posted). The restore cost is one GraphQL
-/// round-trip, shown as the existing "Fetching pull request…" spinner.
+/// Only the *reference* (repo + number + kind) is stored here. The actual
+/// payload lives in [`App::detail_cache`] and is served with
+/// stale-while-revalidate semantics on restore: a cache hit shows content
+/// immediately while a background re-fetch runs when the entry is stale.
+/// A cold miss (first visit or after manual `r` refresh) shows the existing
+/// "Fetching…" spinner as before.
 #[derive(Debug, Clone, Default)]
 pub struct PerTabState {
     /// PR or issue the user had open. `None` when they were on the list view.
@@ -165,10 +166,19 @@ pub struct App {
     pub pr_detail: Option<github::detail::PrDetail>,
     /// Most-recently-fetched issue detail, absent until a successful detail fetch.
     pub issue_detail: Option<github::detail::IssueDetail>,
-    /// `true` while a background detail fetch is in-flight.
+    /// `true` while a background detail fetch is in-flight (cold-miss spinner).
     pub detail_fetching: bool,
     /// Human-readable description of the last detail fetch error, if any.
     pub detail_error: Option<String>,
+    /// In-process LRU-less cache of PR and issue detail payloads.
+    ///
+    /// Populated whenever a detail arrives from GitHub; read back by
+    /// `restore_active_tab_state` to serve stale-while-revalidate hits.
+    pub detail_cache: github::DetailCache,
+    /// When `Some((repo, number))`, a background SWR re-fetch is in flight for
+    /// that detail. Used to avoid duplicate fetches and to surface the
+    /// "refreshing…" indicator in the status bar.
+    pub detail_refreshing: Option<(String, u32)>,
     /// Per-section vertical scroll offsets for the PR detail right pane.
     ///
     /// Switching sections preserves each section's individual scroll position
@@ -294,6 +304,8 @@ impl App {
             issue_detail: None,
             detail_fetching: false,
             detail_error: None,
+            detail_cache: github::DetailCache::new(),
+            detail_refreshing: None,
             pr_detail_scroll: HashMap::new(),
             pr_detail_diff_scroll: HashMap::new(),
             pr_detail_files_expanded: false,
@@ -408,7 +420,7 @@ impl App {
                 ticker.tick().await;
                 loop {
                     ticker.tick().await;
-                    if refresh_tx.send(Action::RefreshAll).is_err() {
+                    if refresh_tx.send(Action::AutoRefresh).is_err() {
                         // Receiver dropped — app is shutting down.
                         break;
                     }
@@ -619,6 +631,58 @@ impl App {
         });
     }
 
+    /// Background variant of [`Self::spawn_detail_fetch`] used for
+    /// stale-while-revalidate kicks and auto-refresh.
+    ///
+    /// Identical to `spawn_detail_fetch` **except** it does NOT set
+    /// `detail_fetching = true`, so no spinner appears — the user already
+    /// sees stale content while the fresh payload arrives silently.
+    ///
+    /// Returns `false` and is a no-op when no client is available.
+    pub fn spawn_detail_fetch_background(
+        &self,
+        kind: DetailKind,
+        repo: String,
+        number: u32,
+        tx: tokio::sync::mpsc::UnboundedSender<Action>,
+    ) -> bool {
+        let Some(client) = self.client.clone() else {
+            debug!("no GitHub client; skipping background detail fetch");
+            return false;
+        };
+
+        // Intentionally no `detail_fetching` guard: background SWR fetches are
+        // allowed to run even while a foreground fetch is in progress (the
+        // arriving action handler checks the active tab before overwriting state).
+        tokio::spawn(async move {
+            let inner: tokio::task::JoinHandle<anyhow::Result<Action>> = tokio::spawn(async move {
+                match kind {
+                    DetailKind::Pr => {
+                        let detail = client.fetch_pr_detail(&repo, number).await?;
+                        Ok(Action::PrDetailLoaded(Box::new(detail)))
+                    }
+                    DetailKind::Issue => {
+                        let detail = client.fetch_issue_detail(&repo, number).await?;
+                        Ok(Action::IssueDetailLoaded(Box::new(detail)))
+                    }
+                }
+            });
+            let action = match inner.await {
+                Ok(Ok(action)) => action,
+                Ok(Err(e)) => Action::DetailFetchFailed(e.to_string()),
+                Err(join_err) if join_err.is_panic() => {
+                    Action::DetailFetchFailed(format!("bg detail fetch task panicked: {join_err}"))
+                }
+                Err(join_err) => {
+                    Action::DetailFetchFailed(format!("bg detail fetch task aborted: {join_err}"))
+                }
+            };
+            let _ = tx.send(action);
+        });
+
+        true
+    }
+
     /// Return the filtered + sorted PR list length for the active repo.
     fn active_list_len(&self) -> usize {
         let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
@@ -761,19 +825,101 @@ impl App {
                 }
             }
             Action::PrDetailLoaded(detail) => {
-                self.pr_detail = Some(*detail);
+                // Always upsert into cache — background SWR fetches land here
+                // too, even if the user has tabbed away.
+                self.detail_cache.insert_pr(*detail.clone());
+
+                // Clear the SWR-in-flight marker if this is the awaited fetch.
+                if self
+                    .detail_refreshing
+                    .as_ref()
+                    .is_some_and(|(r, n)| r == &detail.repo && *n == detail.number)
+                {
+                    self.detail_refreshing = None;
+                }
+
+                // Only update visible state when the user is still looking at
+                // this exact item. Silently dropping is correct: the cache
+                // already holds the fresh data for the next visit.
+                let active_pr_matches = self
+                    .pr_detail
+                    .as_ref()
+                    .is_some_and(|d| d.repo == detail.repo && d.number == detail.number);
+                // Also accept when pr_detail is None but focus is Detail and
+                // this was a foreground (cold-miss) fetch.
+                let foreground_cold_miss =
+                    self.pr_detail.is_none() && self.focus == Focus::Detail && self.detail_fetching;
+                if self.focus == Focus::Detail && (active_pr_matches || foreground_cold_miss) {
+                    self.pr_detail = Some(*detail);
+                }
                 self.detail_fetching = false;
                 self.detail_error = None;
             }
             Action::IssueDetailLoaded(detail) => {
-                self.issue_detail = Some(*detail);
+                self.detail_cache.insert_issue(*detail.clone());
+
+                if self
+                    .detail_refreshing
+                    .as_ref()
+                    .is_some_and(|(r, n)| r == &detail.repo && *n == detail.number)
+                {
+                    self.detail_refreshing = None;
+                }
+
+                let active_issue_matches = self
+                    .issue_detail
+                    .as_ref()
+                    .is_some_and(|d| d.repo == detail.repo && d.number == detail.number);
+                let foreground_cold_miss = self.issue_detail.is_none()
+                    && self.focus == Focus::Detail
+                    && self.detail_fetching;
+                if self.focus == Focus::Detail && (active_issue_matches || foreground_cold_miss) {
+                    self.issue_detail = Some(*detail);
+                }
                 self.detail_fetching = false;
                 self.detail_error = None;
             }
             Action::DetailFetchFailed(msg) => {
                 self.detail_fetching = false;
+                // A failed background SWR fetch must not erase the stale content
+                // the user is currently reading — only log the warning.
                 warn!("GitHub detail fetch failed: {msg}");
-                self.detail_error = Some(msg);
+                // Only surface the error when no stale content is available.
+                if self.pr_detail.is_none() && self.issue_detail.is_none() {
+                    self.detail_error = Some(msg);
+                }
+                // Clear the SWR marker regardless so a future tick can retry.
+                self.detail_refreshing = None;
+            }
+            Action::AutoRefresh => {
+                // Inbox refresh (same as RefreshAll / Refresh).
+                if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_fetch(tx.clone());
+
+                    // Detail SWR: re-fetch the open item if one exists and we
+                    // are not already re-fetching it.
+                    if self.focus == Focus::Detail {
+                        let detail_key: Option<(DetailKind, String, u32)> =
+                            if let Some(d) = &self.pr_detail {
+                                Some((DetailKind::Pr, d.repo.clone(), d.number))
+                            } else {
+                                self.issue_detail
+                                    .as_ref()
+                                    .map(|d| (DetailKind::Issue, d.repo.clone(), d.number))
+                            };
+
+                        if let Some((kind, repo, number)) = detail_key {
+                            let already = self
+                                .detail_refreshing
+                                .as_ref()
+                                .is_some_and(|(r, n)| r == &repo && *n == number);
+                            if !already {
+                                self.detail_refreshing = Some((repo.clone(), number));
+                                self.spawn_detail_fetch_background(kind, repo, number, tx);
+                            }
+                        }
+                    }
+                }
             }
         }
         // Every action path could have mutated `pr_detail_scroll` — explicitly
@@ -1108,9 +1254,7 @@ impl App {
                     self.copy_mode.h_scroll = 0;
                 }
             }
-            KeyCode::Char(ch @ '1'..='5')
-                if key.modifiers.contains(KeyModifiers::SHIFT) =>
-            {
+            KeyCode::Char(ch @ '1'..='5') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.detail_pending_g = false;
                 let idx = (ch as usize) - ('1' as usize);
                 if let Some(&sec) = DetailSection::ALL.get(idx) {
@@ -1190,12 +1334,16 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
-                // Re-fetch the current detail. `spawn_detail_fetch` owns the
+                // Manual refresh bypasses the cache. Invalidate the entry so
+                // the next restore is a cold miss (spinner) rather than a
+                // stale-while-revalidate serve. `spawn_detail_fetch` owns the
                 // `detail_fetching` guard — setting it externally would cause
                 // the guard to skip the fetch.
                 if let Some(detail) = &self.pr_detail {
                     let repo = detail.repo.clone();
                     let number = detail.number;
+                    self.detail_cache.invalidate_pr(&repo, number);
+                    self.detail_refreshing = None;
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
@@ -1207,6 +1355,8 @@ impl App {
                 } else if let Some(detail) = &self.issue_detail {
                     let repo = detail.repo.clone();
                     let number = detail.number;
+                    self.detail_cache.invalidate_issue(&repo, number);
+                    self.detail_refreshing = None;
                     self.pr_detail = None;
                     self.issue_detail = None;
                     self.detail_error = None;
@@ -1805,12 +1955,15 @@ impl App {
     }
 
     /// Restore the saved per-tab state for the active tab, clearing stale
-    /// detail payload and dispatching a fresh fetch when a detail ref is
-    /// present.
+    /// detail payload and either serving from cache or dispatching a cold fetch.
     ///
-    /// Called right after `tabs.next()` / `tabs.prev()` / `set_active_by_index`
-    /// in the tab-switch action handlers. If no saved state exists for the
-    /// new tab (first visit), falls back to the dashboard list view.
+    /// **Stale-while-revalidate** behaviour:
+    /// - Cache hit, fresh → show immediately, no background fetch.
+    /// - Cache hit, stale → show immediately AND kick a background re-fetch.
+    /// - Cache miss (cold) → show spinner, dispatch foreground fetch.
+    ///
+    /// Called right after `tabs.next()` / `tabs.prev()` / `set_active_by_index`.
+    /// Falls back to `Focus::Dashboard` when no saved detail ref exists.
     fn restore_active_tab_state(&mut self) {
         // Always clear whatever detail was loaded for the previous tab —
         // the renderer should never show that tab's data under a different
@@ -1826,16 +1979,69 @@ impl App {
         };
 
         let saved = self.per_tab_state.get(&repo).cloned().unwrap_or_default();
-        if let Some(detail_ref) = saved.detail_ref {
-            self.focus = Focus::Detail;
-            if let Some(tx) = self.action_tx.clone() {
-                // `spawn_detail_fetch` flips `detail_fetching` on itself; we
-                // don't set it manually (see the note in
-                // `open_detail_for_selection`).
-                self.spawn_detail_fetch(detail_ref.kind, detail_ref.repo, detail_ref.number, tx);
-            }
-        } else {
+        let Some(detail_ref) = saved.detail_ref else {
             self.focus = Focus::Dashboard;
+            return;
+        };
+
+        self.focus = Focus::Detail;
+
+        let dref_repo = detail_ref.repo.clone();
+        let dref_number = detail_ref.number;
+
+        match detail_ref.kind {
+            DetailKind::Pr => {
+                // Try to serve from cache first.
+                if let Some(cached) = self.detail_cache.get_pr(&dref_repo, dref_number) {
+                    // Populate immediately — no spinner regardless of freshness.
+                    self.pr_detail = Some(cached.data.clone());
+
+                    // If stale and not already re-fetching, kick a background fetch.
+                    let already_refreshing = self
+                        .detail_refreshing
+                        .as_ref()
+                        .is_some_and(|(r, n)| r == &dref_repo && *n == dref_number);
+                    if !cached.is_fresh() && !already_refreshing {
+                        self.detail_refreshing = Some((dref_repo.clone(), dref_number));
+                        if let Some(tx) = self.action_tx.clone() {
+                            self.spawn_detail_fetch_background(
+                                DetailKind::Pr,
+                                dref_repo,
+                                dref_number,
+                                tx,
+                            );
+                        }
+                    }
+                } else {
+                    // Cold miss: show spinner, foreground fetch.
+                    if let Some(tx) = self.action_tx.clone() {
+                        self.spawn_detail_fetch(DetailKind::Pr, dref_repo, dref_number, tx);
+                    }
+                }
+            }
+            DetailKind::Issue => {
+                if let Some(cached) = self.detail_cache.get_issue(&dref_repo, dref_number) {
+                    self.issue_detail = Some(cached.data.clone());
+
+                    let already_refreshing = self
+                        .detail_refreshing
+                        .as_ref()
+                        .is_some_and(|(r, n)| r == &dref_repo && *n == dref_number);
+                    if !cached.is_fresh() && !already_refreshing {
+                        self.detail_refreshing = Some((dref_repo.clone(), dref_number));
+                        if let Some(tx) = self.action_tx.clone() {
+                            self.spawn_detail_fetch_background(
+                                DetailKind::Issue,
+                                dref_repo,
+                                dref_number,
+                                tx,
+                            );
+                        }
+                    }
+                } else if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_detail_fetch(DetailKind::Issue, dref_repo, dref_number, tx);
+                }
+            }
         }
     }
 
@@ -1995,6 +2201,9 @@ impl App {
         self.issue_detail = None;
         self.detail_error = None;
         self.detail_fetching = false;
+        // NOTE: `detail_cache` is intentionally NOT cleared here. The cached
+        // payloads remain available for instant serving on the next visit.
+        self.detail_refreshing = None;
         self.pr_detail_scroll.clear();
         self.pr_detail_diff_scroll.clear();
         self.pr_detail_files_expanded = false;
@@ -2781,18 +2990,12 @@ mod tests {
         app.focus = Focus::Detail;
         assert_eq!(app.tabs.active_index(), Some(0));
 
-        app.handle_key(crossterm::event::KeyEvent::new(
-            KeyCode::Char(']'),
-            KeyModifiers::NONE,
-        ));
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
         // Switching tabs from detail pops back to dashboard (existing contract).
         assert_eq!(app.focus, Focus::Dashboard);
         assert_eq!(app.tabs.active_index(), Some(1), "] moves to next tab");
 
-        app.handle_key(crossterm::event::KeyEvent::new(
-            KeyCode::Char('['),
-            KeyModifiers::NONE,
-        ));
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
         assert_eq!(app.tabs.active_index(), Some(0), "[ moves to prev tab");
     }
 
@@ -3754,14 +3957,8 @@ mod tests {
         ] {
             app.focus = Focus::Detail;
             app.pr_detail_selected_section = DetailSection::Description;
-            app.handle_key(crossterm::event::KeyEvent::new(
-                KeyCode::Char(ch),
-                KeyModifiers::NONE,
-            ));
-            assert_eq!(
-                app.pr_detail_selected_section, expected,
-                "{ch:?} must select {expected:?}"
-            );
+            app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            assert_eq!(app.pr_detail_selected_section, expected, "{ch:?} must select {expected:?}");
         }
     }
 
@@ -3852,8 +4049,7 @@ mod tests {
         app.pr_detail_selected_section = DetailSection::Files;
         app.pr_detail_files_cursor = 0;
         // Pretend the right-pane viewport has been rendered once.
-        app.pr_detail_right_viewport
-            .set(ratatui::layout::Rect::new(30, 6, 100, 24));
+        app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(30, 6, 100, 24));
 
         // Smash the scroll way past any realistic content length.
         *app.right_pane_scroll_mut() = u16::MAX;
@@ -3861,11 +4057,7 @@ mod tests {
 
         // Content lines = diff header + blank + placeholder line (patch=None)
         // = 3 rows; viewport height is 24; max_scroll saturates to 0.
-        assert_eq!(
-            app.right_pane_scroll(),
-            0,
-            "diff shorter than viewport must clamp scroll to 0"
-        );
+        assert_eq!(app.right_pane_scroll(), 0, "diff shorter than viewport must clamp scroll to 0");
     }
 
     /// Scroll offsets are preserved per file when cycling through files.
@@ -3992,6 +4184,309 @@ mod tests {
             app.scroll_for(DetailSection::Description),
             15,
             "switching back to Description must restore scroll 15"
+        );
+    }
+
+    // ── Detail cache + SWR tests ──────────────────────────────────────────────
+
+    /// Helper: build a minimal [`github::detail::PrDetail`] for cache tests.
+    fn make_pr_detail_for_app(repo: &str, number: u32) -> github::detail::PrDetail {
+        github::detail::PrDetail {
+            repo: repo.to_owned(),
+            number,
+            title: "Cache Test PR".to_owned(),
+            url: format!("https://github.com/{repo}/pull/{number}"),
+            author: "alice".to_owned(),
+            body_markdown: String::new(),
+            base_ref: "main".to_owned(),
+            head_ref: "feat/cache".to_owned(),
+            is_draft: false,
+            additions: 1,
+            deletions: 1,
+            changed_files_count: 1,
+            updated_at: Utc::now(),
+            created_at: Utc::now(),
+            merged: false,
+            files: vec![],
+            check_runs: vec![],
+            reviews: vec![],
+            review_threads: vec![],
+            issue_comments: vec![],
+        }
+    }
+
+
+    /// Round-trip: `insert_pr` then `get_pr` returns the same payload.
+    #[test]
+    fn cache_insert_and_get_pr() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let detail = make_pr_detail_for_app("o/r", 42);
+        app.detail_cache.insert_pr(detail.clone());
+
+        let hit = app.detail_cache.get_pr("o/r", 42).expect("cache miss");
+        assert_eq!(hit.data.number, 42);
+        assert_eq!(hit.data.repo, "o/r");
+    }
+
+    /// `Cached::is_fresh` is true just after insertion and false when
+    /// `fetched_at` is set more than TTL ago.
+    #[test]
+    fn cache_is_fresh_true_under_ttl_false_after() {
+        use crate::github::cache::{CACHE_TTL, Cached};
+        use std::time::{Duration, Instant};
+
+        let data = make_pr_detail_for_app("o/r", 1);
+
+        let fresh = Cached::new(data.clone());
+        assert!(fresh.is_fresh(), "entry stamped now must be fresh");
+
+        let stale = Cached {
+            data,
+            fetched_at: Instant::now().checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1)).unwrap_or_else(Instant::now),
+        };
+        assert!(!stale.is_fresh(), "entry older than TTL must be stale");
+    }
+
+    /// Switching to a tab whose detail ref is in the cache (fresh) must
+    /// populate `pr_detail` without setting `detail_fetching` or
+    /// `detail_refreshing`.
+    #[test]
+    fn restore_from_fresh_cache_populates_detail_without_flipping_fetching() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // Pre-populate cache with a fresh entry for "a/one" PR #1.
+        let detail = make_pr_detail_for_app("a/one", 1);
+        app.detail_cache.insert_pr(detail.clone());
+
+        // Simulate the user having been on tab 0 with PR #1 open.
+        app.per_tab_state.insert(
+            "a/one".to_owned(),
+            PerTabState {
+                detail_ref: Some(DetailRef {
+                    repo: "a/one".to_owned(),
+                    number: 1,
+                    kind: DetailKind::Pr,
+                }),
+            },
+        );
+
+        // Switch to tab 1, then back to tab 0 to trigger restore.
+        app.tabs.set_active_by_index(1);
+        app.tabs.set_active_by_index(0);
+        app.restore_active_tab_state();
+
+        assert!(app.pr_detail.is_some(), "pr_detail must be populated from cache");
+        assert!(!app.detail_fetching, "no spinner for a cache hit");
+        assert!(app.detail_refreshing.is_none(), "no SWR kick for a fresh entry");
+    }
+
+    /// Switching to a tab whose cache entry is stale must populate `pr_detail`
+    /// immediately AND set `detail_refreshing` (but NOT `detail_fetching`).
+    #[test]
+    fn restore_from_stale_cache_populates_and_sets_refreshing() {
+        use crate::github::cache::{CACHE_TTL, Cached};
+        use std::time::{Duration, Instant};
+
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // Insert a stale cache entry manually (fetched_at = TTL + 1 sec ago).
+        let data = make_pr_detail_for_app("a/one", 1);
+        app.detail_cache.prs.insert(
+            ("a/one".to_owned(), 1),
+            Cached {
+                data,
+                fetched_at: Instant::now().checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1)).unwrap_or_else(Instant::now),
+            },
+        );
+
+        app.per_tab_state.insert(
+            "a/one".to_owned(),
+            PerTabState {
+                detail_ref: Some(DetailRef {
+                    repo: "a/one".to_owned(),
+                    number: 1,
+                    kind: DetailKind::Pr,
+                }),
+            },
+        );
+
+        app.tabs.set_active_by_index(0);
+        app.restore_active_tab_state();
+
+        assert!(app.pr_detail.is_some(), "stale cache must still populate pr_detail immediately");
+        assert!(!app.detail_fetching, "stale SWR must NOT set the spinner");
+        assert_eq!(
+            app.detail_refreshing,
+            Some(("a/one".to_owned(), 1)),
+            "stale entry must set detail_refreshing"
+        );
+    }
+
+    /// Cold miss: no cache entry → `pr_detail` stays None, focus is Detail,
+    /// `detail_refreshing` is None (not SWR — it's a foreground fetch).
+    #[test]
+    fn cold_miss_falls_back_to_cold_fetch_path() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // No cache entry for "a/one" PR #1.
+        app.per_tab_state.insert(
+            "a/one".to_owned(),
+            PerTabState {
+                detail_ref: Some(DetailRef {
+                    repo: "a/one".to_owned(),
+                    number: 1,
+                    kind: DetailKind::Pr,
+                }),
+            },
+        );
+
+        app.tabs.set_active_by_index(0);
+        app.restore_active_tab_state();
+
+        // No client in tests, so spawn_detail_fetch returns early.
+        // pr_detail stays None; focus is Detail (the ref exists).
+        assert_eq!(app.focus, Focus::Detail, "detail ref present means focus=Detail");
+        assert!(app.pr_detail.is_none(), "no cache entry means cold fetch (no stale content)");
+        assert!(app.detail_refreshing.is_none(), "cold miss uses foreground fetch, not SWR");
+    }
+
+    /// Dispatching `PrDetailLoaded` must upsert into cache and clear
+    /// `detail_refreshing` when the arriving (repo, number) matches.
+    #[test]
+    fn pr_detail_loaded_upserts_cache_and_clears_refreshing() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // Simulate an in-flight SWR for "o/r" #5.
+        app.detail_refreshing = Some(("o/r".to_owned(), 5));
+        app.focus = Focus::Detail;
+        app.detail_fetching = true;
+
+        let detail = make_pr_detail_for_app("o/r", 5);
+        // Use pr_detail = None so the "foreground cold miss" path fires and
+        // the visible state is updated.
+        app.handle_action(Action::PrDetailLoaded(Box::new(detail)));
+
+        assert!(app.detail_cache.get_pr("o/r", 5).is_some(), "cache must be populated");
+        assert!(app.detail_refreshing.is_none(), "SWR marker must be cleared on arrival");
+    }
+
+    /// When the user has tabbed away (focus != Detail) a `PrDetailLoaded`
+    /// action must still upsert the cache but must NOT overwrite `pr_detail`
+    /// (which is None for the new tab's context).
+    #[test]
+    fn pr_detail_loaded_ignored_when_user_moved_on() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        // User is on the Dashboard, not Detail.
+        app.focus = Focus::Dashboard;
+        app.pr_detail = None;
+
+        let detail = make_pr_detail_for_app("o/r", 7);
+        app.handle_action(Action::PrDetailLoaded(Box::new(detail)));
+
+        assert!(app.detail_cache.get_pr("o/r", 7).is_some(), "cache must be populated");
+        assert!(app.pr_detail.is_none(), "visible state must NOT be updated when not in Detail");
+    }
+
+    /// Pressing `r` (manual refresh) invalidates the cache entry for the
+    /// active detail before dispatching a cold fetch.
+    #[test]
+    fn manual_refresh_invalidates_cache() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let detail = make_pr_detail_for_app("o/r", 3);
+        app.detail_cache.insert_pr(detail.clone());
+        app.pr_detail = Some(detail);
+        app.focus = Focus::Detail;
+
+        // Simulate pressing `r`.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        assert!(
+            app.detail_cache.get_pr("o/r", 3).is_none(),
+            "manual refresh must invalidate the cache entry"
+        );
+    }
+
+    /// `back_to_dashboard` must NOT clear `detail_cache`. The cache must
+    /// survive so the next visit can be served instantly.
+    #[test]
+    fn back_to_dashboard_does_not_clear_cache() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let detail = make_pr_detail_for_app("o/r", 9);
+        app.detail_cache.insert_pr(detail.clone());
+        app.pr_detail = Some(detail);
+        app.focus = Focus::Detail;
+
+        app.back_to_dashboard();
+
+        assert!(
+            app.detail_cache.get_pr("o/r", 9).is_some(),
+            "cache entry must survive back_to_dashboard"
+        );
+    }
+
+    /// Dispatching `AutoRefresh` while in Detail focus with a loaded PR must
+    /// set `detail_refreshing` (SWR kick). The inbox-refresh leg is gated
+    /// behind the `fetching` guard, so we pre-set `app.fetching = true` to
+    /// short-circuit `spawn_fetch` before it attempts `tokio::spawn` (which
+    /// requires a runtime in non-async tests). The detail SWR path is
+    /// validated because it also exits early when no GitHub client is
+    /// configured — `spawn_detail_fetch_background` returns `false` without
+    /// spawning, but `detail_refreshing` is set *before* the spawn call.
+    #[test]
+    fn auto_refresh_action_dispatches_inbox_and_detail_refresh() {
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+
+        let detail = make_pr_detail_for_app("o/r", 11);
+        app.pr_detail = Some(detail);
+        app.focus = Focus::Detail;
+        // Pretend an inbox fetch is already in-flight so `spawn_fetch` returns
+        // immediately — avoids needing a tokio runtime in a sync test.
+        app.fetching = true;
+        // Remove the GitHub client so `spawn_detail_fetch_background` also
+        // exits early (before calling `tokio::spawn`).
+        app.client = None;
+
+        // Inject a dummy action sender so the handler can clone it.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.action_tx = Some(tx);
+
+        app.handle_action(Action::AutoRefresh);
+
+        assert_eq!(
+            app.detail_refreshing,
+            Some(("o/r".to_owned(), 11)),
+            "AutoRefresh in Detail focus must set detail_refreshing"
         );
     }
 }

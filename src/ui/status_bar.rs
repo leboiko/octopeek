@@ -56,9 +56,11 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::ThemePicker => "THEME",
     };
 
-    // Left: fetch indicator or nothing.
+    // Left: fetch indicator — inbox sync takes priority, then detail SWR.
     let fetch_indicator = if app.fetching {
         Span::styled(" syncing... ", Style::default().fg(p.dim))
+    } else if app.detail_refreshing.is_some() {
+        Span::styled(" refreshing... ", Style::default().fg(p.dim))
     } else {
         Span::raw(" ")
     };

@@ -299,9 +299,7 @@ impl Client {
         name: &str,
         number: u32,
     ) -> Result<HashMap<String, Option<String>>> {
-        let url = format!(
-            "{REST_BASE_URL}/repos/{owner}/{name}/pulls/{number}/files?per_page=30"
-        );
+        let url = format!("{REST_BASE_URL}/repos/{owner}/{name}/pulls/{number}/files?per_page=30");
 
         let response = self
             .http
@@ -506,10 +504,7 @@ mod tests {
 
         assert_eq!(map.len(), 2);
         assert!(map["src/main.rs"].is_some(), "text file should have a patch");
-        assert!(
-            map["assets/logo.png"].is_none(),
-            "binary file should have patch == None"
-        );
+        assert!(map["assets/logo.png"].is_none(), "binary file should have patch == None");
     }
 
     /// Explicit `patch: null` in the JSON payload must also produce `None`.
@@ -586,8 +581,7 @@ mod tests {
         ];
 
         let mut patch_map: HashMap<String, Option<String>> = HashMap::new();
-        patch_map
-            .insert("src/main.rs".to_owned(), Some("@@ -1 +1 @@\n+hello".to_owned()));
+        patch_map.insert("src/main.rs".to_owned(), Some("@@ -1 +1 @@\n+hello".to_owned()));
         // src/lib.rs is in the map but has no patch (binary / oversized).
         patch_map.insert("src/lib.rs".to_owned(), None);
         // beyond_cap.rs is intentionally absent from the map.
