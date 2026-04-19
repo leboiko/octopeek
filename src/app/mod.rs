@@ -190,8 +190,9 @@ pub struct App {
     pub pr_detail_diff_scroll: HashMap<String, u16>,
     /// `true` when the files section in the PR detail view is fully expanded.
     pub pr_detail_files_expanded: bool,
-    /// `true` when the comments section in the PR detail view is fully expanded.
-    pub pr_detail_comments_expanded: bool,
+    /// `true` when the comments section in the detail view is fully expanded.
+    /// Shared between PR and issue detail — both views are mutually exclusive.
+    pub detail_comments_expanded: bool,
     /// Currently selected section in the PR detail sidebar.
     pub pr_detail_selected_section: DetailSection,
     /// Index of the highlighted file in the sidebar files list.
@@ -325,7 +326,7 @@ impl App {
             pr_detail_scroll: HashMap::new(),
             pr_detail_diff_scroll: HashMap::new(),
             pr_detail_files_expanded: false,
-            pr_detail_comments_expanded: false,
+            detail_comments_expanded: false,
             pr_detail_selected_section: DetailSection::default(),
             pr_detail_files_cursor: 0,
             pr_detail_files_show_diff: false,
@@ -855,15 +856,6 @@ impl App {
                 // too, even if the user has tabbed away.
                 self.detail_cache.insert_pr(*detail.clone());
 
-                // Clear the SWR-in-flight marker if this is the awaited fetch.
-                if self
-                    .detail_refreshing
-                    .as_ref()
-                    .is_some_and(|(r, n)| r == &detail.repo && *n == detail.number)
-                {
-                    self.detail_refreshing = None;
-                }
-
                 // Only update visible state when the user is still looking at
                 // this exact item. Silently dropping is correct: the cache
                 // already holds the fresh data for the next visit.
@@ -876,21 +868,12 @@ impl App {
                 let foreground_cold_miss =
                     self.pr_detail.is_none() && self.focus == Focus::Detail && self.detail_fetching;
                 if self.focus == Focus::Detail && (active_pr_matches || foreground_cold_miss) {
-                    self.pr_detail = Some(*detail);
+                    self.pr_detail = Some(*detail.clone());
                 }
-                self.detail_fetching = false;
-                self.detail_error = None;
+                self.clear_detail_loading_markers(&detail.repo, detail.number);
             }
             Action::IssueDetailLoaded(detail) => {
                 self.detail_cache.insert_issue(*detail.clone());
-
-                if self
-                    .detail_refreshing
-                    .as_ref()
-                    .is_some_and(|(r, n)| r == &detail.repo && *n == detail.number)
-                {
-                    self.detail_refreshing = None;
-                }
 
                 let active_issue_matches = self
                     .issue_detail
@@ -900,10 +883,9 @@ impl App {
                     && self.focus == Focus::Detail
                     && self.detail_fetching;
                 if self.focus == Focus::Detail && (active_issue_matches || foreground_cold_miss) {
-                    self.issue_detail = Some(*detail);
+                    self.issue_detail = Some(*detail.clone());
                 }
-                self.detail_fetching = false;
-                self.detail_error = None;
+                self.clear_detail_loading_markers(&detail.repo, detail.number);
             }
             Action::DetailFetchFailed(msg) => {
                 self.detail_fetching = false;
@@ -1327,7 +1309,7 @@ impl App {
             }
             KeyCode::Char('m') => {
                 self.detail_pending_g = false;
-                self.pr_detail_comments_expanded = !self.pr_detail_comments_expanded;
+                self.detail_comments_expanded = !self.detail_comments_expanded;
             }
             KeyCode::Char('o') => {
                 self.detail_pending_g = false;
@@ -1749,7 +1731,7 @@ impl App {
                 detail,
                 self.pr_detail_files_cursor,
                 self.pr_detail_files_show_diff,
-                self.pr_detail_comments_expanded,
+                self.detail_comments_expanded,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );
@@ -1758,7 +1740,7 @@ impl App {
         if let Some(detail) = &self.issue_detail {
             let (lines, _) = crate::ui::issue_detail::build_content(
                 detail,
-                self.pr_detail_comments_expanded,
+                self.detail_comments_expanded,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );
@@ -2011,6 +1993,76 @@ impl App {
         self.per_tab_state.insert(repo, PerTabState { detail_ref });
     }
 
+    /// Shared tail logic for `PrDetailLoaded` / `IssueDetailLoaded`:
+    /// clear the SWR-in-flight marker when the arriving fetch matches, then
+    /// mark loading as complete regardless.
+    ///
+    /// # Arguments
+    ///
+    /// * `repo`   - Repository slug of the arriving detail.
+    /// * `number` - Issue/PR number of the arriving detail.
+    fn clear_detail_loading_markers(&mut self, repo: &str, number: u32) {
+        if self
+            .detail_refreshing
+            .as_ref()
+            .is_some_and(|(r, n)| r == repo && *n == number)
+        {
+            self.detail_refreshing = None;
+        }
+        self.detail_fetching = false;
+        self.detail_error = None;
+    }
+
+    /// Serve a single kind of detail from cache (with SWR kick if stale) or
+    /// dispatch a foreground cold fetch.
+    ///
+    /// Called from `restore_active_tab_state` for both `DetailKind::Pr` and
+    /// `DetailKind::Issue` to eliminate the parallel match arms.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind`   - Whether to restore a PR or issue detail.
+    /// * `repo`   - Repository slug.
+    /// * `number` - PR/issue number.
+    fn restore_detail_kind(&mut self, kind: DetailKind, repo: String, number: u32) {
+        match kind {
+            DetailKind::Pr => {
+                if let Some(cached) = self.detail_cache.get_pr(&repo, number) {
+                    self.pr_detail = Some(cached.data.clone());
+                    let already_refreshing = self
+                        .detail_refreshing
+                        .as_ref()
+                        .is_some_and(|(r, n)| r == &repo && *n == number);
+                    if !cached.is_fresh() && !already_refreshing {
+                        self.detail_refreshing = Some((repo.clone(), number));
+                        if let Some(tx) = self.action_tx.clone() {
+                            self.spawn_detail_fetch_background(DetailKind::Pr, repo, number, tx);
+                        }
+                    }
+                } else if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
+                }
+            }
+            DetailKind::Issue => {
+                if let Some(cached) = self.detail_cache.get_issue(&repo, number) {
+                    self.issue_detail = Some(cached.data.clone());
+                    let already_refreshing = self
+                        .detail_refreshing
+                        .as_ref()
+                        .is_some_and(|(r, n)| r == &repo && *n == number);
+                    if !cached.is_fresh() && !already_refreshing {
+                        self.detail_refreshing = Some((repo.clone(), number));
+                        if let Some(tx) = self.action_tx.clone() {
+                            self.spawn_detail_fetch_background(DetailKind::Issue, repo, number, tx);
+                        }
+                    }
+                } else if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
+                }
+            }
+        }
+    }
+
     /// Restore the saved per-tab state for the active tab, clearing stale
     /// detail payload and either serving from cache or dispatching a cold fetch.
     ///
@@ -2046,60 +2098,7 @@ impl App {
         let dref_repo = detail_ref.repo.clone();
         let dref_number = detail_ref.number;
 
-        match detail_ref.kind {
-            DetailKind::Pr => {
-                // Try to serve from cache first.
-                if let Some(cached) = self.detail_cache.get_pr(&dref_repo, dref_number) {
-                    // Populate immediately — no spinner regardless of freshness.
-                    self.pr_detail = Some(cached.data.clone());
-
-                    // If stale and not already re-fetching, kick a background fetch.
-                    let already_refreshing = self
-                        .detail_refreshing
-                        .as_ref()
-                        .is_some_and(|(r, n)| r == &dref_repo && *n == dref_number);
-                    if !cached.is_fresh() && !already_refreshing {
-                        self.detail_refreshing = Some((dref_repo.clone(), dref_number));
-                        if let Some(tx) = self.action_tx.clone() {
-                            self.spawn_detail_fetch_background(
-                                DetailKind::Pr,
-                                dref_repo,
-                                dref_number,
-                                tx,
-                            );
-                        }
-                    }
-                } else {
-                    // Cold miss: show spinner, foreground fetch.
-                    if let Some(tx) = self.action_tx.clone() {
-                        self.spawn_detail_fetch(DetailKind::Pr, dref_repo, dref_number, tx);
-                    }
-                }
-            }
-            DetailKind::Issue => {
-                if let Some(cached) = self.detail_cache.get_issue(&dref_repo, dref_number) {
-                    self.issue_detail = Some(cached.data.clone());
-
-                    let already_refreshing = self
-                        .detail_refreshing
-                        .as_ref()
-                        .is_some_and(|(r, n)| r == &dref_repo && *n == dref_number);
-                    if !cached.is_fresh() && !already_refreshing {
-                        self.detail_refreshing = Some((dref_repo.clone(), dref_number));
-                        if let Some(tx) = self.action_tx.clone() {
-                            self.spawn_detail_fetch_background(
-                                DetailKind::Issue,
-                                dref_repo,
-                                dref_number,
-                                tx,
-                            );
-                        }
-                    }
-                } else if let Some(tx) = self.action_tx.clone() {
-                    self.spawn_detail_fetch(DetailKind::Issue, dref_repo, dref_number, tx);
-                }
-            }
-        }
+        self.restore_detail_kind(detail_ref.kind, dref_repo, dref_number);
     }
 
     // ── Confirmation overlay ──────────────────────────────────────────────────
@@ -2264,7 +2263,7 @@ impl App {
         self.pr_detail_scroll.clear();
         self.pr_detail_diff_scroll.clear();
         self.pr_detail_files_expanded = false;
-        self.pr_detail_comments_expanded = false;
+        self.detail_comments_expanded = false;
         self.pr_detail_selected_section = DetailSection::default();
         self.pr_detail_files_cursor = 0;
         self.pr_detail_files_show_diff = false;
@@ -2305,7 +2304,7 @@ impl App {
                     self.pr_detail_scroll.clear();
                     self.pr_detail_diff_scroll.clear();
                     self.pr_detail_files_expanded = false;
-                    self.pr_detail_comments_expanded = false;
+                    self.detail_comments_expanded = false;
                     self.pr_detail_selected_section = DetailSection::default();
                     self.pr_detail_files_cursor = 0;
                     self.pr_detail_sidebar_scroll = 0;
@@ -2329,7 +2328,7 @@ impl App {
                     self.pr_detail_scroll.clear();
                     self.pr_detail_diff_scroll.clear();
                     self.pr_detail_files_expanded = false;
-                    self.pr_detail_comments_expanded = false;
+                    self.detail_comments_expanded = false;
                     self.pr_detail_selected_section = DetailSection::default();
                     self.pr_detail_files_cursor = 0;
                     self.pr_detail_sidebar_scroll = 0;

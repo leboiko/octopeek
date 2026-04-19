@@ -28,7 +28,7 @@ use ratatui::{
 use crate::app::App;
 use crate::github::detail::IssueDetail;
 use crate::ui::markdown::render_markdown;
-use crate::ui::util::humanize_delta;
+use crate::ui::util::{humanize_delta, render_detail_header, section_header};
 
 /// Short state label + color for the issue header's top line.
 ///
@@ -81,16 +81,6 @@ pub fn build_header(detail: &IssueDetail, p: &crate::theme::Palette) -> Vec<Line
     ));
 
     vec![line1, line2, line3]
-}
-
-// ── Section header helper ─────────────────────────────────────────────────────
-
-fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
-    let rule = "\u{2501}".repeat(3); // ━━━
-    Line::from(vec![
-        Span::styled(format!("{rule} "), Style::default().fg(p.accent)),
-        Span::styled(label.to_owned(), Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
-    ])
 }
 
 // ── Content builder ───────────────────────────────────────────────────────────
@@ -229,12 +219,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // `pr_detail_comments_expanded` and `pr_detail_scroll` are intentionally
-    // reused for issue detail: both views are mutually exclusive (only one
-    // detail kind is active at a time), and sharing the fields means the `m`
-    // expand key and the scroll offset behave the same regardless of which
-    // kind of detail is open. A future refactor that adds parallel
-    // `issue_detail_*` fields would need to re-plumb those keybindings.
+    // `detail_comments_expanded` and `pr_detail_scroll` are shared with the PR
+    // detail view — both views are mutually exclusive (only one detail kind is
+    // active at a time) so the same fields drive the `m` expand key and scroll
+    // offset for either kind.
 
     // Split the detail area into a fixed-height sticky header and the
     // scrollable body — same shape as the PR view so the two detail types
@@ -251,10 +239,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let header_area = splits[0];
     let body_area = splits[1];
 
-    render_issue_header(f, header_lines, header_area, p);
+    render_detail_header(f, header_lines, header_area, p);
 
     let (content_lines, _section_anchors) =
-        build_content(detail, app.pr_detail_comments_expanded, p, app.config.show_ascii_glyphs);
+        build_content(detail, app.detail_comments_expanded, p, app.config.show_ascii_glyphs);
 
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
@@ -282,38 +270,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
 
     f.render_widget(widget, body_area);
-}
-
-/// Render the sticky issue header into `area`. Shares the same shape as
-/// `pr_detail::render_pr_header` (tinted block + bottom accent rule) so both
-/// detail kinds feel like the same surface.
-fn render_issue_header(
-    f: &mut Frame,
-    lines: Vec<Line<'static>>,
-    area: Rect,
-    p: &crate::theme::Palette,
-) {
-    if area.height == 0 {
-        return;
-    }
-    let rule_row = area.height.saturating_sub(1);
-    let content_h = area.height.saturating_sub(1);
-
-    let content_area = Rect { x: area.x, y: area.y, width: area.width, height: content_h };
-    let rule_area = Rect { x: area.x, y: area.y + rule_row, width: area.width, height: 1 };
-
-    let block = Block::default()
-        .style(Style::default().bg(p.help_bg).fg(p.foreground))
-        .padding(Padding::new(2, 2, 1, 0));
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, content_area);
-
-    let rule_text = "\u{2501}".repeat(usize::from(rule_area.width));
-    let rule = Paragraph::new(Line::from(Span::styled(
-        rule_text,
-        Style::default().fg(p.accent).bg(p.background),
-    )));
-    f.render_widget(rule, rule_area);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

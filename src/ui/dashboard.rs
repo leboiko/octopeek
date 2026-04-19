@@ -3,7 +3,6 @@
 //! Renders the scrollable list with role glyphs (A/R/@), status indicators,
 //! CI column, and a selection cursor backed by `App::selection`.
 
-use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
@@ -17,6 +16,7 @@ use crate::github::flags::ActionFlag;
 use crate::github::types::{CheckState, Issue, PullRequest, Role};
 use crate::state::ViewMode;
 use crate::ui::glyphs;
+use crate::ui::util::{humanize_delta, truncate};
 
 // ── Column layout helpers ─────────────────────────────────────────────────────
 
@@ -91,41 +91,7 @@ fn issue_columns(width: u16) -> Vec<Constraint> {
     }
 }
 
-// ── Human-readable time delta ─────────────────────────────────────────────────
-
-/// Format `dt` as a human-readable delta from now: "14s ago", "3m ago", "1h ago", etc.
-fn humanize_delta(dt: &DateTime<Utc>) -> String {
-    // `.max(0)` ensures non-negative before casting; `cast_unsigned` is not
-    // available on stable Rust 1.88. The `.max(0)` guard makes the sign loss safe.
-    #[allow(clippy::cast_sign_loss)]
-    let secs = (Utc::now() - *dt).num_seconds().max(0) as u64;
-    if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
-}
-
 // ── Row builders ──────────────────────────────────────────────────────────────
-
-/// Truncate `s` to at most `max_chars` characters, appending `…` if needed.
-fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        return s.to_owned();
-    }
-    // Reserve one slot for the ellipsis.
-    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
 
 /// Priority-order the viewer's roles: Author > Reviewer > Assignee.
 fn primary_role(roles: &[Role]) -> Role {

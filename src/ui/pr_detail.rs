@@ -34,7 +34,7 @@ use crate::app::App;
 use crate::github::detail::{DetailedCheck, FileChangeKind, PrDetail, ReviewThread};
 use crate::github::types::ReviewState;
 use crate::ui::markdown::render_markdown;
-use crate::ui::util::{humanize_delta, truncate};
+use crate::ui::util::{humanize_delta, render_detail_header, section_header, truncate};
 
 // ── Section enum ──────────────────────────────────────────────────────────────
 
@@ -234,20 +234,6 @@ fn banner_line(detail: &PrDetail, p: &crate::theme::Palette) -> Option<Line<'sta
     }
 
     None
-}
-
-// ── Section header helper ─────────────────────────────────────────────────────
-
-fn section_header(label: &str, p: &crate::theme::Palette) -> Line<'static> {
-    // Thicker leading rule + bold label gives each section a clear visual
-    // break from the paragraph text above. We intentionally keep it on one
-    // line (no trailing rule) so very long labels like "COMMENTS (42 threads
-    // · 7 unresolved)" stay legible instead of wrapping mid-rule.
-    let rule = "\u{2501}".repeat(3); // ━━━
-    Line::from(vec![
-        Span::styled(format!("{rule} "), Style::default().fg(p.accent)),
-        Span::styled(label.to_owned(), Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
-    ])
 }
 
 /// Apply the tint to every span of `line` and right-pad to `width` cells,
@@ -1125,7 +1111,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let header_area = vsplits[0];
     let body_area = vsplits[1];
 
-    render_pr_header(f, header_lines, header_area, p);
+    render_detail_header(f, header_lines, header_area, p);
 
     // ── C2. Sidebar + right pane ───────────────────────────────────────────────
     // Sidebar width is configurable (`[`/`]`); hidden entirely when toggled
@@ -1258,7 +1244,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         detail,
         app.pr_detail_files_cursor,
         app.pr_detail_files_show_diff,
-        app.pr_detail_comments_expanded,
+        app.detail_comments_expanded,
         p,
         app.config.show_ascii_glyphs,
     );
@@ -1312,45 +1298,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
 
     f.render_widget(widget, right_area);
-}
-
-/// Render the sticky PR header into `area`.
-///
-/// Wraps the caller-provided lines in a horizontally-padded block tinted
-/// with `palette.help_bg` (same tone used for comment stripes, so the reader
-/// sees the same "card" cue throughout the app). A bottom rule drawn in
-/// `palette.accent` makes the boundary with the scrolling body unmistakable,
-/// especially on themes where `help_bg` and `background` differ only slightly.
-fn render_pr_header(
-    f: &mut Frame,
-    lines: Vec<Line<'static>>,
-    area: Rect,
-    p: &crate::theme::Palette,
-) {
-    if area.height == 0 {
-        return;
-    }
-    // Split: content rows + one bottom rule row.
-    let rule_row = area.height.saturating_sub(1);
-    let content_h = area.height.saturating_sub(1);
-
-    let content_area = Rect { x: area.x, y: area.y, width: area.width, height: content_h };
-    let rule_area = Rect { x: area.x, y: area.y + rule_row, width: area.width, height: 1 };
-
-    let block = Block::default()
-        .style(Style::default().bg(p.help_bg).fg(p.foreground))
-        .padding(Padding::new(2, 2, 1, 0));
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, content_area);
-
-    // Full-width rule. Uses a heavy box-drawing char so the separator reads
-    // as a deliberate section break rather than a faint line artefact.
-    let rule_text = "\u{2501}".repeat(usize::from(rule_area.width));
-    let rule = Paragraph::new(Line::from(Span::styled(
-        rule_text,
-        Style::default().fg(p.accent).bg(p.background),
-    )));
-    f.render_widget(rule, rule_area);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
