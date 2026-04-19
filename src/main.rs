@@ -1,3 +1,50 @@
+//! # octopeek
+//!
+//! A fast, keyboard-driven terminal UI for the GitHub PR and issue inbox
+//! across the repositories you care about.
+//!
+//! `octopeek` is a **binary crate** distributed via `cargo install octopeek`.
+//! Launching it opens a ratatui-rendered dashboard that:
+//!
+//! - groups every open PR / issue by repository tab (one tab per repo),
+//! - flags items needing the viewer's action (conflicts, failing CI,
+//!   review requested, change-requests) with a single-glyph summary,
+//! - supports vim-like keyboard navigation and mouse where available,
+//! - renders PR bodies, review threads, and file diffs with markdown +
+//!   syntax highlighting.
+//!
+//! This crate is **not** a library — the public API is empty. Every module
+//! below is `pub(crate)` and may change between releases.
+//!
+//! ## Module layout
+//!
+//! | Module          | Responsibility                                           |
+//! |-----------------|----------------------------------------------------------|
+//! | [`app`]         | Top-level state machine, action dispatch, key/mouse IO   |
+//! | [`github`]      | GraphQL client, auth, inbox + detail fetching, caching   |
+//! | [`ui`]          | Every ratatui widget and layout                          |
+//! | [`theme`]       | Selectable color palettes                                |
+//! | [`config`]      | On-disk user settings (XDG-compliant)                    |
+//! | [`state`]       | Persistent session state (active tab, sidebar width, …)  |
+//! | [`event`]       | Tokio-bridged crossterm event channel                    |
+//! | [`git`]         | Local `git` subprocess wrappers                          |
+//! | [`actions_util`]| One-shot OS actions (open browser, copy to clipboard)    |
+//! | [`cast`]        | Numeric narrowing helpers with explicit rounding         |
+//!
+//! ## Authentication
+//!
+//! The binary resolves a GitHub token in this order:
+//! 1. `GITHUB_TOKEN` environment variable.
+//! 2. `gh auth token` subprocess (requires the [GitHub CLI] installed and
+//!    authenticated).
+//!
+//! If neither produces a token, the binary exits with a message pointing the
+//! user at `gh auth login`. Tokens are never written to disk or into logs.
+//!
+//! [GitHub CLI]: https://cli.github.com/
+
+#![warn(missing_docs)]
+
 mod actions_util;
 mod app;
 mod cast;
