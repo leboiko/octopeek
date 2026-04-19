@@ -9,12 +9,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::detail::{
-    ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailData,
-    raw_issue_to_detail, raw_pr_to_detail,
+    ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailData, raw_issue_to_detail,
+    raw_pr_to_detail,
 };
-use super::query::{
-    GqlEnvelope, ResponseData, ResponseDataAll, build_show_all_query, inbox_query,
-};
+use super::query::{GqlEnvelope, ResponseData, ResponseDataAll, build_show_all_query, inbox_query};
 use super::types::Inbox;
 
 /// Version string embedded in the `User-Agent` header.

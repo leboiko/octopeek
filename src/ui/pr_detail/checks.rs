@@ -1,7 +1,7 @@
 //! Check-run helpers and line builder for the Checks section.
 
 use ratatui::{
-    style::{Style},
+    style::Style,
     text::{Line, Span},
 };
 

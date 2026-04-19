@@ -16,14 +16,14 @@
 //! | `mouse`            | Mouse event routing                                  |
 //! | `run`              | `App::run` async entry point and auto-refresh timer  |
 
-mod types;
-mod state;
+mod action_handlers;
 pub mod actions;
 mod fetch;
-mod action_handlers;
 mod keymap;
 mod mouse;
 mod run;
+mod state;
+mod types;
 
 #[cfg(test)]
 mod tests;

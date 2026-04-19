@@ -416,15 +416,14 @@ impl App {
                 // stale-while-revalidate serve. `spawn_detail_fetch` owns the
                 // `detail_fetching` guard — setting it externally would cause
                 // the guard to skip the fetch.
-                let target: Option<(DetailKind, String, u32)> = if let Some(detail) =
-                    &self.pr_detail
-                {
-                    Some((DetailKind::Pr, detail.repo.clone(), detail.number))
-                } else {
-                    self.issue_detail
-                        .as_ref()
-                        .map(|detail| (DetailKind::Issue, detail.repo.clone(), detail.number))
-                };
+                let target: Option<(DetailKind, String, u32)> =
+                    if let Some(detail) = &self.pr_detail {
+                        Some((DetailKind::Pr, detail.repo.clone(), detail.number))
+                    } else {
+                        self.issue_detail
+                            .as_ref()
+                            .map(|detail| (DetailKind::Issue, detail.repo.clone(), detail.number))
+                    };
 
                 if let Some((kind, repo, number)) = target {
                     match kind {
@@ -941,11 +940,9 @@ impl App {
         let inbox = self.inbox.as_ref()?;
         let sel = self.selection.get(&repo).copied().unwrap_or(0);
         match self.session.view_mode(&repo) {
-            crate::state::ViewMode::Prs => {
-                crate::github::types::sorted_prs_for_repo(inbox, &repo)
-                    .get(sel)
-                    .map(|pr| pr.url.clone())
-            }
+            crate::state::ViewMode::Prs => crate::github::types::sorted_prs_for_repo(inbox, &repo)
+                .get(sel)
+                .map(|pr| pr.url.clone()),
             crate::state::ViewMode::Issues => {
                 crate::github::types::sorted_issues_for_repo(inbox, &repo)
                     .get(sel)
@@ -960,10 +957,9 @@ impl App {
     fn flash_result(&mut self, result: anyhow::Result<()>, ok_msg: &str, err_prefix: &str) {
         match result {
             Ok(()) => self.show_flash(ok_msg.to_owned(), std::time::Duration::from_secs(2)),
-            Err(e) => self.show_flash(
-                format!("{err_prefix}: {e}"),
-                std::time::Duration::from_secs(3),
-            ),
+            Err(e) => {
+                self.show_flash(format!("{err_prefix}: {e}"), std::time::Duration::from_secs(3));
+            }
         }
     }
 

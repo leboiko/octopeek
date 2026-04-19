@@ -6,11 +6,11 @@ use crate::github::detail::PrDetail;
 use crate::theme::Palette;
 use crate::ui::markdown::render_markdown;
 
+use super::DetailSection;
 use super::checks::checks_lines;
 use super::comments::build_comments;
 use super::files::build_files;
 use super::reviews::reviews_lines;
-use super::DetailSection;
 
 /// Build lines for the Description section.
 ///

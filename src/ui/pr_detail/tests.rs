@@ -2,6 +2,11 @@
 //!
 //! Moved wholesale from the bottom of the original monolithic `pr_detail.rs`.
 
+// See the same note in `src/app/tests.rs`: tests lean on `.unwrap()` /
+// `.expect()` for assertion-site failures; production code keeps the
+// lints set in Cargo.toml.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -13,10 +18,10 @@ use crate::github::types::ReviewState;
 use crate::theme::Palette;
 use chrono::Utc;
 
+use super::DetailSection;
 use super::comments::comments_lines;
 use super::header::{build_header, char_wrap_tint, tint_line};
 use super::sections::build_section;
-use super::DetailSection;
 
 /// Build a fixture `PrDetail` with a configurable number of checks, reviews, files, and threads.
 pub fn fixture_pr_detail(
@@ -45,11 +50,7 @@ pub fn fixture_pr_detail(
     let reviews = (0..num_reviews)
         .map(|i| DetailedReview {
             author: format!("reviewer-{i}"),
-            state: if i % 2 == 0 {
-                ReviewState::Approved
-            } else {
-                ReviewState::ChangesRequested
-            },
+            state: if i % 2 == 0 { ReviewState::Approved } else { ReviewState::ChangesRequested },
             body_markdown: format!("Review body {i}"),
             submitted_at: now,
         })
@@ -62,11 +63,7 @@ pub fn fixture_pr_detail(
             additions: (i as u32 + 1) * 10,
             #[allow(clippy::cast_possible_truncation)]
             deletions: i as u32 * 2,
-            change_kind: if i % 2 == 0 {
-                FileChangeKind::Modified
-            } else {
-                FileChangeKind::Added
-            },
+            change_kind: if i % 2 == 0 { FileChangeKind::Modified } else { FileChangeKind::Added },
             patch: None,
         })
         .collect();
@@ -125,22 +122,19 @@ fn build_section_non_empty_sections_have_lines() {
     let detail = fixture_pr_detail(2, 1, 3, 1);
     let p = Palette::default();
 
-    let (desc, _) =
-        build_section(DetailSection::Description, &detail, 0, false, false, &p, false);
+    let (desc, _) = build_section(DetailSection::Description, &detail, 0, false, false, &p, false);
     assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
 
     let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, false, &p, false);
     assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
 
-    let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
+    let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
     assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
 
     let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
     assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
-    let (comments, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
+    let (comments, _) = build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
     assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
 }
 
@@ -152,17 +146,13 @@ fn build_section_empty_sections_have_no_lines() {
     let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, false, &p, false);
     assert!(checks.is_empty(), "Checks must be empty when no check_runs");
 
-    let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
+    let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
     assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
 
     let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
     let text: String =
         files.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
-    assert!(
-        text.contains("No files"),
-        "Files placeholder must explain emptiness, got: {text:?}"
-    );
+    assert!(text.contains("No files"), "Files placeholder must explain emptiness, got: {text:?}");
 }
 
 #[test]
@@ -235,10 +225,7 @@ fn alt_bg_empty_when_single_comment() {
     let p = Palette::default();
     let (_, alt_ranges) =
         build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
-    assert!(
-        alt_ranges.is_empty(),
-        "first top-level item should not be tinted, got {alt_ranges:?}"
-    );
+    assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
 }
 
 #[test]
@@ -291,10 +278,7 @@ fn char_wrap_tint_preserves_span_styling_across_split() {
                 || span.content.contains("that")
             {
                 assert_eq!(span.style.fg, Some(Color::Red), "fg lost: {span:?}");
-                assert!(
-                    span.style.add_modifier.contains(Modifier::BOLD),
-                    "bold lost: {span:?}"
-                );
+                assert!(span.style.add_modifier.contains(Modifier::BOLD), "bold lost: {span:?}");
                 saw_red_bold = true;
             }
             assert_eq!(span.style.bg, Some(bg), "bg missing: {span:?}");
@@ -328,18 +312,12 @@ fn files_section_renders_cursor_pointed_file_header() {
     let (lines, _) = build_section(DetailSection::Files, &detail, 0, true, false, &p, false);
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
-    assert!(
-        text.contains("src/file-0.rs"),
-        "files_cursor=0 must show first file path: {text:?}"
-    );
+    assert!(text.contains("src/file-0.rs"), "files_cursor=0 must show first file path: {text:?}");
 
     let (lines, _) = build_section(DetailSection::Files, &detail, 2, true, false, &p, false);
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
-    assert!(
-        text.contains("src/file-2.rs"),
-        "files_cursor=2 must show third file path: {text:?}"
-    );
+    assert!(text.contains("src/file-2.rs"), "files_cursor=2 must show third file path: {text:?}");
 }
 
 #[test]
@@ -348,8 +326,7 @@ fn build_files_overview_produces_one_line_per_file() {
 
     for num_files in [1usize, 3, 7] {
         let detail = fixture_pr_detail(0, 0, num_files, 0);
-        let (lines, _) =
-            build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
+        let (lines, _) = build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
 
         assert_eq!(
             lines.len(),
@@ -416,15 +393,10 @@ fn thread_comment_body_renders_as_markdown() {
     let styled_count = lines
         .iter()
         .flat_map(|l| l.spans.iter())
-        .filter(|s| {
-            s.style.add_modifier.contains(Modifier::BOLD) || s.style.bg.is_some()
-        })
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD) || s.style.bg.is_some())
         .count();
 
-    assert!(
-        styled_count >= 2,
-        "expected >= 2 styled spans (heading + code), got {styled_count}"
-    );
+    assert!(styled_count >= 2, "expected >= 2 styled spans (heading + code), got {styled_count}");
 }
 
 #[test]
@@ -631,10 +603,7 @@ fn replies_render_in_accent_alt() {
         .flat_map(|l| l.spans.iter())
         .filter(|s| s.content.as_ref().contains('\u{2502}') && s.style.fg == Some(p.accent_alt))
         .count();
-    assert!(
-        reply_gutter_count > 0,
-        "expected at least one accent_alt gutter rail for the reply"
-    );
+    assert!(reply_gutter_count > 0, "expected at least one accent_alt gutter rail for the reply");
 }
 
 #[test]
@@ -676,8 +645,7 @@ fn collapsed_long_comment_shows_expand_hint() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
+    let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
 
     let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
     assert!(has_expand_hint, "collapsed long comment must show [m] expand hint");
@@ -716,9 +684,10 @@ fn issue_comments_render_markdown_styles() {
 
     let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
-    let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
-        s.content.contains("important") && s.style.add_modifier.contains(Modifier::BOLD)
-    });
+    let has_bold = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .any(|s| s.content.contains("important") && s.style.add_modifier.contains(Modifier::BOLD));
 
     let has_code = lines
         .iter()

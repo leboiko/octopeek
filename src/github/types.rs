@@ -264,8 +264,7 @@ pub(crate) fn sorted_prs_for_repo<'a>(inbox: &'a Inbox, repo: &str) -> Vec<&'a P
 /// identical selection semantics.
 #[must_use]
 pub(crate) fn sorted_issues_for_repo<'a>(inbox: &'a Inbox, repo: &str) -> Vec<&'a Issue> {
-    let mut issues: Vec<&Issue> =
-        inbox.issues.iter().filter(|i| i.repo == repo).collect();
+    let mut issues: Vec<&Issue> = inbox.issues.iter().filter(|i| i.repo == repo).collect();
     issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.number.cmp(&b.number)));
     issues
 }

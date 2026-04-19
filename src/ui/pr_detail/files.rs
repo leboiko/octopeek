@@ -23,12 +23,7 @@ pub(super) fn file_kind_glyph(kind: FileChangeKind) -> &'static str {
 /// Alternating-bg range helper: record `(start_line_idx, end_line_idx_exclusive)`
 /// for the lines belonging to a single top-level comment/thread when the
 /// current parity calls for a tint.
-pub(super) fn push_alt_range(
-    ranges: &mut Vec<(u16, u16)>,
-    start: usize,
-    end: usize,
-    alt_on: bool,
-) {
+pub(super) fn push_alt_range(ranges: &mut Vec<(u16, u16)>, start: usize, end: usize, alt_on: bool) {
     if !alt_on || end <= start {
         return;
     }

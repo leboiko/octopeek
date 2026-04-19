@@ -252,11 +252,8 @@ mod tests {
     /// Round-trip a session carrying non-default sidebar state.
     #[test]
     fn session_sidebar_state_round_trips() {
-        let session = AppSession {
-            sidebar_width: 42,
-            sidebar_hidden: true,
-            ..AppSession::default()
-        };
+        let session =
+            AppSession { sidebar_width: 42, sidebar_hidden: true, ..AppSession::default() };
 
         let serialized = toml::to_string_pretty(&session).expect("serialize");
         let restored: AppSession = toml::from_str(&serialized).expect("deserialize");

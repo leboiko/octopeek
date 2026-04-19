@@ -4,17 +4,23 @@
 //! `use super::*` brings in all re-exports from `app::mod` (types, App, Action,
 //! Focus, etc.) exactly as before.
 
+// Tests are allowed `.unwrap()` / `.expect()` — panicking inside an assertion
+// is the test framework's job, not a production concern. Production code
+// carries the `unwrap_used` / `expect_used` lints set in Cargo.toml; this
+// narrows them to inside this test module only.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 // Items not re-exported from `mod.rs` (test-only or internal) must be
 // imported explicitly since `use super::*` only pulls public re-exports.
 use super::actions::Action;
 use super::types::{DetailKind, DetailRef, PerTabState};
-use chrono::Utc;
-use crate::ui::pr_detail::DetailSection;
 use crate::github::types::{
     CheckState, Inbox, Issue, Label, MergeStateStatus, Mergeable, PullRequest, Review,
     ReviewDecision, Role,
 };
+use crate::ui::pr_detail::DetailSection;
+use chrono::Utc;
 
 /// Build a minimal clean PR for use in tests.
 fn make_pr(repo: &str, flag_variant: &str, viewer: &str) -> PullRequest {
@@ -309,8 +315,7 @@ fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
 /// over-scrolled past the content's end and then entered copy mode.
 #[test]
 fn v_in_detail_enters_copy_mode_and_clamps_to_content() {
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     // Set a scroll offset well past the empty content's end.
     *app.scroll_mut(DetailSection::Description) = 12;
@@ -330,8 +335,7 @@ fn v_in_detail_enters_copy_mode_and_clamps_to_content() {
 /// distinct from Esc in normal detail mode, which returns to dashboard.
 #[test]
 fn esc_in_copy_mode_stays_in_detail() {
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     app.copy_mode.enter(0, 0);
 
@@ -344,8 +348,7 @@ fn esc_in_copy_mode_stays_in_detail() {
 /// Returning to the dashboard via `b` also tears down copy-mode state.
 #[test]
 fn back_to_dashboard_clears_copy_mode() {
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     app.copy_mode.enter(5, 7);
 
@@ -363,8 +366,7 @@ fn mouse_wheel_scrolls_detail() {
     use crate::ui::pr_detail::tests::fixture_pr_detail;
     use crossterm::event::{MouseEvent, MouseEventKind};
 
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     // Load a fixture so clamp_pr_detail_scroll does not reset the offset.
     app.pr_detail = Some(fixture_pr_detail(3, 2, 4, 2));
@@ -397,8 +399,7 @@ fn mouse_wheel_scrolls_detail() {
 #[test]
 fn mouse_click_in_detail_places_cursor() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     // Pretend the right-pane viewport is at (28,1) with size 80x20.
     app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
@@ -424,8 +425,7 @@ fn mouse_click_in_detail_places_cursor() {
 #[test]
 fn mouse_click_outside_viewport_is_ignored() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     // Set a small right-pane viewport; clicks outside it must be ignored.
     app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 10, 10));
@@ -446,8 +446,7 @@ fn mouse_click_outside_viewport_is_ignored() {
 #[test]
 fn mouse_drag_starts_selection() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    let mut app =
-        App::new(crate::config::Config::default(), crate::state::AppSession::default());
+    let mut app = App::new(crate::config::Config::default(), crate::state::AppSession::default());
     app.focus = Focus::Detail;
     // Right pane at x=28..107, y=1..20.
     app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(28, 1, 80, 20));
@@ -877,10 +876,7 @@ fn repo_picker_add_valid_slug() {
         app.handle_repo_picker_input_key(key);
 
         assert!(app.config.repos.contains(&"rust-lang/rust".to_owned()));
-        assert!(
-            app.repo_picker_input.is_empty(),
-            "buffer must be cleared after successful add"
-        );
+        assert!(app.repo_picker_input.is_empty(), "buffer must be cleared after successful add");
     });
 }
 
@@ -1143,10 +1139,8 @@ fn on_inbox_loaded_triggers_first_run_when_config_empty() {
 fn on_inbox_loaded_skips_first_run_when_config_nonempty() {
     let tmp = tempfile::tempdir().expect("tempdir");
     crate::config::with_config_dir_override(tmp.path(), || {
-        let config = crate::config::Config {
-            repos: vec!["existing/repo".to_owned()],
-            ..Default::default()
-        };
+        let config =
+            crate::config::Config { repos: vec!["existing/repo".to_owned()], ..Default::default() };
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
 
@@ -1297,10 +1291,7 @@ fn first_run_suggestions_sorted_by_count_desc() {
         app.on_inbox_loaded(inbox);
 
         assert_eq!(app.focus, Focus::FirstRun, "must switch to FirstRun");
-        assert_eq!(
-            app.first_run_suggestions[0].repo, "c/d",
-            "repo with more items must be first"
-        );
+        assert_eq!(app.first_run_suggestions[0].repo, "c/d", "repo with more items must be first");
         assert_eq!(app.first_run_suggestions[0].count, 10);
     });
 }
@@ -1351,8 +1342,7 @@ fn first_run_survives_mid_wizard_refresh() {
         let snapshot_repo = app.first_run_suggestions[0].repo.clone();
 
         // A background refresh arrives while focus is still on the wizard.
-        let inbox2 =
-            make_inbox(vec![("a/b", "clean"), ("c/d", "clean"), ("e/f", "clean")], vec![]);
+        let inbox2 = make_inbox(vec![("a/b", "clean"), ("c/d", "clean"), ("e/f", "clean")], vec![]);
         app.on_inbox_loaded(inbox2);
 
         assert_eq!(app.focus, Focus::FirstRun, "focus must not bounce");
@@ -1361,10 +1351,7 @@ fn first_run_survives_mid_wizard_refresh() {
             app.first_run_suggestions[0].repo, snapshot_repo,
             "suggestion ordering must be preserved"
         );
-        assert!(
-            app.first_run_suggestions[0].selected,
-            "user's selection must survive the refresh"
-        );
+        assert!(app.first_run_suggestions[0].selected, "user's selection must survive the refresh");
     });
 }
 
@@ -1446,8 +1433,7 @@ fn first_run_enter_with_nothing_selected_flashes_hint() {
 fn toggle_show_all_flips_flag_and_persists() {
     let dir = tempfile::tempdir().expect("tempdir");
     crate::config::with_config_dir_override(dir.path(), || {
-        let config =
-            crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+        let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
 
@@ -1661,10 +1647,7 @@ fn shift_digit_variants_select_sections() {
             crossterm::event::KeyCode::Char(ch),
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(
-            app.pr_detail_selected_section, expected,
-            "{ch:?} must select {expected:?}"
-        );
+        assert_eq!(app.pr_detail_selected_section, expected, "{ch:?} must select {expected:?}");
     }
 }
 
@@ -1797,17 +1780,11 @@ fn dashboard_selection_opens_displayed_pr() {
         p
     };
 
-    let inbox = Inbox {
-        viewer_login: "viewer".to_owned(),
-        prs: vec![older, newer],
-        issues: vec![],
-    };
+    let inbox =
+        Inbox { viewer_login: "viewer".to_owned(), prs: vec![older, newer], issues: vec![] };
 
     let display = sorted_prs_for_repo(&inbox, "o/r");
-    assert_eq!(
-        display[0].number, 20,
-        "display row 0 must be the most-recently-updated PR"
-    );
+    assert_eq!(display[0].number, 20, "display row 0 must be the most-recently-updated PR");
     assert_eq!(display[1].number, 10);
 }
 

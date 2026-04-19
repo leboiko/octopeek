@@ -12,10 +12,7 @@ use super::types::{DetailKind, DetailRef, FirstRunSuggestion, Focus, PerTabState
 impl App {
     /// Spawn a background task that fetches the inbox and sends the result back
     /// via the action channel.  Guards against concurrent fetches via `fetching`.
-    pub(super) fn spawn_fetch(
-        &mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<Action>,
-    ) {
+    pub(super) fn spawn_fetch(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Action>) {
         if self.fetching {
             debug!("fetch already in progress; skipping");
             return;
@@ -156,10 +153,7 @@ impl App {
         }
         let Some(client) = self.client.clone() else {
             debug!("no GitHub client; skipping detail fetch");
-            send_or_warn(
-                &tx,
-                Action::DetailFetchFailed("no GitHub client configured".to_owned()),
-            );
+            send_or_warn(&tx, Action::DetailFetchFailed("no GitHub client configured".to_owned()));
             return;
         };
 
@@ -267,8 +261,8 @@ impl App {
         // issue-detail renderers. Passing a `Block` would add padding / border
         // rows; `area` is already the inner rect set by the renderer, so the
         // bare Paragraph matches the actual render.
-        let probe = ratatui::widgets::Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: false });
+        let probe =
+            ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
         let rendered_rows = u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX);
         let max_scroll = rendered_rows.saturating_sub(area.height);
         // Route through `right_pane_scroll_mut` so we clamp whichever map
@@ -354,11 +348,7 @@ impl App {
     /// * `repo`   - Repository slug of the arriving detail.
     /// * `number` - Issue/PR number of the arriving detail.
     pub(super) fn clear_detail_loading_markers(&mut self, repo: &str, number: u32) {
-        if self
-            .detail_refreshing
-            .as_ref()
-            .is_some_and(|(r, n)| r == repo && *n == number)
-        {
+        if self.detail_refreshing.as_ref().is_some_and(|(r, n)| r == repo && *n == number) {
             self.detail_refreshing = None;
         }
         self.detail_fetching = false;
@@ -531,9 +521,7 @@ fn spawn_supervised_detail_fetch(
             Err(join_err) if join_err.is_panic() => {
                 Action::DetailFetchFailed(format!("{label} task panicked: {join_err}"))
             }
-            Err(join_err) => {
-                Action::DetailFetchFailed(format!("{label} task aborted: {join_err}"))
-            }
+            Err(join_err) => Action::DetailFetchFailed(format!("{label} task aborted: {join_err}")),
         };
         send_or_warn(&tx, action);
     });
