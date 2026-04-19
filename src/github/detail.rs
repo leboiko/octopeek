@@ -212,7 +212,7 @@ pub struct IssueDetail {
 /// GraphQL document for fetching full PR detail.
 ///
 /// Parameters: `$owner: String!`, `$name: String!`, `$number: Int!`
-pub const PR_DETAIL_QUERY: &str = r"
+pub(super) const PR_DETAIL_QUERY: &str = r"
 query PrDetail($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -307,7 +307,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
 /// GraphQL document for fetching full issue detail.
 ///
 /// Parameters: `$owner: String!`, `$name: String!`, `$number: Int!`
-pub const ISSUE_DETAIL_QUERY: &str = r"
+pub(super) const ISSUE_DETAIL_QUERY: &str = r"
 query IssueDetail($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {

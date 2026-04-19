@@ -29,7 +29,7 @@ mod reviews;
 mod sections;
 
 #[cfg(test)]
-pub mod tests;
+pub(crate) mod tests;
 
 use ratatui::{
     Frame,

@@ -107,7 +107,7 @@ fragment IssueFields on Issue {
 ///
 /// Built lazily from the shared [`PR_FRAGMENT`] / [`ISSUE_FRAGMENT`] so any
 /// fragment change is picked up automatically without editing two places.
-pub fn inbox_query() -> &'static str {
+pub(super) fn inbox_query() -> &'static str {
     static Q: OnceLock<String> = OnceLock::new();
     Q.get_or_init(|| {
         let mut s = String::from(
@@ -167,7 +167,7 @@ query InboxQuery {
 ///
 /// * `repos` - Slice of repo slugs in `owner/name` form. An empty slice
 ///   produces a valid query but returns no results.
-pub fn build_show_all_query(repos: &[String]) -> String {
+pub(super) fn build_show_all_query(repos: &[String]) -> String {
     let repo_qualifiers: String =
         repos.iter().map(|r| format!("repo:{r}")).collect::<Vec<_>>().join(" ");
 
@@ -208,20 +208,20 @@ query ShowAllQuery {{
 /// GraphQL response into its domain-specific inner shape while the transport-
 /// layer `data`/`errors` plumbing is handled once.
 #[derive(Debug, Deserialize)]
-pub(crate) struct GqlEnvelope<T> {
+pub(super) struct GqlEnvelope<T> {
     pub data: Option<T>,
     pub errors: Option<Vec<GraphQlError>>,
 }
 
 /// One `errors[]` entry from the GraphQL response.
 #[derive(Debug, Deserialize)]
-pub struct GraphQlError {
+pub(super) struct GraphQlError {
     pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResponseData {
+pub(super) struct ResponseData {
     /// `viewer { login, pullRequests { nodes } }` — authored PRs.
     pub authored: AuthoredViewer,
     /// `search(...)` for PRs with review-requested.
@@ -235,7 +235,7 @@ pub struct ResponseData {
 /// Top-level response for the show-all query built by [`build_show_all_query`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResponseDataAll {
+pub(super) struct ResponseDataAll {
     /// All open PRs across the tracked repos.
     pub all_prs: SearchResult,
     /// All open issues across the tracked repos.
@@ -246,32 +246,32 @@ pub struct ResponseDataAll {
 
 /// Minimal viewer shape used by the show-all query.
 #[derive(Debug, Deserialize)]
-pub struct ViewerLogin {
+pub(super) struct ViewerLogin {
     pub login: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthoredViewer {
+pub(super) struct AuthoredViewer {
     pub login: String,
     pub pull_requests: NodeList<RawPr>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SearchResult {
+pub(super) struct SearchResult {
     pub nodes: Vec<Option<SearchNode>>,
 }
 
 /// A node from an inline fragment — may be a PR or something else (ignored).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum SearchNode {
+pub(super) enum SearchNode {
     Pr(RawPr),
     Issue(RawIssue),
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeList<T> {
+pub(super) struct NodeList<T> {
     pub nodes: Vec<T>,
 }
 
@@ -279,7 +279,7 @@ pub struct NodeList<T> {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawPr {
+pub(super) struct RawPr {
     pub number: u32,
     pub title: String,
     pub url: String,
@@ -303,24 +303,24 @@ pub struct RawPr {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawCommits {
+pub(super) struct RawCommits {
     pub total_count: u32,
     pub nodes: Vec<RawCommitNode>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawCommitNode {
+pub(super) struct RawCommitNode {
     pub commit: RawCommit,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawCommit {
+pub(super) struct RawCommit {
     pub status_check_rollup: Option<RawStatusRollup>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawStatusRollup {
+pub(super) struct RawStatusRollup {
     pub state: CheckState,
     pub contexts: NodeList<RawCheckContext>,
 }
@@ -328,7 +328,7 @@ pub struct RawStatusRollup {
 /// Inline-fragment union: either a `CheckRun` or a `StatusContext`.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum RawCheckContext {
+pub(super) enum RawCheckContext {
     CheckRun(RawCheckRun),
     /// Commit-status context — deserialized for the untagged enum discriminator;
     /// the inner data is intentionally unused (only `CheckRun` entries are surfaced).
@@ -338,7 +338,7 @@ pub enum RawCheckContext {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawCheckRun {
+pub(super) struct RawCheckRun {
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
@@ -348,18 +348,18 @@ pub struct RawCheckRun {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawCheckSuite {
+pub(super) struct RawCheckSuite {
     pub workflow_run: Option<RawWorkflowRun>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawWorkflowRun {
+pub(super) struct RawWorkflowRun {
     pub workflow: Option<RawWorkflow>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawWorkflow {
+pub(super) struct RawWorkflow {
     pub name: String,
 }
 
@@ -368,51 +368,51 @@ pub struct RawWorkflow {
 /// Consumed by `raw_pr_to_domain` to surface external-status failures
 /// (`Codecov`, `CircleCI`, etc.) into the same `failing_checks` vec as `CheckRun`s.
 #[derive(Debug, Deserialize)]
-pub struct RawStatusContext {
+pub(super) struct RawStatusContext {
     pub context: String,
     pub state: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawTotalCount {
+pub(super) struct RawTotalCount {
     #[serde(rename = "totalCount")]
     pub total_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawReviewRequest {
+pub(super) struct RawReviewRequest {
     pub requested_reviewer: Option<RawReviewer>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum RawReviewer {
+pub(super) enum RawReviewer {
     User { login: String },
     Team { name: String },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawReviewThread {
+pub(super) struct RawReviewThread {
     pub is_resolved: bool,
     pub is_outdated: bool,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawReview {
+pub(super) struct RawReview {
     pub author: Option<RawActor>,
     pub state: ReviewState,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawRepo {
+pub(super) struct RawRepo {
     #[serde(rename = "nameWithOwner")]
     pub name_with_owner: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawActor {
+pub(super) struct RawActor {
     pub login: String,
 }
 
@@ -420,7 +420,7 @@ pub struct RawActor {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RawIssue {
+pub(super) struct RawIssue {
     pub number: u32,
     pub title: String,
     pub url: String,
@@ -432,7 +432,7 @@ pub struct RawIssue {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawLabel {
+pub(super) struct RawLabel {
     pub name: String,
     pub color: String,
 }
@@ -451,7 +451,7 @@ pub struct RawLabel {
 ///
 /// Returns any errors embedded in the response; if both `data` and `errors`
 /// are present, converts `data` and logs errors via the caller.
-pub fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
+pub(super) fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
     // Key: (repo nameWithOwner, pr number)
     type PrKey = (String, u32);
     let mut pr_map: HashMap<PrKey, (PullRequest, Vec<Role>)> = HashMap::new();
@@ -535,7 +535,7 @@ pub fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
 ///
 /// TODO: add `assignees(first: 10)` to `PullRequestFields` so that `Assignee`
 /// can be populated here (and in the regular query's dedup step).
-pub fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox {
+pub(super) fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox {
     let mut prs: Vec<PullRequest> = data
         .all_prs
         .nodes

@@ -1,12 +1,12 @@
 //! GitHub data layer: auth, types, GraphQL query, HTTP client, and action flags.
 
-pub mod auth;
-pub mod cache;
-pub mod client;
-pub mod detail;
-pub mod flags;
-pub mod query;
-pub mod types;
+pub(crate) mod auth;
+pub(crate) mod cache;
+pub(crate) mod client;
+pub(crate) mod detail;
+pub(crate) mod flags;
+pub(crate) mod query;
+pub(crate) mod types;
 
 /// Display string substituted for deleted/ghost GitHub accounts.
 ///
@@ -26,10 +26,10 @@ pub(crate) fn author_or_deleted(login: Option<String>) -> String {
 // `Cached` is used in tests and by downstream callers; suppress the
 // warning until production code starts accessing it directly.
 #[allow(unused_imports)]
-pub use cache::{Cached, DetailCache};
-pub use client::Client;
+pub(crate) use cache::{Cached, DetailCache};
+pub(crate) use client::Client;
 // Phase 3 will reference ActionFlag from the UI layer; suppress the unused
 // warning until then so we don't prematurely wire in a dependency.
 #[allow(unused_imports)]
-pub use flags::ActionFlag;
-pub use types::Inbox;
+pub(crate) use flags::ActionFlag;
+pub(crate) use types::Inbox;
