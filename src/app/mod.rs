@@ -1577,8 +1577,12 @@ impl App {
         let lines = self.current_detail_lines();
         let content_len = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         let max_scroll = content_len.saturating_sub(area.height);
-        let section = self.pr_detail_selected_section;
-        let scroll = self.scroll_mut(section);
+        // Route through `right_pane_scroll_mut` so we clamp whichever map
+        // currently owns the right-pane scroll — the per-section map for
+        // Description/Checks/Reviews/Comments, or the per-file diff map for
+        // Files. Without this, scrolling inside a diff grew unbounded
+        // because the clamp was operating on a different key entirely.
+        let scroll = self.right_pane_scroll_mut();
         if *scroll > max_scroll {
             *scroll = max_scroll;
         }
@@ -3830,6 +3834,38 @@ mod tests {
 
         app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
         assert_eq!(app.pr_detail_files_cursor, 2, "J outside Files must not move cursor");
+    }
+
+    /// Scroll in the Files section is clamped to the diff's actual length.
+    /// Regression guard for the bug where `clamp_pr_detail_scroll` operated
+    /// on `pr_detail_scroll[Files]` while the active offset lived in
+    /// `pr_detail_diff_scroll[path]`, so `j`/wheel past the end grew
+    /// unbounded.
+    #[test]
+    fn files_scroll_is_clamped_to_diff_length() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 3, 0));
+        app.pr_detail_selected_section = DetailSection::Files;
+        app.pr_detail_files_cursor = 0;
+        // Pretend the right-pane viewport has been rendered once.
+        app.pr_detail_right_viewport
+            .set(ratatui::layout::Rect::new(30, 6, 100, 24));
+
+        // Smash the scroll way past any realistic content length.
+        *app.right_pane_scroll_mut() = u16::MAX;
+        app.clamp_pr_detail_scroll();
+
+        // Content lines = diff header + blank + placeholder line (patch=None)
+        // = 3 rows; viewport height is 24; max_scroll saturates to 0.
+        assert_eq!(
+            app.right_pane_scroll(),
+            0,
+            "diff shorter than viewport must clamp scroll to 0"
+        );
     }
 
     /// Scroll offsets are preserved per file when cycling through files.

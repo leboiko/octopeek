@@ -896,10 +896,16 @@ fn build_files(
 
     let idx = files_cursor.min(detail.files.len() - 1);
     let file = &detail.files[idx];
+    let total = detail.files.len();
 
-    // File-header banner: path + stats so the user knows which diff they're
-    // reading when they cycle through files with `J`/`K`.
+    // File-header banner: cursor position (1-based), file path, and +add/-del
+    // stats — tells the reader exactly which file in the list they're on
+    // when they cycle with `J`/`K`.
     let header = Line::from(vec![
+        Span::styled(
+            format!("[{}/{}] ", idx + 1, total),
+            Style::default().fg(p.dim),
+        ),
         Span::styled(
             file.path.clone(),
             Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
@@ -910,7 +916,16 @@ fn build_files(
         Span::styled(format!("\u{2212}{}", file.deletions), Style::default().fg(p.danger)),
     ]);
 
-    let mut lines = vec![header, Line::from("")];
+    // Navigation hint right under the header — exact keystrokes, not a
+    // generic "see help" nudge, so the user doesn't have to leave the view.
+    let hint = if total > 1 {
+        "J / K: next / previous file   ·   j / k: scroll diff"
+    } else {
+        "j / k: scroll diff"
+    };
+    let hint_line = Line::from(Span::styled(hint.to_owned(), Style::default().fg(p.dim)));
+
+    let mut lines = vec![header, hint_line, Line::from("")];
 
     // Body: either the parsed+rendered diff, or a placeholder.
     match &file.patch {
