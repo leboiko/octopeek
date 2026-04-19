@@ -198,6 +198,16 @@ pub struct App {
     ///
     /// Set when clicking a file row; Phase 2 will use this to open the diff view.
     pub pr_detail_files_cursor: usize,
+    /// `true` when the Files section should display the unified diff rather than
+    /// the one-line-per-file overview. Defaults to `false` (overview). Set to
+    /// `true` by `F` or by clicking a sidebar file row; reset to `false` by `$`
+    /// or `back_to_dashboard`.
+    pub pr_detail_files_show_diff: bool,
+    /// Width of the sidebar in columns. Resizable with `[` / `]` in Detail focus.
+    pub sidebar_width: u16,
+    /// When `true`, the sidebar is hidden and the right pane uses the full width.
+    /// Toggled by `\`.
+    pub sidebar_hidden: bool,
     /// Scroll offset for the sidebar files list (not the right pane).
     pub pr_detail_sidebar_scroll: u16,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
@@ -312,6 +322,9 @@ impl App {
             pr_detail_comments_expanded: false,
             pr_detail_selected_section: DetailSection::default(),
             pr_detail_files_cursor: 0,
+            pr_detail_files_show_diff: false,
+            sidebar_width: 28,
+            sidebar_hidden: false,
             pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
             copy_mode: crate::ui::copy_mode::CopyMode::default(),
@@ -954,11 +967,13 @@ impl App {
                     self.handle_action(Action::NextTab);
                     return;
                 }
-                KeyCode::Char(']') if !typing_in_input => {
+                // `[` / `]` switch repo tabs everywhere EXCEPT Detail focus,
+                // where they resize the sidebar (see `handle_key_detail`).
+                KeyCode::Char(']') if !typing_in_input && self.focus != Focus::Detail => {
                     self.handle_action(Action::NextTab);
                     return;
                 }
-                KeyCode::Char('[') if !typing_in_input => {
+                KeyCode::Char('[') if !typing_in_input && self.focus != Focus::Detail => {
                     self.handle_action(Action::PrevTab);
                     return;
                 }
@@ -1251,6 +1266,10 @@ impl App {
                 };
                 if let Some(&sec) = DetailSection::ALL.get(idx) {
                     self.pr_detail_selected_section = sec;
+                    // `$` (index 3 = Files) enters overview mode.
+                    if sec == DetailSection::Files {
+                        self.pr_detail_files_show_diff = false;
+                    }
                     self.copy_mode.h_scroll = 0;
                 }
             }
@@ -1259,13 +1278,35 @@ impl App {
                 let idx = (ch as usize) - ('1' as usize);
                 if let Some(&sec) = DetailSection::ALL.get(idx) {
                     self.pr_detail_selected_section = sec;
+                    // SHIFT+4 enters Files overview mode.
+                    if sec == DetailSection::Files {
+                        self.pr_detail_files_show_diff = false;
+                    }
                     self.copy_mode.h_scroll = 0;
                 }
             }
             KeyCode::Char('F') => {
+                // `F` jumps to Files in diff mode (drill-in gesture).
                 self.detail_pending_g = false;
                 self.pr_detail_selected_section = DetailSection::Files;
+                self.pr_detail_files_show_diff = true;
                 self.copy_mode.h_scroll = 0;
+            }
+            // Sidebar resize: `[` narrows (min 20), `]` widens (max 60).
+            KeyCode::Char('[') if !self.sidebar_hidden => {
+                self.detail_pending_g = false;
+                self.sidebar_width = self.sidebar_width.saturating_sub(2).max(20);
+            }
+            KeyCode::Char(']') => {
+                self.detail_pending_g = false;
+                self.sidebar_width = self.sidebar_width.saturating_add(2).min(60);
+            }
+            // Toggle sidebar visibility.
+            KeyCode::Char('\\') => {
+                self.detail_pending_g = false;
+                self.sidebar_hidden = !self.sidebar_hidden;
+                let msg = if self.sidebar_hidden { "Sidebar hidden" } else { "Sidebar shown" };
+                self.show_flash(msg, std::time::Duration::from_millis(1500));
             }
             KeyCode::Char('f') => {
                 self.detail_pending_g = false;
@@ -1599,7 +1640,7 @@ impl App {
     ///
     /// Clicks in the sections panel select that section row; clicks in the
     /// files panel jump to the Files section and set `pr_detail_files_cursor`.
-    fn handle_sidebar_click(
+    pub fn handle_sidebar_click(
         &mut self,
         col: u16,
         row: u16,
@@ -1630,6 +1671,8 @@ impl App {
                 let file_idx = relative - header_offset + scroll_offset;
                 self.pr_detail_selected_section = DetailSection::Files;
                 self.pr_detail_files_cursor = file_idx;
+                // A sidebar file click is a drill-in gesture — open diff mode.
+                self.pr_detail_files_show_diff = true;
                 self.copy_mode.h_scroll = 0;
             }
         }
@@ -1692,6 +1735,7 @@ impl App {
                 self.pr_detail_selected_section,
                 detail,
                 self.pr_detail_files_cursor,
+                self.pr_detail_files_show_diff,
                 self.pr_detail_comments_expanded,
                 &self.palette,
                 self.config.show_ascii_glyphs,
@@ -2210,6 +2254,7 @@ impl App {
         self.pr_detail_comments_expanded = false;
         self.pr_detail_selected_section = DetailSection::default();
         self.pr_detail_files_cursor = 0;
+        self.pr_detail_files_show_diff = false;
         self.pr_detail_sidebar_scroll = 0;
         self.copy_mode.exit();
     }
@@ -2975,12 +3020,10 @@ mod tests {
         assert_eq!(app.focus, Focus::Dashboard);
     }
 
-    /// `[` and `]` must switch repo tabs from inside the detail view, since
-    /// 1-5 and Tab there are consumed by the section navigator. Without this
-    /// binding, a user reading a PR has no keyboard route to a different
-    /// repo tab short of Esc-ing back to the dashboard.
+    /// In Detail focus `[` / `]` resize the sidebar rather than switching
+    /// repo tabs.  Pressing `]` widens up to max 60; `[` narrows down to min 20.
     #[test]
-    fn bracket_keys_switch_repo_tabs_from_detail() {
+    fn bracket_keys_resize_sidebar_in_detail() {
         let config = crate::config::Config {
             repos: vec!["a/one".to_owned(), "b/two".to_owned()],
             ..Default::default()
@@ -2988,15 +3031,128 @@ mod tests {
         let session = crate::state::AppSession::default();
         let mut app = App::new(config, session);
         app.focus = Focus::Detail;
+        let initial_tab = app.tabs.active_index();
+
+        // `]` widens sidebar, does NOT switch tabs.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Detail, "] must not leave Detail focus");
+        assert_eq!(app.tabs.active_index(), initial_tab, "] must not switch tabs in Detail");
+        assert_eq!(app.sidebar_width, 30, "] widens sidebar by 2");
+
+        // `[` narrows sidebar, does NOT switch tabs.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.tabs.active_index(), initial_tab, "[ must not switch tabs in Detail");
+        assert_eq!(app.sidebar_width, 28, "[ narrows sidebar by 2");
+
+        // Clamp: cannot go below 20.
+        app.sidebar_width = 21;
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.sidebar_width, 20, "[ clamps at minimum 20 (step: 21 -> 20)");
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.sidebar_width, 20, "[ is a no-op when sidebar is already at minimum");
+
+        // Clamp: cannot exceed 60.
+        app.sidebar_width = 59;
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.sidebar_width, 60, "] clamps at maximum 60 (step: 59 -> 60)");
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.sidebar_width, 60, "] is a no-op when sidebar is already at maximum");
+    }
+
+    /// Outside Detail focus `[` / `]` still switch repo tabs.
+    #[test]
+    fn bracket_keys_still_switch_tabs_from_dashboard() {
+        let config = crate::config::Config {
+            repos: vec!["a/one".to_owned(), "b/two".to_owned()],
+            ..Default::default()
+        };
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        // Default focus is Dashboard.
+        assert_eq!(app.focus, Focus::Dashboard);
         assert_eq!(app.tabs.active_index(), Some(0));
 
         app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
-        // Switching tabs from detail pops back to dashboard (existing contract).
-        assert_eq!(app.focus, Focus::Dashboard);
-        assert_eq!(app.tabs.active_index(), Some(1), "] moves to next tab");
+        assert_eq!(app.tabs.active_index(), Some(1), "] switches to next tab from Dashboard");
 
         app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
-        assert_eq!(app.tabs.active_index(), Some(0), "[ moves to prev tab");
+        assert_eq!(app.tabs.active_index(), Some(0), "[ switches to prev tab from Dashboard");
+    }
+
+    /// `\` toggles `sidebar_hidden` and shows a flash message each press.
+    #[test]
+    fn backslash_toggles_sidebar_visibility() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+
+        assert!(!app.sidebar_hidden, "sidebar visible by default");
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+        assert!(app.sidebar_hidden, "first \\ hides sidebar");
+        assert!(app.flash.is_some(), "flash shown after hide");
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+        assert!(!app.sidebar_hidden, "second \\ un-hides sidebar");
+        assert!(app.flash.is_some(), "flash shown after un-hide");
+    }
+
+    /// `$` sets Files section in overview mode (`files_show_diff = false`).
+    #[test]
+    fn dollar_enters_files_overview_mode() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        // Pre-set diff mode so we can verify `$` resets it.
+        app.pr_detail_files_show_diff = true;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
+
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+        assert!(!app.pr_detail_files_show_diff, "$ must enter overview mode");
+    }
+
+    /// `F` sets Files section in diff mode (`files_show_diff = true`).
+    #[test]
+    fn shift_f_enters_files_diff_mode() {
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail_files_show_diff = false;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+        assert!(app.pr_detail_files_show_diff, "F must enter diff mode");
+    }
+
+    /// Clicking a sidebar file row sets `files_show_diff = true` (drill-in
+    /// gesture) and updates the cursor index.
+    #[test]
+    fn clicking_sidebar_file_enters_diff_mode() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 3, 0));
+        app.pr_detail_files_show_diff = false;
+
+        // Fabricate a sidebar geometry: sections_rect at row 0, files_rect
+        // starting at row 7 (default height). Row 8 = first file (header = row 7).
+        let sections_rect = ratatui::layout::Rect { x: 0, y: 0, width: 28, height: 7 };
+        let files_rect = ratatui::layout::Rect { x: 0, y: 7, width: 28, height: 20 };
+
+        // Click row 8: relative = 1, file_idx = 0.
+        app.handle_sidebar_click(0, 8, sections_rect, files_rect);
+
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+        assert!(app.pr_detail_files_show_diff, "sidebar file click must enable diff mode");
+        assert_eq!(app.pr_detail_files_cursor, 0);
     }
 
     /// Switching tabs from a detail focus with no loaded detail falls back
@@ -4215,7 +4371,6 @@ mod tests {
         }
     }
 
-
     /// Round-trip: `insert_pr` then `get_pr` returns the same payload.
     #[test]
     fn cache_insert_and_get_pr() {
@@ -4245,7 +4400,9 @@ mod tests {
 
         let stale = Cached {
             data,
-            fetched_at: Instant::now().checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1)).unwrap_or_else(Instant::now),
+            fetched_at: Instant::now()
+                .checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1))
+                .unwrap_or_else(Instant::now),
         };
         assert!(!stale.is_fresh(), "entry older than TTL must be stale");
     }
@@ -4308,7 +4465,9 @@ mod tests {
             ("a/one".to_owned(), 1),
             Cached {
                 data,
-                fetched_at: Instant::now().checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1)).unwrap_or_else(Instant::now),
+                fetched_at: Instant::now()
+                    .checked_sub(Duration::from_secs(CACHE_TTL.as_secs() + 1))
+                    .unwrap_or_else(Instant::now),
             },
         );
 

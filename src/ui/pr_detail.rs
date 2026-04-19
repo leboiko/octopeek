@@ -872,16 +872,19 @@ fn build_reviews(
     (lines, Vec::new())
 }
 
-/// Build lines for the Files section — renders the DIFF of the file pointed
-/// at by `files_cursor`. Returns `(lines, alt_bg_ranges)`; ranges are always
-/// empty here (alt-bg tinting is a comments-only feature).
+/// Build lines for the Files section.
 ///
-/// When the pointed file has `patch == None` (binary, too large, REST fetch
-/// failed, or beyond the 30-file cap), falls back to a dim placeholder so
-/// the user sees something instead of a blank pane.
+/// When `show_diff` is `false` (overview mode), renders one line per file
+/// sorted by magnitude with `+add` / `−del` counts and a footer hint.
+/// When `show_diff` is `true` (diff mode), renders the unified diff for the
+/// file pointed at by `files_cursor` with a header banner and navigation hint.
+///
+/// Returns `(lines, alt_bg_ranges)`; ranges are always empty here
+/// (alt-bg tinting is a comments-only feature).
 fn build_files(
     detail: &PrDetail,
     files_cursor: usize,
+    show_diff: bool,
     p: &crate::theme::Palette,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     if detail.files.is_empty() {
@@ -894,6 +897,77 @@ fn build_files(
         );
     }
 
+    if !show_diff {
+        return build_files_overview(detail, files_cursor, p);
+    }
+
+    build_files_diff(detail, files_cursor, p)
+}
+
+/// Files overview: one row per file sorted by magnitude descending.
+fn build_files_overview(
+    detail: &PrDetail,
+    files_cursor: usize,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
+    // Sort by magnitude descending — same order as the sidebar files list.
+    let mut sorted: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
+    sorted.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+
+    let cursor = files_cursor.min(sorted.len().saturating_sub(1));
+    let mut lines = Vec::with_capacity(sorted.len() + 1);
+
+    for (idx, file) in sorted.iter().enumerate() {
+        let glyph = file_kind_glyph(file.change_kind);
+        let glyph_color = match file.change_kind {
+            crate::github::detail::FileChangeKind::Added => p.success,
+            crate::github::detail::FileChangeKind::Modified => p.warning,
+            crate::github::detail::FileChangeKind::Deleted => p.danger,
+            crate::github::detail::FileChangeKind::Renamed => p.accent,
+            crate::github::detail::FileChangeKind::Copied
+            | crate::github::detail::FileChangeKind::Changed => p.muted,
+        };
+
+        let is_cursor = idx == cursor;
+        // Selected row gets an inversion highlight so the user can see which
+        // file J/K would open when pressing F.
+        let row_bg_style = if is_cursor {
+            Style::default().bg(p.selection_bg).fg(p.selection_fg)
+        } else {
+            Style::default()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
+            Span::styled(file.path.clone(), row_bg_style.fg(p.foreground)),
+            Span::styled("  ".to_owned(), row_bg_style),
+            Span::styled(format!("+{}", file.additions), row_bg_style.fg(p.git_new)),
+            Span::styled(" ".to_owned(), row_bg_style),
+            Span::styled(format!("\u{2212}{}", file.deletions), row_bg_style.fg(p.danger)),
+        ]);
+        lines.push(line);
+    }
+
+    // Footer hint — one line, always visible.
+    lines.push(Line::from(Span::styled(
+        "$ overview  \u{00B7}  F open diff  \u{00B7}  J/K cycle file  \u{00B7}  click a file to open"
+            .to_owned(),
+        Style::default().fg(p.dim),
+    )));
+
+    (lines, Vec::new())
+}
+
+/// Files diff: unified diff for the currently-cursor file, with banner + hint.
+///
+/// When the pointed file has `patch == None` (binary, too large, REST fetch
+/// failed, or beyond the 30-file cap), falls back to a dim placeholder so
+/// the user sees something instead of a blank pane.
+fn build_files_diff(
+    detail: &PrDetail,
+    files_cursor: usize,
+    p: &crate::theme::Palette,
+) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     let idx = files_cursor.min(detail.files.len() - 1);
     let file = &detail.files[idx];
     let total = detail.files.len();
@@ -907,16 +981,16 @@ fn build_files(
             file.path.clone(),
             Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ".to_owned(), Style::default()),
         Span::styled(format!("+{}", file.additions), Style::default().fg(p.git_new)),
-        Span::styled(" ", Style::default()),
+        Span::styled(" ".to_owned(), Style::default()),
         Span::styled(format!("\u{2212}{}", file.deletions), Style::default().fg(p.danger)),
     ]);
 
     // Navigation hint right under the header — exact keystrokes, not a
     // generic "see help" nudge, so the user doesn't have to leave the view.
     let hint = if total > 1 {
-        "J / K: next / previous file   ·   j / k: scroll diff"
+        "J / K: next / previous file   \u{00B7}   j / k: scroll diff"
     } else {
         "j / k: scroll diff"
     };
@@ -969,7 +1043,8 @@ fn build_comments(
 ///
 /// * `section` - Which section to render.
 /// * `detail` - The loaded PR detail.
-/// * `files_expanded` - Whether the files list is expanded in the Files section.
+/// * `files_cursor` - Index of the highlighted file in the Files section.
+/// * `files_show_diff` - When `true` render the diff; `false` renders the overview.
 /// * `comments_expanded` - Whether comments are expanded in the Comments section.
 /// * `p` - Current colour palette.
 /// * `ascii` - Use ASCII glyphs instead of Unicode box-drawing.
@@ -977,6 +1052,7 @@ pub fn build_section(
     section: DetailSection,
     detail: &PrDetail,
     files_cursor: usize,
+    files_show_diff: bool,
     comments_expanded: bool,
     p: &crate::theme::Palette,
     ascii: bool,
@@ -985,7 +1061,7 @@ pub fn build_section(
         DetailSection::Description => build_description(detail, p),
         DetailSection::Checks => build_checks(detail, p),
         DetailSection::Reviews => build_reviews(detail, p),
-        DetailSection::Files => build_files(detail, files_cursor, p),
+        DetailSection::Files => build_files(detail, files_cursor, files_show_diff, p),
         DetailSection::Comments => build_comments(detail, comments_expanded, p, ascii),
     }
 }
@@ -1052,12 +1128,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     render_pr_header(f, header_lines, header_area, p);
 
     // ── C2. Sidebar + right pane ───────────────────────────────────────────────
-    // Sidebar is fixed at 28 columns; right pane takes the remainder.
-    let hsplits =
-        ratatui::layout::Layout::horizontal([Constraint::Length(28), Constraint::Min(20)])
-            .split(body_area);
-    let sidebar_area = hsplits[0];
-    let right_area = hsplits[1];
+    // Sidebar width is configurable (`[`/`]`); hidden entirely when toggled
+    // via `\`. When hidden, the full body width goes to the right pane.
+    let (sidebar_area, right_area) = if app.sidebar_hidden {
+        // No sidebar slot — whole body goes to right pane.
+        let dummy = ratatui::layout::Rect { width: 0, ..body_area };
+        (dummy, body_area)
+    } else {
+        let hsplits = ratatui::layout::Layout::horizontal([
+            Constraint::Length(app.sidebar_width),
+            Constraint::Min(20),
+        ])
+        .split(body_area);
+        (hsplits[0], hsplits[1])
+    };
 
     // Sidebar sub-split: sections list (top) + files list (bottom).
     // The sections panel always shows 5 rows + 1 header + 1 border line = 7 rows.
@@ -1070,95 +1154,110 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let sections_area = vsidebar[0];
     let files_area = vsidebar[1];
 
-    // Cache sidebar and right-pane rects for mouse hit-testing.
+    // Cache sidebar and right-pane rects for mouse hit-testing (always kept
+    // up-to-date so clicks work even when the sidebar geometry changes).
     app.pr_detail_sidebar_rects.set((sections_area, files_area));
 
     // ── C3. Render sections list ───────────────────────────────────────────────
     let selected_section = app.pr_detail_selected_section;
-    let indicator = if app.config.show_ascii_glyphs { "> " } else { "\u{25b6} " }; // ▶
-    let placeholder = "  ";
 
-    let mut section_lines: Vec<Line<'static>> = Vec::new();
-    // Header row.
-    section_lines.push(Line::from(Span::styled(
-        "SECTIONS".to_owned(),
-        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-    )));
-    for sec in DetailSection::ALL {
-        let is_selected = sec == selected_section;
-        let prefix = if is_selected { indicator } else { placeholder };
-        let style = if is_selected {
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
-        } else if sec.has_content(detail) {
-            Style::default().fg(p.foreground)
-        } else {
-            Style::default().fg(p.dim)
-        };
-        section_lines.push(Line::from(Span::styled(format!("{prefix}{}", sec.label()), style)));
+    // Sidebar panels are skipped entirely when the sidebar is hidden.
+    if !app.sidebar_hidden {
+        let indicator = if app.config.show_ascii_glyphs { "> " } else { "\u{25b6} " }; // ▶
+        let placeholder = "  ";
+
+        let mut section_lines: Vec<Line<'static>> = Vec::new();
+        // Header row.
+        section_lines.push(Line::from(Span::styled(
+            "SECTIONS".to_owned(),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        )));
+        for sec in DetailSection::ALL {
+            let is_selected = sec == selected_section;
+            let prefix = if is_selected { indicator } else { placeholder };
+            let style = if is_selected {
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else if sec.has_content(detail) {
+                Style::default().fg(p.foreground)
+            } else {
+                Style::default().fg(p.dim)
+            };
+            section_lines.push(Line::from(Span::styled(format!("{prefix}{}", sec.label()), style)));
+        }
+
+        // 1-column left inset keeps content off the terminal's raw left edge.
+        let sections_block = Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(p.border_focused))
+            .style(Style::default().bg(p.background))
+            .padding(Padding::new(1, 0, 0, 0));
+        let sections_inner = sections_block.inner(sections_area);
+        f.render_widget(Paragraph::new(section_lines).block(sections_block), sections_area);
+
+        // ── C4. Render files list ──────────────────────────────────────────────
+        let mut file_list_lines: Vec<Line<'static>> = Vec::new();
+        let files_header = format!("FILES CHANGED ({})", detail.changed_files_count);
+        file_list_lines.push(Line::from(Span::styled(
+            files_header,
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        )));
+
+        // Sort files by magnitude (additions + deletions) descending.
+        let mut sorted_files: Vec<&crate::github::detail::FileChange> =
+            detail.files.iter().collect();
+        sorted_files.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+
+        // `sections_inner` width accounts for the left padding; subtract 1 for
+        // the glyph slot to avoid path overflow through the right border.
+        let sidebar_inner_width = usize::from(sections_inner.width).saturating_sub(1);
+        let files_cursor = app.pr_detail_files_cursor;
+        for (idx, file) in sorted_files.iter().enumerate() {
+            let glyph = file_kind_glyph(file.change_kind);
+            let glyph_color = match file.change_kind {
+                FileChangeKind::Added => p.success,
+                FileChangeKind::Modified => p.warning,
+                FileChangeKind::Deleted => p.danger,
+                FileChangeKind::Renamed => p.accent,
+                FileChangeKind::Copied | FileChangeKind::Changed => p.muted,
+            };
+            let path_budget = sidebar_inner_width.saturating_sub(2); // 2 = glyph + space
+            let path = truncate(&file.path, path_budget);
+
+            let is_active_file = selected_section == DetailSection::Files && idx == files_cursor;
+            let line_style = if is_active_file {
+                Style::default().bg(p.selection_bg).fg(p.foreground)
+            } else {
+                Style::default()
+            };
+            let line = Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
+                Span::styled(path, line_style.fg(p.foreground)),
+            ]);
+            file_list_lines.push(line);
+        }
+
+        let files_block = Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(p.border_focused))
+            .style(Style::default().bg(p.background))
+            .padding(Padding::new(1, 0, 0, 0));
+        let files_scroll = app.pr_detail_sidebar_scroll;
+        f.render_widget(
+            Paragraph::new(file_list_lines).block(files_block).scroll((files_scroll, 0)),
+            files_area,
+        );
+
+        // Suppress dead-code lint: `sections_inner` drove `sidebar_inner_width`
+        // and is not rendered directly.
+        let _ = sections_inner;
     }
-
-    let sections_block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(p.border_focused))
-        .style(Style::default().bg(p.background));
-    let sections_inner = sections_block.inner(sections_area);
-    f.render_widget(Paragraph::new(section_lines).block(sections_block), sections_area);
-
-    // ── C4. Render files list ──────────────────────────────────────────────────
-    let mut file_list_lines: Vec<Line<'static>> = Vec::new();
-    let files_header = format!("FILES CHANGED ({})", detail.changed_files_count);
-    file_list_lines.push(Line::from(Span::styled(
-        files_header,
-        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-    )));
-
-    // Sort files by magnitude (additions + deletions) descending, same as `files_lines`.
-    let mut sorted_files: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
-    sorted_files.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
-
-    let sidebar_inner_width = usize::from(sections_inner.width).saturating_sub(1);
-    let files_cursor = app.pr_detail_files_cursor;
-    for (idx, file) in sorted_files.iter().enumerate() {
-        let glyph = file_kind_glyph(file.change_kind);
-        let glyph_color = match file.change_kind {
-            FileChangeKind::Added => p.success,
-            FileChangeKind::Modified => p.warning,
-            FileChangeKind::Deleted => p.danger,
-            FileChangeKind::Renamed => p.accent,
-            FileChangeKind::Copied | FileChangeKind::Changed => p.muted,
-        };
-        // Truncate path to fit within the sidebar.
-        let path_budget = sidebar_inner_width.saturating_sub(2); // 2 = glyph + space
-        let path = truncate(&file.path, path_budget);
-
-        let is_active_file = selected_section == DetailSection::Files && idx == files_cursor;
-        let line_style = if is_active_file {
-            Style::default().bg(p.selection_bg).fg(p.foreground)
-        } else {
-            Style::default()
-        };
-        let line = Line::from(vec![
-            Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
-            Span::styled(path, line_style.fg(p.foreground)),
-        ]);
-        file_list_lines.push(line);
-    }
-
-    let files_block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(p.border_focused))
-        .style(Style::default().bg(p.background));
-    let files_scroll = app.pr_detail_sidebar_scroll;
-    f.render_widget(
-        Paragraph::new(file_list_lines).block(files_block).scroll((files_scroll, 0)),
-        files_area,
-    );
 
     // ── C5. Render right pane ──────────────────────────────────────────────────
     let (content_lines, alt_bg_ranges) = build_section(
         selected_section,
         detail,
         app.pr_detail_files_cursor,
+        app.pr_detail_files_show_diff,
         app.pr_detail_comments_expanded,
         p,
         app.config.show_ascii_glyphs,
@@ -1179,6 +1278,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let tinted_lines =
         apply_alt_bg(&content_lines, &alt_bg_ranges, p.help_bg, inner.width, !app.copy_mode.active);
 
+    // When the sidebar is hidden, render a single `›` affordance at column 0
+    // of the right pane's first row so the user has a visible cue that a
+    // sidebar exists and can be un-hidden with `\`.
+    if app.sidebar_hidden && inner.height > 0 {
+        let hint_area = ratatui::layout::Rect { x: right_area.x, y: inner.y, width: 1, height: 1 };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "\u{203a}", // ›
+                Style::default().fg(p.dim),
+            ))),
+            hint_area,
+        );
+    }
+
     // In copy mode, disable wrapping so logical lines map 1:1 to screen rows.
     let widget = if app.copy_mode.active {
         let overlaid = crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p);
@@ -1195,10 +1308,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
 
     f.render_widget(widget, right_area);
-
-    // Suppress unused warning on sections_inner — it was computed to derive
-    // sidebar_inner_width and is intentionally not rendered directly.
-    let _ = sections_inner;
 }
 
 /// Render the sticky PR header into `area`.
@@ -1363,19 +1472,22 @@ pub mod tests {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
 
-        let (desc, _) = build_section(DetailSection::Description, &detail, 0, false, &p, false);
+        let (desc, _) =
+            build_section(DetailSection::Description, &detail, 0, false, false, &p, false);
         assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
 
-        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, &p, false);
+        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, false, &p, false);
         assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
 
-        let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, &p, false);
+        let (reviews, _) =
+            build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
         assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
 
-        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
+        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
         assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
-        let (comments, _) = build_section(DetailSection::Comments, &detail, 0, false, &p, false);
+        let (comments, _) =
+            build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
         assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
     }
 
@@ -1385,13 +1497,14 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 0, 0); // only issue comment, no threads
         let p = Palette::default();
 
-        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, &p, false);
+        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, false, &p, false);
         assert!(checks.is_empty(), "Checks must be empty when no check_runs");
 
-        let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, &p, false);
+        let (reviews, _) =
+            build_section(DetailSection::Reviews, &detail, 0, false, false, &p, false);
         assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
 
-        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
+        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
         // Files section now always produces at least a placeholder line
         // ("No files changed") rather than returning empty, so the user
         // sees feedback instead of a blank pane. Assert on the content.
@@ -1453,7 +1566,7 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 0, 3);
         let p = Palette::default();
         let (lines, alt_ranges) =
-            build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+            build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
         assert_eq!(
             alt_ranges.len(),
@@ -1481,7 +1594,8 @@ pub mod tests {
     fn alt_bg_empty_when_single_comment() {
         let detail = fixture_pr_detail(0, 0, 0, 0); // 0 threads, only 1 issue comment
         let p = Palette::default();
-        let (_, alt_ranges) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (_, alt_ranges) =
+            build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
         assert!(
             alt_ranges.is_empty(),
             "first top-level item should not be tinted, got {alt_ranges:?}"
@@ -1592,8 +1706,8 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 5, 0);
         let p = Palette::default();
 
-        // Cursor at 0 → first file's path appears in the header.
-        let (lines, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
+        // Cursor at 0 → first file's path appears in the diff header.
+        let (lines, _) = build_section(DetailSection::Files, &detail, 0, true, false, &p, false);
         let text: String =
             lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
         assert!(
@@ -1602,13 +1716,51 @@ pub mod tests {
         );
 
         // Cursor at 2 → third file's path.
-        let (lines, _) = build_section(DetailSection::Files, &detail, 2, false, &p, false);
+        let (lines, _) = build_section(DetailSection::Files, &detail, 2, true, false, &p, false);
         let text: String =
             lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("src/file-2.rs"),
             "files_cursor=2 must show third file path: {text:?}"
         );
+    }
+
+    /// Overview mode (`files_show_diff = false`) produces exactly N content lines
+    /// (one per file) plus one footer hint line — never fewer, never more.
+    #[test]
+    fn build_files_overview_produces_one_line_per_file() {
+        let p = Palette::default();
+
+        for num_files in [1usize, 3, 7] {
+            let detail = fixture_pr_detail(0, 0, num_files, 0);
+            // `files_show_diff = false` → overview mode.
+            let (lines, _) =
+                build_section(DetailSection::Files, &detail, 0, false, false, &p, false);
+
+            // Expect num_files content rows + 1 footer hint = num_files + 1 total lines.
+            assert_eq!(
+                lines.len(),
+                num_files + 1,
+                "overview with {num_files} files must produce {num_files}+1 lines, got {}",
+                lines.len()
+            );
+
+            // Each of the first N lines must reference a file path.
+            for (i, line) in lines.iter().take(num_files).enumerate() {
+                let text = line_text(line);
+                assert!(
+                    text.contains("src/file-"),
+                    "overview line {i} must contain file path, got: {text:?}"
+                );
+            }
+
+            // The last line is the footer hint.
+            let hint = line_text(&lines[num_files]);
+            assert!(
+                hint.contains("F open diff"),
+                "footer hint must mention 'F open diff', got: {hint:?}"
+            );
+        }
     }
 
     // ── New tests: markdown rendering in threads ───────────────────────────────
@@ -1654,7 +1806,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
         // Count lines whose first non-gutter span has a non-plain style (heading or code).
         // At minimum we expect a heading line (BOLD modifier) and a code-block line.
@@ -1724,7 +1876,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
         // Collect all lines that contain an author name.
         // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
@@ -1868,7 +2020,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
         // The reply @handle span must be in accent_alt.
         let reply_author = lines
@@ -1950,7 +2102,8 @@ pub mod tests {
         };
 
         // collapsed = false (comments_expanded = false)
-        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, &p, false);
+        let (lines, _) =
+            build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
 
         let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
 
@@ -1990,7 +2143,7 @@ pub mod tests {
             }],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, true, &p, false);
 
         // Bold span for "important".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
