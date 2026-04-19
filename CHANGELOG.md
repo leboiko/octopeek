@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-04-19
+
+### Fixed
+
+- Clicking a PR (or pressing `Enter` / `o` / `y` on the highlighted
+  row) now opens the PR that was visually selected. The dashboard
+  rendered PRs sorted by `Role → updated_at → number` while the
+  click-resolution path looked up items in raw inbox order, so row N
+  on screen resolved to a different PR in mixed-role cases. The
+  mismatch was latent in 0.1.0 for `Enter` and worsened in 0.1.1
+  where `o` / `y` on the dashboard inherited the same bug through
+  `dashboard_selected_url`.
+
+### Changed
+
+- Dashboard sort simplified: PRs and issues both order strictly by
+  `updated_at desc` with `number` as a deterministic tiebreaker. The
+  previous Author → Reviewer → Assignee role-priority order is gone.
+
+### Internal
+
+- Extract `sorted_prs_for_repo` / `sorted_issues_for_repo` in
+  `github::types`. Dashboard render, `open_detail_for_selection`,
+  `CheckoutBranch` fallback, and `dashboard_selected_url` all call
+  these helpers so the display order and the click-resolution order
+  can never drift apart again.
+- Regression test `dashboard_selection_opens_displayed_pr` asserts
+  the most-recently-updated PR surfaces at row 0 regardless of raw
+  inbox ordering.
+
 ## [0.1.1] — 2026-04-19
 
 ### Fixed
@@ -99,7 +129,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/leboiko/octopeek/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/leboiko/octopeek/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/leboiko/octopeek/releases/tag/v0.1.0
 

@@ -1766,6 +1766,51 @@ fn shift_j_k_do_not_cycle_outside_files_section() {
     assert_eq!(app.pr_detail_files_cursor, 2, "J outside Files must not move cursor");
 }
 
+/// Selected-row index must resolve to the same PR the dashboard renders.
+///
+/// Regression guard: the dashboard sorts PRs by `updated_at desc` then
+/// `number asc`, but `open_detail_for_selection` used to pick from the raw
+/// `inbox.prs.iter().filter(…).collect()` (inbox order), so row N on screen
+/// opened a *different* PR in mixed-order cases. This test constructs an
+/// inbox whose raw order differs from the display order and confirms the
+/// click-resolution path reads the newer PR at row 0.
+#[test]
+fn dashboard_selection_opens_displayed_pr() {
+    use crate::github::types::{Inbox, sorted_prs_for_repo};
+    use chrono::Duration;
+
+    // Two PRs in the same repo. The older one appears FIRST in the raw
+    // `prs` vec; the newer one appears second. The display order should be
+    // newer-first.
+    let older = {
+        let mut p = make_pr("o/r", "clean", "viewer");
+        p.number = 10;
+        p.updated_at = Utc::now() - Duration::days(5);
+        p.url = "https://github.com/o/r/pull/10".to_owned();
+        p
+    };
+    let newer = {
+        let mut p = make_pr("o/r", "clean", "viewer");
+        p.number = 20;
+        p.updated_at = Utc::now();
+        p.url = "https://github.com/o/r/pull/20".to_owned();
+        p
+    };
+
+    let inbox = Inbox {
+        viewer_login: "viewer".to_owned(),
+        prs: vec![older, newer],
+        issues: vec![],
+    };
+
+    let display = sorted_prs_for_repo(&inbox, "o/r");
+    assert_eq!(
+        display[0].number, 20,
+        "display row 0 must be the most-recently-updated PR"
+    );
+    assert_eq!(display[1].number, 10);
+}
+
 /// Wrap-aware scroll clamp: a single very long line wraps into many
 /// rendered rows, and the clamp must use the wrapped row count so the last
 /// rendered row is always reachable.

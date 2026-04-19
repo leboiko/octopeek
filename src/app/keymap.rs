@@ -941,18 +941,16 @@ impl App {
         let inbox = self.inbox.as_ref()?;
         let sel = self.selection.get(&repo).copied().unwrap_or(0);
         match self.session.view_mode(&repo) {
-            crate::state::ViewMode::Prs => inbox
-                .prs
-                .iter()
-                .filter(|pr| pr.repo == repo)
-                .nth(sel)
-                .map(|pr| pr.url.clone()),
-            crate::state::ViewMode::Issues => inbox
-                .issues
-                .iter()
-                .filter(|i| i.repo == repo)
-                .nth(sel)
-                .map(|i| i.url.clone()),
+            crate::state::ViewMode::Prs => {
+                crate::github::types::sorted_prs_for_repo(inbox, &repo)
+                    .get(sel)
+                    .map(|pr| pr.url.clone())
+            }
+            crate::state::ViewMode::Issues => {
+                crate::github::types::sorted_issues_for_repo(inbox, &repo)
+                    .get(sel)
+                    .map(|i| i.url.clone())
+            }
         }
     }
 

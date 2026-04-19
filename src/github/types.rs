@@ -237,3 +237,35 @@ pub struct Inbox {
     /// Open issues assigned to the viewer.
     pub issues: Vec<Issue>,
 }
+
+// ── Display-order helpers ─────────────────────────────────────────────────────
+//
+// The dashboard table, the `Enter` → open-detail path, and the dashboard
+// `o` / `y` URL resolvers all project the inbox down to "PRs (or issues) for
+// one repo" and then index by a stored selection. If those three paths sort
+// the slice differently, the selected row and the opened item drift apart —
+// row N looks like PR X but click opens PR Y. Keep the sort in one place.
+
+/// Filter the inbox's PRs to a single repo and sort for display.
+///
+/// Sort key: most-recently-updated first, with the PR number as a
+/// deterministic tiebreaker so the order never flickers across refreshes
+/// when two PRs share an `updated_at`.
+#[must_use]
+pub(crate) fn sorted_prs_for_repo<'a>(inbox: &'a Inbox, repo: &str) -> Vec<&'a PullRequest> {
+    let mut prs: Vec<&PullRequest> = inbox.prs.iter().filter(|pr| pr.repo == repo).collect();
+    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.number.cmp(&b.number)));
+    prs
+}
+
+/// Filter the inbox's issues to a single repo and sort for display.
+///
+/// Same sort key as [`sorted_prs_for_repo`] so PRs and issues line up under
+/// identical selection semantics.
+#[must_use]
+pub(crate) fn sorted_issues_for_repo<'a>(inbox: &'a Inbox, repo: &str) -> Vec<&'a Issue> {
+    let mut issues: Vec<&Issue> =
+        inbox.issues.iter().filter(|i| i.repo == repo).collect();
+    issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.number.cmp(&b.number)));
+    issues
+}

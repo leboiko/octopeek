@@ -266,8 +266,7 @@ impl App {
 
         match mode {
             crate::state::ViewMode::Prs => {
-                let prs: Vec<&crate::github::types::PullRequest> =
-                    inbox.prs.iter().filter(|pr| pr.repo == repo).collect();
+                let prs = crate::github::types::sorted_prs_for_repo(inbox, &repo);
                 if let Some(pr) = prs.get(sel) {
                     let number = pr.number;
                     // Reset detail state before switching focus. `detail_fetching`
@@ -292,8 +291,7 @@ impl App {
                 }
             }
             crate::state::ViewMode::Issues => {
-                let issues: Vec<&crate::github::types::Issue> =
-                    inbox.issues.iter().filter(|i| i.repo == repo).collect();
+                let issues = crate::github::types::sorted_issues_for_repo(inbox, &repo);
                 if let Some(issue) = issues.get(sel) {
                     let number = issue.number;
                     // See the PR branch above: `detail_fetching` is set by
@@ -401,8 +399,7 @@ impl App {
                 return;
             };
             let sel = self.selection.get(&repo_slug).copied().unwrap_or(0);
-            let prs: Vec<&crate::github::types::PullRequest> =
-                inbox.prs.iter().filter(|pr| pr.repo == repo_slug).collect();
+            let prs = crate::github::types::sorted_prs_for_repo(inbox, &repo_slug);
             let Some(pr) = prs.get(sel) else {
                 return;
             };
