@@ -473,48 +473,6 @@ fn reviews_lines(detail: &PrDetail, p: &crate::theme::Palette) -> Vec<Line<'stat
     lines
 }
 
-/// Build files-changed lines, with expansion controlled by `expanded`.
-fn files_lines(detail: &PrDetail, expanded: bool, p: &crate::theme::Palette) -> Vec<Line<'static>> {
-    // Sort by magnitude (additions + deletions) descending.
-    let mut files: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
-    files.sort_by(|a, b| {
-        let mag_b = b.additions + b.deletions;
-        let mag_a = a.additions + a.deletions;
-        mag_b.cmp(&mag_a)
-    });
-
-    let visible = if expanded { files.len() } else { files.len().min(5) };
-    let overflow = files.len().saturating_sub(5);
-
-    let mut lines = Vec::with_capacity(visible + 1);
-    for file in &files[..visible] {
-        let glyph = file_kind_glyph(file.change_kind);
-        let glyph_color = match file.change_kind {
-            FileChangeKind::Added => p.success,
-            FileChangeKind::Modified => p.warning,
-            FileChangeKind::Deleted => p.danger,
-            FileChangeKind::Renamed => p.accent,
-            FileChangeKind::Copied | FileChangeKind::Changed => p.muted,
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
-            Span::styled(file.path.clone(), Style::default().fg(p.foreground)),
-            Span::styled(format!(" +{}", file.additions), Style::default().fg(p.success)),
-            Span::styled(format!(" \u{2212}{}", file.deletions), Style::default().fg(p.danger)),
-        ]));
-    }
-
-    if !expanded && overflow > 0 {
-        lines.push(Line::from(Span::styled(
-            format!("  ... {overflow} more  [f] to expand"),
-            Style::default().fg(p.dim),
-        )));
-    }
-
-    lines
-}
-
 // ── Gutter helper ─────────────────────────────────────────────────────────────
 
 /// The Unicode vertical gutter prepended to every body line inside a review thread.
@@ -914,19 +872,60 @@ fn build_reviews(
     (lines, Vec::new())
 }
 
-/// Build lines for the Files section.
+/// Build lines for the Files section — renders the DIFF of the file pointed
+/// at by `files_cursor`. Returns `(lines, alt_bg_ranges)`; ranges are always
+/// empty here (alt-bg tinting is a comments-only feature).
 ///
-/// Returns `(lines, alt_bg_ranges)` — ranges are always empty here.
+/// When the pointed file has `patch == None` (binary, too large, REST fetch
+/// failed, or beyond the 30-file cap), falls back to a dim placeholder so
+/// the user sees something instead of a blank pane.
 fn build_files(
     detail: &PrDetail,
-    files_expanded: bool,
+    files_cursor: usize,
     p: &crate::theme::Palette,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     if detail.files.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (
+            vec![Line::from(Span::styled(
+                "No files changed".to_owned(),
+                Style::default().fg(p.dim),
+            ))],
+            Vec::new(),
+        );
     }
-    let mut lines = files_lines(detail, files_expanded, p);
-    lines.push(Line::from(""));
+
+    let idx = files_cursor.min(detail.files.len() - 1);
+    let file = &detail.files[idx];
+
+    // File-header banner: path + stats so the user knows which diff they're
+    // reading when they cycle through files with `J`/`K`.
+    let header = Line::from(vec![
+        Span::styled(
+            file.path.clone(),
+            Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(format!("+{}", file.additions), Style::default().fg(p.git_new)),
+        Span::styled(" ", Style::default()),
+        Span::styled(format!("\u{2212}{}", file.deletions), Style::default().fg(p.danger)),
+    ]);
+
+    let mut lines = vec![header, Line::from("")];
+
+    // Body: either the parsed+rendered diff, or a placeholder.
+    match &file.patch {
+        Some(patch) => {
+            let diff = crate::ui::diff::parse_unified_diff(patch);
+            lines.extend(crate::ui::diff::render_diff(&diff, p));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                "Patch unavailable — binary file, too large, beyond the 30-file cap, or fetch failed.".to_owned(),
+                Style::default().fg(p.dim),
+            )));
+        }
+    }
+
     (lines, Vec::new())
 }
 
@@ -965,7 +964,7 @@ fn build_comments(
 pub fn build_section(
     section: DetailSection,
     detail: &PrDetail,
-    files_expanded: bool,
+    files_cursor: usize,
     comments_expanded: bool,
     p: &crate::theme::Palette,
     ascii: bool,
@@ -974,7 +973,7 @@ pub fn build_section(
         DetailSection::Description => build_description(detail, p),
         DetailSection::Checks => build_checks(detail, p),
         DetailSection::Reviews => build_reviews(detail, p),
-        DetailSection::Files => build_files(detail, files_expanded, p),
+        DetailSection::Files => build_files(detail, files_cursor, p),
         DetailSection::Comments => build_comments(detail, comments_expanded, p, ascii),
     }
 }
@@ -1147,7 +1146,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let (content_lines, alt_bg_ranges) = build_section(
         selected_section,
         detail,
-        app.pr_detail_files_expanded,
+        app.pr_detail_files_cursor,
         app.pr_detail_comments_expanded,
         p,
         app.config.show_ascii_glyphs,
@@ -1162,7 +1161,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     app.pr_detail_viewport.set(inner);
     app.pr_detail_right_viewport.set(inner);
 
-    let scroll = app.scroll_for(selected_section);
+    let scroll = app.right_pane_scroll();
 
     // Alt-bg tinting for comment threads.
     let tinted_lines =
@@ -1352,20 +1351,20 @@ pub mod tests {
         let detail = fixture_pr_detail(2, 1, 3, 1);
         let p = Palette::default();
 
-        let (desc, _) = build_section(DetailSection::Description, &detail, false, false, &p, false);
+        let (desc, _) = build_section(DetailSection::Description, &detail, 0, false, &p, false);
         assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
 
-        let (checks, _) = build_section(DetailSection::Checks, &detail, false, false, &p, false);
+        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, &p, false);
         assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
 
-        let (reviews, _) = build_section(DetailSection::Reviews, &detail, false, false, &p, false);
+        let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, &p, false);
         assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
 
-        let (files, _) = build_section(DetailSection::Files, &detail, false, false, &p, false);
+        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
         assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
         let (comments, _) =
-            build_section(DetailSection::Comments, &detail, false, false, &p, false);
+            build_section(DetailSection::Comments, &detail, 0, false, &p, false);
         assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
     }
 
@@ -1375,14 +1374,22 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 0, 0); // only issue comment, no threads
         let p = Palette::default();
 
-        let (checks, _) = build_section(DetailSection::Checks, &detail, false, false, &p, false);
+        let (checks, _) = build_section(DetailSection::Checks, &detail, 0, false, &p, false);
         assert!(checks.is_empty(), "Checks must be empty when no check_runs");
 
-        let (reviews, _) = build_section(DetailSection::Reviews, &detail, false, false, &p, false);
+        let (reviews, _) = build_section(DetailSection::Reviews, &detail, 0, false, &p, false);
         assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
 
-        let (files, _) = build_section(DetailSection::Files, &detail, false, false, &p, false);
-        assert!(files.is_empty(), "Files must be empty when no files");
+        let (files, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
+        // Files section now always produces at least a placeholder line
+        // ("No files changed") rather than returning empty, so the user
+        // sees feedback instead of a blank pane. Assert on the content.
+        let text: String = files.iter().flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("No files"),
+            "Files placeholder must explain emptiness, got: {text:?}"
+        );
     }
 
     /// The sticky header must contain the repo/number, title, state label,
@@ -1435,7 +1442,7 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 0, 3);
         let p = Palette::default();
         let (lines, alt_ranges) =
-            build_section(DetailSection::Comments, &detail, false, true, &p, false);
+            build_section(DetailSection::Comments, &detail, 0, true, &p, false);
 
         assert_eq!(
             alt_ranges.len(),
@@ -1464,7 +1471,7 @@ pub mod tests {
         let detail = fixture_pr_detail(0, 0, 0, 0); // 0 threads, only 1 issue comment
         let p = Palette::default();
         let (_, alt_ranges) =
-            build_section(DetailSection::Comments, &detail, false, true, &p, false);
+            build_section(DetailSection::Comments, &detail, 0, true, &p, false);
         assert!(
             alt_ranges.is_empty(),
             "first top-level item should not be tinted, got {alt_ranges:?}"
@@ -1567,16 +1574,31 @@ pub mod tests {
         assert_eq!(tinted.style.bg, Some(bg), "line-level bg set");
     }
 
-    /// Files-expanded flag switches from 5 to all files visible.
+    /// The Files section now renders the DIFF of the cursor-pointed file
+    /// instead of a collapsed list. Cycling the cursor with `J`/`K` picks
+    /// a different file and its patch (or placeholder) is rendered.
     #[test]
-    fn files_expanded_shows_more() {
-        let detail = fixture_pr_detail(0, 0, 10, 0);
+    fn files_section_renders_cursor_pointed_file_header() {
+        let detail = fixture_pr_detail(0, 0, 5, 0);
         let p = Palette::default();
-        let (lines_collapsed, _) =
-            build_section(DetailSection::Files, &detail, false, false, &p, false);
-        let (lines_expanded, _) =
-            build_section(DetailSection::Files, &detail, true, false, &p, false);
-        assert!(lines_expanded.len() > lines_collapsed.len(), "expanded should produce more lines");
+
+        // Cursor at 0 → first file's path appears in the header.
+        let (lines, _) = build_section(DetailSection::Files, &detail, 0, false, &p, false);
+        let text: String =
+            lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("src/file-0.rs"),
+            "files_cursor=0 must show first file path: {text:?}"
+        );
+
+        // Cursor at 2 → third file's path.
+        let (lines, _) = build_section(DetailSection::Files, &detail, 2, false, &p, false);
+        let text: String =
+            lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("src/file-2.rs"),
+            "files_cursor=2 must show third file path: {text:?}"
+        );
     }
 
     // ── New tests: markdown rendering in threads ───────────────────────────────
@@ -1622,7 +1644,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
 
         // Count lines whose first non-gutter span has a non-plain style (heading or code).
         // At minimum we expect a heading line (BOLD modifier) and a code-block line.
@@ -1692,7 +1714,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
 
         // Collect all lines that contain an author name.
         // The reply glyph ↳ (U+21B3) appears in the span immediately before the author span.
@@ -1836,7 +1858,7 @@ pub mod tests {
             issue_comments: vec![],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
 
         // The reply @handle span must be in accent_alt.
         let reply_author = lines
@@ -1918,7 +1940,7 @@ pub mod tests {
         };
 
         // collapsed = false (comments_expanded = false)
-        let (lines, _) = build_section(DetailSection::Comments, &detail, false, false, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, &p, false);
 
         let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
 
@@ -1958,7 +1980,7 @@ pub mod tests {
             }],
         };
 
-        let (lines, _) = build_section(DetailSection::Comments, &detail, false, true, &p, false);
+        let (lines, _) = build_section(DetailSection::Comments, &detail, 0, true, &p, false);
 
         // Bold span for "important".
         let has_bold = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {

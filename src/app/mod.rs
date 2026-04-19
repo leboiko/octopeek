@@ -174,6 +174,10 @@ pub struct App {
     /// Switching sections preserves each section's individual scroll position
     /// so the user returns to where they left off.
     pub pr_detail_scroll: HashMap<DetailSection, u16>,
+    /// Scroll offset per file for the diff view. Separate from
+    /// `pr_detail_scroll` so that cycling `J`/`K` between files preserves
+    /// each file's scroll position independently. Key: file path.
+    pub pr_detail_diff_scroll: HashMap<String, u16>,
     /// `true` when the files section in the PR detail view is fully expanded.
     pub pr_detail_files_expanded: bool,
     /// `true` when the comments section in the PR detail view is fully expanded.
@@ -291,6 +295,7 @@ impl App {
             detail_fetching: false,
             detail_error: None,
             pr_detail_scroll: HashMap::new(),
+            pr_detail_diff_scroll: HashMap::new(),
             pr_detail_files_expanded: false,
             pr_detail_comments_expanded: false,
             pr_detail_selected_section: DetailSection::default(),
@@ -327,6 +332,44 @@ impl App {
     /// inserting 0 if the section has not been scrolled yet.
     pub fn scroll_mut(&mut self, section: DetailSection) -> &mut u16 {
         self.pr_detail_scroll.entry(section).or_insert(0)
+    }
+
+    /// Path of the file currently highlighted in the Files sidebar, if that
+    /// section is active and the PR has any files. Used to route right-pane
+    /// scrolling to a per-file map when the Files section is showing a diff.
+    fn active_diff_file_path(&self) -> Option<String> {
+        if self.pr_detail_selected_section != DetailSection::Files {
+            return None;
+        }
+        let detail = self.pr_detail.as_ref()?;
+        if detail.files.is_empty() {
+            return None;
+        }
+        let idx = self.pr_detail_files_cursor.min(detail.files.len() - 1);
+        Some(detail.files[idx].path.clone())
+    }
+
+    /// Current scroll offset for the right pane — dispatches to the per-file
+    /// diff scroll map when viewing the Files section, otherwise to the
+    /// per-section map. Keeps `j`/`k` natural no matter which section is
+    /// active, and preserves scroll per-file when `J`/`K` cycles files.
+    pub fn right_pane_scroll(&self) -> u16 {
+        if let Some(path) = self.active_diff_file_path() {
+            self.pr_detail_diff_scroll.get(&path).copied().unwrap_or(0)
+        } else {
+            self.scroll_for(self.pr_detail_selected_section)
+        }
+    }
+
+    /// Mutable counterpart to [`Self::right_pane_scroll`], inserting a 0
+    /// entry on first access so `*... += N` style updates compile.
+    pub fn right_pane_scroll_mut(&mut self) -> &mut u16 {
+        if let Some(path) = self.active_diff_file_path() {
+            self.pr_detail_diff_scroll.entry(path).or_insert(0)
+        } else {
+            let section = self.pr_detail_selected_section;
+            self.pr_detail_scroll.entry(section).or_insert(0)
+        }
     }
 
     /// Display a flash message in the status bar for `duration`.
@@ -1000,29 +1043,28 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.detail_pending_g = false;
-                let s = self.pr_detail_selected_section;
-                *self.scroll_mut(s) = self.scroll_for(s).saturating_add(1);
+                let next = self.right_pane_scroll().saturating_add(1);
+                *self.right_pane_scroll_mut() = next;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.detail_pending_g = false;
-                let s = self.pr_detail_selected_section;
-                *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(1);
+                let next = self.right_pane_scroll().saturating_sub(1);
+                *self.right_pane_scroll_mut() = next;
             }
             KeyCode::Char('d') => {
                 self.detail_pending_g = false;
-                let s = self.pr_detail_selected_section;
-                *self.scroll_mut(s) = self.scroll_for(s).saturating_add(10);
+                let next = self.right_pane_scroll().saturating_add(10);
+                *self.right_pane_scroll_mut() = next;
             }
             KeyCode::Char('u') => {
                 self.detail_pending_g = false;
-                let s = self.pr_detail_selected_section;
-                *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(10);
+                let next = self.right_pane_scroll().saturating_sub(10);
+                *self.right_pane_scroll_mut() = next;
             }
             KeyCode::Char('g') => {
                 if self.detail_pending_g {
                     self.detail_pending_g = false;
-                    let s = self.pr_detail_selected_section;
-                    *self.scroll_mut(s) = 0;
+                    *self.right_pane_scroll_mut() = 0;
                 } else {
                     self.detail_pending_g = true;
                 }
@@ -1030,8 +1072,18 @@ impl App {
             KeyCode::Char('G') => {
                 self.detail_pending_g = false;
                 // Set to a large value; the renderer clamps to valid range.
-                let s = self.pr_detail_selected_section;
-                *self.scroll_mut(s) = u16::MAX;
+                *self.right_pane_scroll_mut() = u16::MAX;
+            }
+            // J / K cycle the file cursor when the Files section is active.
+            // Matches the "shift = bigger hop" vim convention: unshifted j/k
+            // scroll within the current diff, shifted jumps to the next file.
+            KeyCode::Char('J') if self.pr_detail_selected_section == DetailSection::Files => {
+                self.detail_pending_g = false;
+                self.cycle_files_cursor(1);
+            }
+            KeyCode::Char('K') if self.pr_detail_selected_section == DetailSection::Files => {
+                self.detail_pending_g = false;
+                self.cycle_files_cursor(-1);
             }
             // Section picker: `!@#$%` for Description/Checks/Reviews/Files/
             // Comments (SHIFT+1..5 on US keyboards). Terminals that deliver
@@ -1148,6 +1200,7 @@ impl App {
                     self.issue_detail = None;
                     self.detail_error = None;
                     self.pr_detail_scroll.clear();
+                    self.pr_detail_diff_scroll.clear();
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
                     }
@@ -1158,6 +1211,7 @@ impl App {
                     self.issue_detail = None;
                     self.detail_error = None;
                     self.pr_detail_scroll.clear();
+                    self.pr_detail_diff_scroll.clear();
                     if let Some(tx) = self.action_tx.clone() {
                         self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
                     }
@@ -1262,6 +1316,37 @@ impl App {
     /// Push `text` to the system clipboard and display a flash summarising
     /// what happened. Takes `&mut flash` rather than `&mut self` so it can be
     /// used from copy-mode branches that already borrow other parts of self.
+    /// Move the Files-sidebar cursor by `delta` rows, clamped to the PR's
+    /// file list. Also nudges `pr_detail_sidebar_scroll` so the newly-
+    /// selected file stays visible in the sidebar pane (best-effort —
+    /// viewport height isn't cached for the sidebar, so we use a
+    /// conservative default of 10 visible rows).
+    fn cycle_files_cursor(&mut self, delta: i32) {
+        let Some(detail) = self.pr_detail.as_ref() else { return };
+        if detail.files.is_empty() {
+            return;
+        }
+        let last = detail.files.len().saturating_sub(1);
+        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+        let current = self.pr_detail_files_cursor as i32;
+        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+        let last_i = last as i32;
+        let next = current.saturating_add(delta).clamp(0, last_i);
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        {
+            self.pr_detail_files_cursor = next as usize;
+        }
+        // Nudge sidebar scroll so cursor stays roughly centred.
+        #[allow(clippy::cast_possible_truncation)]
+        let cursor_u16 = self.pr_detail_files_cursor as u16;
+        let visible = 10u16;
+        if cursor_u16 < self.pr_detail_sidebar_scroll {
+            self.pr_detail_sidebar_scroll = cursor_u16;
+        } else if cursor_u16 >= self.pr_detail_sidebar_scroll.saturating_add(visible) {
+            self.pr_detail_sidebar_scroll = cursor_u16.saturating_sub(visible).saturating_add(1);
+        }
+    }
+
     fn yank_and_flash(flash: &mut Option<crate::ui::status_bar::FlashMessage>, text: &str) {
         match crate::actions_util::copy_to_clipboard(text) {
             Ok(()) => {
@@ -1307,8 +1392,8 @@ impl App {
                             self.pr_detail_sidebar_scroll =
                                 self.pr_detail_sidebar_scroll.saturating_sub(3);
                         } else {
-                            let s = self.pr_detail_selected_section;
-                            *self.scroll_mut(s) = self.scroll_for(s).saturating_sub(3);
+                            let next = self.right_pane_scroll().saturating_sub(3);
+                            *self.right_pane_scroll_mut() = next;
                         }
                     }
                     MouseEventKind::ScrollDown => {
@@ -1316,8 +1401,8 @@ impl App {
                             self.pr_detail_sidebar_scroll =
                                 self.pr_detail_sidebar_scroll.saturating_add(3);
                         } else {
-                            let s = self.pr_detail_selected_section;
-                            *self.scroll_mut(s) = self.scroll_for(s).saturating_add(3);
+                            let next = self.right_pane_scroll().saturating_add(3);
+                            *self.right_pane_scroll_mut() = next;
                         }
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
@@ -1456,7 +1541,7 @@ impl App {
             let (lines, _) = crate::ui::pr_detail::build_section(
                 self.pr_detail_selected_section,
                 detail,
-                self.pr_detail_files_expanded,
+                self.pr_detail_files_cursor,
                 self.pr_detail_comments_expanded,
                 &self.palette,
                 self.config.show_ascii_glyphs,
@@ -1907,6 +1992,7 @@ impl App {
         self.detail_error = None;
         self.detail_fetching = false;
         self.pr_detail_scroll.clear();
+        self.pr_detail_diff_scroll.clear();
         self.pr_detail_files_expanded = false;
         self.pr_detail_comments_expanded = false;
         self.pr_detail_selected_section = DetailSection::default();
@@ -1946,6 +2032,7 @@ impl App {
                     self.issue_detail = None;
                     self.detail_error = None;
                     self.pr_detail_scroll.clear();
+                    self.pr_detail_diff_scroll.clear();
                     self.pr_detail_files_expanded = false;
                     self.pr_detail_comments_expanded = false;
                     self.pr_detail_selected_section = DetailSection::default();
@@ -1969,6 +2056,7 @@ impl App {
                     self.issue_detail = None;
                     self.detail_error = None;
                     self.pr_detail_scroll.clear();
+                    self.pr_detail_diff_scroll.clear();
                     self.pr_detail_files_expanded = false;
                     self.pr_detail_comments_expanded = false;
                     self.pr_detail_selected_section = DetailSection::default();
@@ -3696,6 +3784,77 @@ mod tests {
 
         app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE));
         assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+    }
+
+    /// `J` / `K` cycle the files cursor when the Files section is active.
+    /// Using the fixture-detail (5 files) so bounds are exercised.
+    #[test]
+    fn shift_j_k_cycle_files_cursor_in_files_section() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 5, 0));
+        app.pr_detail_selected_section = DetailSection::Files;
+        app.pr_detail_files_cursor = 0;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_files_cursor, 1, "J moves cursor forward");
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_files_cursor, 4, "cycle advances to last file");
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_files_cursor, 4, "J at last clamps (no wrap)");
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_files_cursor, 3, "K moves cursor back");
+    }
+
+    /// `J` / `K` are section-gated: outside the Files section they fall
+    /// through to whatever else might consume them (currently nothing in
+    /// detail), so they should not move the files cursor from Description.
+    #[test]
+    fn shift_j_k_do_not_cycle_outside_files_section() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 5, 0));
+        app.pr_detail_selected_section = DetailSection::Description;
+        app.pr_detail_files_cursor = 2;
+
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert_eq!(app.pr_detail_files_cursor, 2, "J outside Files must not move cursor");
+    }
+
+    /// Scroll offsets are preserved per file when cycling through files.
+    #[test]
+    fn diff_scroll_is_preserved_per_file() {
+        use crate::ui::pr_detail::tests::fixture_pr_detail;
+        let config = crate::config::Config::default();
+        let session = crate::state::AppSession::default();
+        let mut app = App::new(config, session);
+        app.focus = Focus::Detail;
+        app.pr_detail = Some(fixture_pr_detail(0, 0, 3, 0));
+        app.pr_detail_selected_section = DetailSection::Files;
+        app.pr_detail_files_cursor = 0;
+
+        // Scroll the first file's diff down.
+        *app.right_pane_scroll_mut() = 7;
+        assert_eq!(app.right_pane_scroll(), 7);
+
+        // Move to next file — scroll starts fresh.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert_eq!(app.right_pane_scroll(), 0, "new file's scroll starts at 0");
+
+        // Back to the first file — scroll restored.
+        app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+        assert_eq!(app.right_pane_scroll(), 7, "first file's scroll is remembered");
     }
 
     /// Unshifted digits in the detail view switch repo tabs (and pop back to
