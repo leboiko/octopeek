@@ -343,18 +343,9 @@ query IssueDetail($owner: String!, $name: String!, $number: Int!) {
 // ── Raw deserialization types ─────────────────────────────────────────────────
 //
 // These mirror the GraphQL response shape exactly.  They are private; callers
-// always receive the public domain structs above.
-
-#[derive(Debug, Deserialize)]
-pub(super) struct RawDetailResponse {
-    pub data: Option<RawDetailData>,
-    pub errors: Option<Vec<RawDetailError>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct RawDetailError {
-    pub message: String,
-}
+// always receive the public domain structs above. The top-level envelope
+// (`data` / `errors`) is the generic `GqlEnvelope<RawDetailData>` defined in
+// `super::query` so the HTTP client can share one helper across every query.
 
 #[derive(Debug, Deserialize)]
 pub(super) struct RawDetailData {
@@ -749,6 +740,11 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::github::query::GqlEnvelope;
+
+    /// Type alias kept private to the test module so the existing test names
+    /// stay unchanged. The envelope is now generic in non-test code.
+    type RawDetailResponse = GqlEnvelope<RawDetailData>;
 
     // ── Fixture helpers ───────────────────────────────────────────────────────
 

@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::detail::{
-    ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailResponse,
+    ISSUE_DETAIL_QUERY, IssueDetail, PR_DETAIL_QUERY, PrDetail, RawDetailData,
     raw_issue_to_detail, raw_pr_to_detail,
 };
-use super::query::{GraphQlResponse, GraphQlResponseAll, build_show_all_query, inbox_query};
+use super::query::{
+    GqlEnvelope, ResponseData, ResponseDataAll, build_show_all_query, inbox_query,
+};
 use super::types::Inbox;
 
 /// Version string embedded in the `User-Agent` header.
@@ -114,39 +116,8 @@ impl Client {
     /// - Network errors → wrapped with context.
     /// - GraphQL `errors` array → joined and returned as an error.
     pub async fn fetch_inbox(&self) -> Result<Inbox> {
-        let response = self
-            .http
-            .post(GRAPHQL_URL)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
-            .header(ACCEPT, "application/vnd.github+json")
-            .json(&NoVarBody { query: inbox_query() })
-            .send()
-            .await
-            .context("network error reaching GitHub GraphQL API")?;
-
-        let status = response.status();
-
-        // Handle HTTP-level errors before attempting to parse the body.
-        check_http_status(status, response.headers())?;
-
-        let gql: GraphQlResponse =
-            response.json().await.context("failed to parse GitHub GraphQL response")?;
-
-        // Log point cost if present (GitHub includes this in extensions).
-        // The field path is `extensions.cost.actualCost` in the GitHub API.
-        // We avoid pulling in a full `extensions` struct for a single debug log.
-        debug!("GraphQL response received (status {status})");
-
-        // Surface GraphQL application-level errors.
-        if let Some(errors) = gql.errors
-            && !errors.is_empty()
-        {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            anyhow::bail!("GitHub GraphQL errors: {}", messages.join("; "));
-        }
-
-        let data = gql.data.context("GitHub GraphQL response had no `data` field")?;
+        let data: ResponseData =
+            self.post_graphql(&NoVarBody { query: inbox_query() }, "inbox").await?;
 
         // Cache the viewer login for callers that need it without a re-fetch.
         let viewer_login = data.authored.login.clone();
@@ -173,37 +144,10 @@ impl Client {
     /// Same error conditions as [`Self::fetch_inbox`].
     pub async fn fetch_inbox_all(&self, repos: &[String]) -> Result<Inbox> {
         let query = build_show_all_query(repos);
-
-        let response = self
-            .http
-            .post(GRAPHQL_URL)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
-            .header(ACCEPT, "application/vnd.github+json")
-            .json(&NoVarBody { query: &query })
-            .send()
-            .await
-            .context("network error reaching GitHub GraphQL API")?;
-
-        let status = response.status();
-        check_http_status(status, response.headers())?;
-
-        let gql: GraphQlResponseAll =
-            response.json().await.context("failed to parse GitHub GraphQL response")?;
-
-        debug!("GraphQL show-all response received (status {status})");
-
-        if let Some(errors) = gql.errors
-            && !errors.is_empty()
-        {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            anyhow::bail!("GitHub GraphQL errors: {}", messages.join("; "));
-        }
-
-        let data = gql.data.context("GitHub GraphQL response had no `data` field")?;
+        let data: ResponseDataAll =
+            self.post_graphql(&NoVarBody { query: &query }, "show-all").await?;
 
         let viewer_login = data.viewer.login.clone();
-        // Cache the viewer login (best-effort; ignored if already set).
         let _ = self.viewer_login.set(viewer_login.clone());
 
         Ok(super::query::to_inbox_all(viewer_login, data))
@@ -223,11 +167,9 @@ impl Client {
     /// - `repository` or `pullRequest` is `null` → descriptive error.
     pub async fn fetch_pr_detail(&self, repo: &str, number: u32) -> Result<PrDetail> {
         let (owner, name) = split_repo(repo)?;
-        let gql = self.post_graphql_detail(PR_DETAIL_QUERY, owner, name, number).await?;
+        let data = self.post_graphql_detail(PR_DETAIL_QUERY, owner, name, number).await?;
 
-        let repository = gql
-            .data
-            .context("GitHub GraphQL response had no `data` field")?
+        let repository = data
             .repository
             .with_context(|| format!("repository `{repo}` not found or not accessible"))?;
 
@@ -270,11 +212,9 @@ impl Client {
     /// - `repository` or `issue` is `null` → descriptive error.
     pub async fn fetch_issue_detail(&self, repo: &str, number: u32) -> Result<IssueDetail> {
         let (owner, name) = split_repo(repo)?;
-        let gql = self.post_graphql_detail(ISSUE_DETAIL_QUERY, owner, name, number).await?;
+        let data = self.post_graphql_detail(ISSUE_DETAIL_QUERY, owner, name, number).await?;
 
-        let repository = gql
-            .data
-            .context("GitHub GraphQL response had no `data` field")?
+        let repository = data
             .repository
             .with_context(|| format!("repository `{repo}` not found or not accessible"))?;
 
@@ -336,26 +276,50 @@ impl Client {
     }
 
     /// POST a parameterised detail query (`owner`, `name`, `number`) and return
-    /// the parsed [`RawDetailResponse`], surfacing HTTP and GraphQL errors.
+    /// the inner `data` struct, surfacing HTTP and GraphQL errors.
     ///
-    /// Shared by [`Self::fetch_pr_detail`] and [`Self::fetch_issue_detail`] to
-    /// avoid duplicating the HTTP + error-handling boilerplate.
+    /// Shared by [`Self::fetch_pr_detail`] and [`Self::fetch_issue_detail`].
     async fn post_graphql_detail(
         &self,
         query: &str,
         owner: &str,
         name: &str,
         number: u32,
-    ) -> Result<RawDetailResponse> {
+    ) -> Result<RawDetailData> {
         let body = DetailBody { query, variables: DetailVariables { owner, name, number } };
+        self.post_graphql(&body, "detail").await
+    }
 
+    /// POST any GraphQL query and return the deserialized `data` field.
+    ///
+    /// Centralises the four steps every GraphQL call repeats:
+    /// 1. Attach auth / user-agent / accept headers.
+    /// 2. Check the HTTP status and rate-limit headers.
+    /// 3. Parse the response as [`GqlEnvelope<T>`].
+    /// 4. Surface any non-empty `errors[]` array as an `anyhow` error.
+    ///
+    /// The caller owns the body type (e.g. [`NoVarBody`], [`DetailBody`]) and
+    /// the inner response shape `T`. `label` is only used to tag the success
+    /// trace log (`"GraphQL {label} response received"`) and has no effect on
+    /// behaviour.
+    ///
+    /// # Errors
+    ///
+    /// - Network failure, non-success HTTP, invalid JSON body.
+    /// - Any `errors[]` entry present in the response.
+    /// - Response with `data == null` (no recoverable information).
+    async fn post_graphql<B: Serialize + ?Sized, T: serde::de::DeserializeOwned>(
+        &self,
+        body: &B,
+        label: &str,
+    ) -> Result<T> {
         let response = self
             .http
             .post(GRAPHQL_URL)
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
             .header(ACCEPT, "application/vnd.github+json")
-            .json(&body)
+            .json(body)
             .send()
             .await
             .context("network error reaching GitHub GraphQL API")?;
@@ -363,17 +327,19 @@ impl Client {
         let status = response.status();
         check_http_status(status, response.headers())?;
 
-        let gql: RawDetailResponse =
+        let gql: GqlEnvelope<T> =
             response.json().await.context("failed to parse GitHub GraphQL response")?;
 
-        if let Some(errors) = gql.errors.as_ref()
+        debug!("GraphQL {label} response received (status {status})");
+
+        if let Some(errors) = gql.errors
             && !errors.is_empty()
         {
             let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
             anyhow::bail!("GitHub GraphQL errors: {}", messages.join("; "));
         }
 
-        Ok(gql)
+        gql.data.context("GitHub GraphQL response had no `data` field")
     }
 }
 

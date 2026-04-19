@@ -202,20 +202,18 @@ query ShowAllQuery {{
 
 // ── Raw GraphQL response types ────────────────────────────────────────────────
 
-/// Top-level GraphQL response envelope for the standard inbox query.
+/// Generic top-level GraphQL response envelope: `{ data: Option<T>, errors: … }`.
+///
+/// Used by [`crate::github::client::Client::post_graphql`] to deserialize any
+/// GraphQL response into its domain-specific inner shape while the transport-
+/// layer `data`/`errors` plumbing is handled once.
 #[derive(Debug, Deserialize)]
-pub struct GraphQlResponse {
-    pub data: Option<ResponseData>,
+pub(crate) struct GqlEnvelope<T> {
+    pub data: Option<T>,
     pub errors: Option<Vec<GraphQlError>>,
 }
 
-/// Top-level GraphQL response envelope for the show-all query.
-#[derive(Debug, Deserialize)]
-pub struct GraphQlResponseAll {
-    pub data: Option<ResponseDataAll>,
-    pub errors: Option<Vec<GraphQlError>>,
-}
-
+/// One `errors[]` entry from the GraphQL response.
 #[derive(Debug, Deserialize)]
 pub struct GraphQlError {
     pub message: String,
