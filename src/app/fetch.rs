@@ -364,39 +364,42 @@ impl App {
     /// * `repo`   - Repository slug.
     /// * `number` - PR/issue number.
     pub(super) fn restore_detail_kind(&mut self, kind: DetailKind, repo: String, number: u32) {
-        match kind {
-            DetailKind::Pr => {
-                if let Some(cached) = self.detail_cache.get_pr(&repo, number) {
-                    self.pr_detail = Some(cached.data.clone());
-                    let already_refreshing = self
-                        .detail_refreshing
-                        .as_ref()
-                        .is_some_and(|(r, n)| r == &repo && *n == number);
-                    if !cached.is_fresh() && !already_refreshing {
-                        self.detail_refreshing = Some((repo.clone(), number));
-                        if let Some(tx) = self.action_tx.clone() {
-                            self.spawn_detail_fetch_background(DetailKind::Pr, repo, number, tx);
-                        }
-                    }
-                } else if let Some(tx) = self.action_tx.clone() {
-                    self.spawn_detail_fetch(DetailKind::Pr, repo, number, tx);
+        // The kind-specific part: look up the cache, copy the cached data into
+        // the matching detail field, and report freshness. `None` means a
+        // cache miss; `Some(true)` fresh; `Some(false)` stale.
+        let is_fresh: Option<bool> = match kind {
+            DetailKind::Pr => self.detail_cache.get_pr(&repo, number).map(|c| {
+                let fresh = c.is_fresh();
+                let data = c.data.clone();
+                self.pr_detail = Some(data);
+                fresh
+            }),
+            DetailKind::Issue => self.detail_cache.get_issue(&repo, number).map(|c| {
+                let fresh = c.is_fresh();
+                let data = c.data.clone();
+                self.issue_detail = Some(data);
+                fresh
+            }),
+        };
+
+        // The shared part: SWR flow is identical for PR and issue.
+        match is_fresh {
+            None => {
+                if let Some(tx) = self.action_tx.clone() {
+                    self.spawn_detail_fetch(kind, repo, number, tx);
                 }
             }
-            DetailKind::Issue => {
-                if let Some(cached) = self.detail_cache.get_issue(&repo, number) {
-                    self.issue_detail = Some(cached.data.clone());
-                    let already_refreshing = self
-                        .detail_refreshing
-                        .as_ref()
-                        .is_some_and(|(r, n)| r == &repo && *n == number);
-                    if !cached.is_fresh() && !already_refreshing {
-                        self.detail_refreshing = Some((repo.clone(), number));
-                        if let Some(tx) = self.action_tx.clone() {
-                            self.spawn_detail_fetch_background(DetailKind::Issue, repo, number, tx);
-                        }
+            Some(true) => {} // cache hit + fresh: nothing more to do
+            Some(false) => {
+                let already_refreshing = self
+                    .detail_refreshing
+                    .as_ref()
+                    .is_some_and(|(r, n)| r == &repo && *n == number);
+                if !already_refreshing {
+                    self.detail_refreshing = Some((repo.clone(), number));
+                    if let Some(tx) = self.action_tx.clone() {
+                        self.spawn_detail_fetch_background(kind, repo, number, tx);
                     }
-                } else if let Some(tx) = self.action_tx.clone() {
-                    self.spawn_detail_fetch(DetailKind::Issue, repo, number, tx);
                 }
             }
         }
