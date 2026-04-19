@@ -503,7 +503,7 @@ pub(super) fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
         })
         .collect();
     // Sort by updated_at descending for a stable, predictable order.
-    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    prs.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
 
     // Issues.
     let mut issues: Vec<Issue> = data
@@ -515,7 +515,7 @@ pub(super) fn to_inbox(viewer_login: String, data: ResponseData) -> Inbox {
             if let SearchNode::Issue(raw) = node { Some(raw_issue_to_domain(raw)) } else { None }
         })
         .collect();
-    issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
 
     Inbox { viewer_login, prs, issues }
 }
@@ -563,7 +563,7 @@ pub(super) fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox
             pr
         })
         .collect();
-    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    prs.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
 
     let mut issues: Vec<Issue> = data
         .all_issues
@@ -574,7 +574,7 @@ pub(super) fn to_inbox_all(viewer_login: String, data: ResponseDataAll) -> Inbox
             if let SearchNode::Issue(raw) = node { Some(raw_issue_to_domain(raw)) } else { None }
         })
         .collect();
-    issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    issues.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
 
     Inbox { viewer_login, prs, issues }
 }

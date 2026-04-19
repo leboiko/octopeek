@@ -392,12 +392,14 @@ fn fair_share_widths(natural_widths: &[usize], num_cols: usize, target: usize) -
     let total_excess: usize = naturals.iter().zip(&mins).map(|(&n, &m)| n.saturating_sub(m)).sum();
 
     let mut widths = mins.clone();
-    if total_excess > 0 {
-        for (i, (&natural, &min)) in naturals.iter().zip(&mins).enumerate() {
-            let excess = natural.saturating_sub(min);
-            let extra = (excess * remaining) / total_excess;
-            widths[i] = (min + extra).min(natural);
-        }
+    for (i, (&natural, &min)) in naturals.iter().zip(&mins).enumerate() {
+        let excess = natural.saturating_sub(min);
+        // `checked_div` returns `None` when `total_excess == 0`, i.e. every
+        // column already sits at its natural width. In that case no extra
+        // space is distributed — same behaviour as the previous
+        // `if total_excess > 0` guard.
+        let extra = (excess * remaining).checked_div(total_excess).unwrap_or(0);
+        widths[i] = (min + extra).min(natural);
     }
     widths
 }

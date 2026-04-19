@@ -627,41 +627,35 @@ impl App {
             KeyCode::Esc => {
                 self.close_repo_picker();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if repo_count > 0 {
-                    self.repo_picker_list_cursor =
-                        (self.repo_picker_list_cursor + 1).min(repo_count - 1);
-                }
+            KeyCode::Char('j') | KeyCode::Down if repo_count > 0 => {
+                self.repo_picker_list_cursor =
+                    (self.repo_picker_list_cursor + 1).min(repo_count - 1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.repo_picker_list_cursor = self.repo_picker_list_cursor.saturating_sub(1);
             }
-            KeyCode::Char('d') | KeyCode::Backspace => {
-                if !self.config.repos.is_empty() {
-                    let idx = self.repo_picker_list_cursor.min(repo_count - 1);
-                    self.config.repos.remove(idx);
-                    self.config.save();
-                    // Clamp cursor after removal.
-                    let new_len = self.config.repos.len();
-                    if new_len > 0 && self.repo_picker_list_cursor >= new_len {
-                        self.repo_picker_list_cursor = new_len - 1;
-                    } else if new_len == 0 {
-                        self.repo_picker_list_cursor = 0;
-                    }
-                    self.sync_tabs_to_config();
+            KeyCode::Char('d') | KeyCode::Backspace if !self.config.repos.is_empty() => {
+                let idx = self.repo_picker_list_cursor.min(repo_count - 1);
+                self.config.repos.remove(idx);
+                self.config.save();
+                // Clamp cursor after removal.
+                let new_len = self.config.repos.len();
+                if new_len > 0 && self.repo_picker_list_cursor >= new_len {
+                    self.repo_picker_list_cursor = new_len - 1;
+                } else if new_len == 0 {
+                    self.repo_picker_list_cursor = 0;
                 }
+                self.sync_tabs_to_config();
             }
             KeyCode::Char('a' | 'i') => {
                 self.repo_picker_mode = RepoPickerMode::Input;
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if repo_count > 0 => {
                 // Focus the selected repo's tab and close the picker.
-                if repo_count > 0 {
-                    let idx = self.repo_picker_list_cursor.min(repo_count - 1);
-                    let repo = self.config.repos[idx].clone();
-                    self.tabs.open_or_focus(&repo);
-                    self.close_repo_picker();
-                }
+                let idx = self.repo_picker_list_cursor.min(repo_count - 1);
+                let repo = self.config.repos[idx].clone();
+                self.tabs.open_or_focus(&repo);
+                self.close_repo_picker();
             }
             _ => {}
         }

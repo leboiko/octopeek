@@ -72,7 +72,7 @@ pub(super) fn build_files_overview(
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     // Sort by magnitude descending — same order as the sidebar files list.
     let mut sorted: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
-    sorted.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+    sorted.sort_by_key(|f| std::cmp::Reverse(f.additions + f.deletions));
 
     let cursor = files_cursor.min(sorted.len().saturating_sub(1));
     let mut lines = Vec::with_capacity(sorted.len() + 1);
@@ -186,7 +186,7 @@ pub(super) fn sidebar_file_lines(
     p: &Palette,
 ) -> Vec<Line<'static>> {
     let mut sorted_files: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
-    sorted_files.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+    sorted_files.sort_by_key(|f| std::cmp::Reverse(f.additions + f.deletions));
 
     let mut lines = Vec::with_capacity(sorted_files.len());
 

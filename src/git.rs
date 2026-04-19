@@ -37,8 +37,7 @@ pub fn repo_cwd_is_git() -> bool {
     Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Return `true` when the working tree has no uncommitted changes.
