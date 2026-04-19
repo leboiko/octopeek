@@ -242,22 +242,35 @@ impl App {
     }
 
     /// Clamp the active section's scroll offset so it can never exceed
-    /// `content_height - viewport_height`.
+    /// `rendered_rows - viewport_height`.
     ///
     /// Without this, `G`, `d`, or the scroll wheel past the last line leaves
     /// the scroll counter pointing into the void — the renderer shows a blank
     /// screen and the user has to press `k` many times to recover.
+    ///
+    /// The row count must be the **wrapped** (rendered) row count, not the
+    /// input line count — `ratatui::widgets::Paragraph` with `Wrap` expands
+    /// long lines into multiple rows, and clamping against the unwrapped
+    /// length leaves the tail of a wrapped comment unreachable. We build a
+    /// throwaway `Paragraph` at the current viewport width and ask for
+    /// `line_count`, which walks the same word-wrapper the renderer uses.
     pub(super) fn clamp_pr_detail_scroll(&mut self) {
         if !matches!(self.focus, Focus::Detail) {
             return;
         }
         let area = self.pr_detail_right_viewport.get();
-        if area.height == 0 {
+        if area.height == 0 || area.width == 0 {
             return;
         }
         let lines = self.current_detail_lines();
-        let content_len = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-        let max_scroll = content_len.saturating_sub(area.height);
+        // Mirror the `Wrap { trim: false }` used by the PR-detail and
+        // issue-detail renderers. Passing a `Block` would add padding / border
+        // rows; `area` is already the inner rect set by the renderer, so the
+        // bare Paragraph matches the actual render.
+        let probe = ratatui::widgets::Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false });
+        let rendered_rows = u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX);
+        let max_scroll = rendered_rows.saturating_sub(area.height);
         // Route through `right_pane_scroll_mut` so we clamp whichever map
         // currently owns the right-pane scroll — the per-section map for
         // Description/Checks/Reviews/Comments, or the per-file diff map for

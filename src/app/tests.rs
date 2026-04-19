@@ -1766,6 +1766,47 @@ fn shift_j_k_do_not_cycle_outside_files_section() {
     assert_eq!(app.pr_detail_files_cursor, 2, "J outside Files must not move cursor");
 }
 
+/// Wrap-aware scroll clamp: a single very long line wraps into many
+/// rendered rows, and the clamp must use the wrapped row count so the last
+/// rendered row is always reachable.
+///
+/// Regression guard for a latent bug that became visible after the sidebar
+/// narrowed the right-pane viewport: `clamp_pr_detail_scroll` counted
+/// unwrapped input lines, so when a line wrapped, the tail fell beyond
+/// `max_scroll` and the user could not scroll to it.
+#[test]
+fn scroll_clamp_accounts_for_line_wrap() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    // A PR whose body is one 500-char line — guaranteed to wrap in a
+    // 40-column viewport to at least 12 rendered rows.
+    let mut detail = fixture_pr_detail(0, 0, 0, 0);
+    detail.body_markdown = "x ".repeat(250); // 500 chars of alternating x/space
+    app.pr_detail = Some(detail);
+    app.pr_detail_selected_section = crate::ui::pr_detail::DetailSection::Description;
+
+    // Narrow viewport forces aggressive wrapping. Height 5 rows, width 40.
+    app.pr_detail_right_viewport.set(ratatui::layout::Rect::new(0, 0, 40, 5));
+
+    // Smash the scroll past anything reasonable so the clamp pulls it back
+    // to the true max.
+    *app.right_pane_scroll_mut() = u16::MAX;
+    app.clamp_pr_detail_scroll();
+
+    // The clamped scroll must be > 0 — the buggy version returned 0 because
+    // the single-line body counted as 1 input row, and `1 - 5` saturated to
+    // zero. A wrapped count yields > 5 rendered rows, so max_scroll > 0.
+    assert!(
+        app.right_pane_scroll() > 0,
+        "wrap-aware clamp must allow scrolling into wrapped content; got {}",
+        app.right_pane_scroll()
+    );
+}
+
 /// Scroll in the Files section is clamped to the diff's actual length.
 /// Regression guard for the bug where `clamp_pr_detail_scroll` operated
 /// on `pr_detail_scroll[Files]` while the active offset lived in

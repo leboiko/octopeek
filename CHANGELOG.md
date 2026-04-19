@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-04-19
+
+### Fixed
+
+- Scroll clamp in the PR / issue detail view now counts **wrapped**
+  rendered rows, not input lines. A long comment — or any body longer
+  than the right-pane width — previously left its tail below the
+  viewport floor with no way to scroll to it. The bug was latent from
+  the original clamp in 82f8719; it became visible once the sidebar
+  landed (a76aab6) and narrowed the right pane, triggering more
+  aggressive word-wrap.
+
+### Internal
+
+- Opt into the `ratatui` `unstable-rendered-line-info` feature so we
+  can call `Paragraph::line_count(width)`. Feature name is stable;
+  only the function signature is subject to change. Tracked upstream
+  at https://github.com/ratatui/ratatui/issues/293.
+- New regression test `scroll_clamp_accounts_for_line_wrap` asserts a
+  single 500-char body line in a 40-column viewport produces a
+  non-zero `max_scroll`.
+
 ## [0.1.0] — 2026-04-19
 
 First public release on crates.io. Install with `cargo install octopeek`.
@@ -77,6 +99,7 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/leboiko/octopeek/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/leboiko/octopeek/releases/tag/v0.1.0
 
