@@ -145,7 +145,7 @@ impl Client {
     ///
     /// Unlike [`Self::fetch_inbox`], this query is not scoped to `@me`; it
     /// returns all open items for each tracked repo so the user gets a
-    /// full-team view. Roles on the returned [`PullRequest`] values are derived
+    /// full-team view. Roles on the returned [`crate::github::types::PullRequest`] values are derived
     /// from author / review-request fields — see [`super::query::to_inbox_all`]
     /// for the exact derivation logic.
     ///
@@ -365,7 +365,7 @@ impl Client {
 
 // ── Module-level helpers ──────────────────────────────────────────────────────
 
-/// Merge REST-fetched patches into a slice of [`FileChange`] values in-place.
+/// Merge REST-fetched patches into a slice of [`crate::github::detail::FileChange`] values in-place.
 ///
 /// Looks up each file's `path` in `patch_map` and writes the associated patch
 /// (which may itself be `None` for binary / oversized files) into

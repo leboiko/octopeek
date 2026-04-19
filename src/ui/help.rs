@@ -53,6 +53,20 @@ pub fn draw(f: &mut Frame, app: &App) {
         shortcut("c", "Open theme picker", key_style, desc_style),
         shortcut("p", "Open repo picker", key_style, desc_style),
         Line::from(""),
+        Line::from(Span::styled("── First-run setup ──────────────────────────", dim_style)),
+        Line::from(Span::styled(
+            "  A welcome wizard auto-opens on first launch (empty config)",
+            Style::default().fg(p.dim),
+        )),
+        Line::from(Span::styled(
+            "  and lists repos you're active in. Use Space + Enter there,",
+            Style::default().fg(p.dim),
+        )),
+        Line::from(Span::styled(
+            "  or press `p` any time to add / remove repos by hand.",
+            Style::default().fg(p.dim),
+        )),
+        Line::from(""),
         Line::from(Span::styled("── PR Detail Sections ───────────────────────", dim_style)),
         shortcut("! (Shift+1)", "Description section", key_style, desc_style),
         shortcut("@ (Shift+2)", "Checks section", key_style, desc_style),
