@@ -291,6 +291,12 @@ impl App {
             }
         };
 
+        // Snapshot the sidebar persistence fields before `session` is moved
+        // into `Self`; the clamp mirrors the key handler so a malformed or
+        // hand-edited state file can't produce a 3-column or 500-column bar.
+        let sidebar_width_from_session = session.sidebar_width.clamp(20, 60);
+        let sidebar_hidden_from_session = session.sidebar_hidden;
+
         Self {
             config,
             session,
@@ -323,8 +329,12 @@ impl App {
             pr_detail_selected_section: DetailSection::default(),
             pr_detail_files_cursor: 0,
             pr_detail_files_show_diff: false,
-            sidebar_width: 28,
-            sidebar_hidden: false,
+            // Sidebar width / hidden restored from the persisted session so
+            // `[`/`]` tweaks and the `\` toggle survive a relaunch. Clamp
+            // the width here as a defensive measure against hand-edited
+            // state files; the key handler clamps live edits separately.
+            sidebar_width: sidebar_width_from_session,
+            sidebar_hidden: sidebar_hidden_from_session,
             pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
             copy_mode: crate::ui::copy_mode::CopyMode::default(),
@@ -461,8 +471,11 @@ impl App {
             handle.abort();
         }
 
-        // Persist the session so the active tab index survives a relaunch.
+        // Persist the session so the active tab index, sidebar width, and
+        // sidebar visibility all survive a relaunch.
         self.session.active_tab_index = self.tabs.active_index().unwrap_or(0);
+        self.session.sidebar_width = self.sidebar_width;
+        self.session.sidebar_hidden = self.sidebar_hidden;
         self.session.save();
 
         Ok(())

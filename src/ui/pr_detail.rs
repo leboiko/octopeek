@@ -1263,9 +1263,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.config.show_ascii_glyphs,
     );
 
+    // Widen the left padding by one column when the sidebar is hidden so the
+    // `›` affordance has its own cell and doesn't overlap the first char of
+    // scrolled content.
+    let left_padding = if app.sidebar_hidden { 3 } else { 2 };
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
-        .padding(Padding::new(2, 2, 0, 0));
+        .padding(Padding::new(left_padding, 2, 0, 0));
     let inner = block.inner(right_area);
 
     // Cache the right-pane inner rect for copy-mode and mouse coordinate mapping.

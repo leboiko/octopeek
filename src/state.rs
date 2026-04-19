@@ -56,29 +56,60 @@ pub enum ViewMode {
     Issues,
 }
 
+/// Default sidebar width (cells) when nothing has been saved yet.
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 28;
+
+fn default_sidebar_width() -> u16 {
+    DEFAULT_SIDEBAR_WIDTH
+}
+
 /// Full persisted session for the application.
 ///
 /// Deserialized via [`SessionCompat`] for backwards-compatibility if the
 /// schema evolves in a future release.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(from = "SessionCompat")]
 pub struct AppSession {
     /// 0-based index of the active tab.
     pub active_tab_index: usize,
     /// Per-repo view mode, keyed by `owner/name` repo slug.
     pub per_repo_view: HashMap<String, ViewMode>,
+    /// Last sidebar width (cells) in the PR detail view. Persisted so
+    /// `[`/`]` adjustments survive relaunch.
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u16,
+    /// Whether the PR detail sidebar was hidden on last exit.
+    #[serde(default)]
+    pub sidebar_hidden: bool,
 }
 
-/// Untagged union that handles both the current format and any future
-/// simplified format.
+impl Default for AppSession {
+    fn default() -> Self {
+        Self {
+            active_tab_index: 0,
+            per_repo_view: HashMap::new(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_hidden: false,
+        }
+    }
+}
+
+/// Untagged union that handles the current format plus older on-disk shapes.
 ///
-/// Serde discriminates variants by structural matching (the `active_tab_index`
-/// key is authoritative for the current `New` variant).
+/// Serde tries variants top-to-bottom; the richest match wins. New fields
+/// default when absent so state files written by older builds still load.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum SessionCompat {
-    /// Current format — includes `active_tab_index` and `per_repo_view`.
-    New { active_tab_index: usize, per_repo_view: HashMap<String, ViewMode> },
+    /// Current format — everything we know how to persist.
+    New {
+        active_tab_index: usize,
+        per_repo_view: HashMap<String, ViewMode>,
+        #[serde(default = "default_sidebar_width")]
+        sidebar_width: u16,
+        #[serde(default)]
+        sidebar_hidden: bool,
+    },
     /// Legacy fallback: any unknown object shape maps to defaults.
     Legacy {},
 }
@@ -86,9 +117,12 @@ enum SessionCompat {
 impl From<SessionCompat> for AppSession {
     fn from(v: SessionCompat) -> Self {
         match v {
-            SessionCompat::New { active_tab_index, per_repo_view } => {
-                Self { active_tab_index, per_repo_view }
-            }
+            SessionCompat::New {
+                active_tab_index,
+                per_repo_view,
+                sidebar_width,
+                sidebar_hidden,
+            } => Self { active_tab_index, per_repo_view, sidebar_width, sidebar_hidden },
             SessionCompat::Legacy {} => Self::default(),
         }
     }
@@ -191,6 +225,32 @@ mod tests {
         let mut session = AppSession::default();
         session.per_repo_view.insert("octocat/Hello-World".to_owned(), ViewMode::Issues);
         assert_eq!(session.view_mode("octocat/Hello-World"), ViewMode::Issues,);
+    }
+
+    /// An older state.toml without `sidebar_width` / `sidebar_hidden` must
+    /// still load, with the new fields taking their defaults.
+    #[test]
+    fn legacy_session_without_sidebar_fields_loads_with_defaults() {
+        let toml_str = "active_tab_index = 0\n[per_repo_view]\n";
+        let session: AppSession = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(session.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
+        assert!(!session.sidebar_hidden);
+    }
+
+    /// Round-trip a session carrying non-default sidebar state.
+    #[test]
+    fn session_sidebar_state_round_trips() {
+        let session = AppSession {
+            sidebar_width: 42,
+            sidebar_hidden: true,
+            ..AppSession::default()
+        };
+
+        let serialized = toml::to_string_pretty(&session).expect("serialize");
+        let restored: AppSession = toml::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(restored.sidebar_width, 42);
+        assert!(restored.sidebar_hidden);
     }
 
     #[test]
