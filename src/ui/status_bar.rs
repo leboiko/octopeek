@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
             "h/j/k/l move  0/$ line ends  V select  y yank  Y yank line  Esc exit"
         }
         Focus::Detail => {
-            "!@#$%^ sections  ^ commits  Enter scope  F files  J/K file  j/k scroll  v copy  Esc back"
+            "!@#$%^ sections  ^/ˆ commits  Enter opens commit diff  J/K file  j/k scroll  v copy  Esc"
         }
         Focus::RepoPicker => "j/k nav  a add  d delete  Enter select  Esc close",
         Focus::Help => "? / Esc / q close help",

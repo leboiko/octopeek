@@ -317,22 +317,35 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // above for the indicator strip.
     let comments_scope_sha: Option<&str> = scoped_commit.map(|c| c.sha.as_str());
 
-    let (content_lines, alt_bg_ranges) = build_section(
-        selected_section,
-        detail,
-        app.pr_detail_files_cursor,
-        app.pr_detail_files_show_diff,
-        app.detail_comments_expanded,
-        app.detail_show_outdated,
-        app.thread_index.as_ref(),
-        &app.pr_detail_expanded_threads,
-        &app.pr_detail_diff_cursor,
-        scoped_patches,
-        app.commits_cursor,
-        comments_scope_sha,
-        p,
-        app.config.show_ascii_glyphs,
-    );
+    let commit_scope_pending = selected_section == DetailSection::Files
+        && scoped_commit.is_some()
+        && scoped_patches.is_none();
+    let (content_lines, alt_bg_ranges) = if commit_scope_pending {
+        (
+            vec![Line::from(Span::styled(
+                "Fetching commit diff...".to_owned(),
+                Style::default().fg(p.dim),
+            ))],
+            Vec::new(),
+        )
+    } else {
+        build_section(
+            selected_section,
+            detail,
+            app.pr_detail_files_cursor,
+            app.pr_detail_files_show_diff,
+            app.detail_comments_expanded,
+            app.detail_show_outdated,
+            app.thread_index.as_ref(),
+            &app.pr_detail_expanded_threads,
+            &app.pr_detail_diff_cursor,
+            scoped_patches,
+            app.commits_cursor,
+            comments_scope_sha,
+            p,
+            app.config.show_ascii_glyphs,
+        )
+    };
 
     let left_padding = if app.sidebar_hidden { 3 } else { 2 };
     let block = Block::default()

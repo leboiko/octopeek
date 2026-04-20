@@ -16,7 +16,9 @@ fn detail_section_shortcut(key: crossterm::event::KeyEvent) -> Option<(DetailSec
         KeyCode::Char('#') => DetailSection::Reviews,
         KeyCode::Char('$') => DetailSection::Files,
         KeyCode::Char('%') => DetailSection::Comments,
-        KeyCode::Char('^') => DetailSection::Commits,
+        // Some keyboard layouts emit U+02C6 (`ˆ`) for Shift+6 instead of
+        // ASCII caret (`^`). Treat both as the Commits shortcut.
+        KeyCode::Char('^' | 'ˆ') => DetailSection::Commits,
         KeyCode::Char(ch @ '1'..='6') if key.modifiers == KeyModifiers::SHIFT => {
             let idx = (ch as usize) - ('1' as usize);
             DetailSection::ALL[idx]
@@ -376,6 +378,13 @@ impl App {
             }
             KeyCode::Enter if self.pr_detail_selected_section == DetailSection::Commits => {
                 self.detail_pending_g = false;
+                let Some(detail) = self.pr_detail.as_ref() else {
+                    return;
+                };
+                if detail.commits.get(self.commits_cursor).is_none() {
+                    return;
+                }
+
                 // Scope the Files section to the highlighted commit's delta.
                 // Intentionally clear thread expansion and diff cursor state
                 // when switching scope — threads are anchored to HEAD-view line
@@ -383,6 +392,10 @@ impl App {
                 self.pr_detail_expanded_threads.clear();
                 *self.pr_detail_diff_cursor.borrow_mut() = None;
                 self.selected_commit = Some(self.commits_cursor);
+                self.pr_detail_selected_section = DetailSection::Files;
+                self.pr_detail_files_show_diff = true;
+                self.pr_detail_files_cursor = 0;
+                self.copy_mode.h_scroll = 0;
 
                 // Kick a background fetch for the commit's patch if not cached.
                 // Collect what we need before calling the spawn helper (which

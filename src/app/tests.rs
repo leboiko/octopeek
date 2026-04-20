@@ -1651,6 +1651,23 @@ fn shift_digit_variants_select_sections() {
     }
 }
 
+/// Some keyboard layouts emit U+02C6 (`ˆ`) for Shift+6 instead of
+/// ASCII caret (`^`). That should still select Commits.
+#[test]
+fn modifier_circumflex_selects_commits_section() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('ˆ'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+}
+
 /// Some terminals/layouts emit typed punctuation such as `@` or `#` with
 /// Alt/AltGr modifiers attached. The detail section picker should honor the
 /// character that arrived instead of swallowing it in the modifier filter.
@@ -2379,6 +2396,13 @@ fn scope_to_commit_clears_thread_state() {
     ));
 
     assert_eq!(app.selected_commit, Some(1), "selected_commit must be set to commits_cursor");
+    assert_eq!(
+        app.pr_detail_selected_section,
+        DetailSection::Files,
+        "Enter on a commit should open the Files section"
+    );
+    assert!(app.pr_detail_files_show_diff, "Enter on a commit should open diff mode");
+    assert_eq!(app.pr_detail_files_cursor, 0, "commit diff starts at first touched file");
     assert!(
         app.pr_detail_expanded_threads.is_empty(),
         "expanded_threads must be cleared when scoping"

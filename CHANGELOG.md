@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-04-20
+
+Patch release for commit-navigation ergonomics on non-US keyboards.
+
+### Fixed
+
+- `Shift+6` now accepts both ASCII `^` and the `ˆ` character emitted by some
+  keyboard layouts, so the Commits section shortcut works with those terminals.
+- Pressing `Enter` on a commit now scopes the commit and immediately opens the
+  Files diff view for that commit. Previously it scoped the commit but left the
+  user on the Commits list, which made it look like nothing useful happened.
+- While a per-commit diff is still being fetched, the Files section now shows a
+  loading placeholder instead of temporarily rendering the cumulative HEAD diff
+  under a scoped banner.
+
+### Tests
+
+282 pass: added coverage for the `ˆ` Commits shortcut and the commit-Enter
+state transition into Files diff mode.
+
 ## [0.2.3] — 2026-04-20
 
 Patch release for PR-detail keyboard regressions found after the
@@ -647,7 +667,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/leboiko/octopeek/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/leboiko/octopeek/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/leboiko/octopeek/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/leboiko/octopeek/compare/v0.2.0...v0.2.1

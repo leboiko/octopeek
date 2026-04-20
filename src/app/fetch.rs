@@ -227,6 +227,15 @@ impl App {
             let comments_scope_sha: Option<&str> = self
                 .selected_commit
                 .and_then(|idx| detail.commits.get(idx).map(|c| c.sha.as_str()));
+            if self.pr_detail_selected_section == crate::ui::pr_detail::DetailSection::Files
+                && self.selected_commit.is_some()
+                && scoped_patches.is_none()
+            {
+                return vec![ratatui::text::Line::from(ratatui::text::Span::styled(
+                    "Fetching commit diff...".to_owned(),
+                    ratatui::style::Style::default().fg(self.palette.dim),
+                ))];
+            }
             let (lines, _) = crate::ui::pr_detail::build_section(
                 self.pr_detail_selected_section,
                 detail,
