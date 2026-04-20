@@ -7,7 +7,13 @@ version = 2
 # advisories (e.g. API deprecation) as warnings rather than errors so they
 # don't immediately block releases.
 yanked = "deny"
-ignore = []
+ignore = [
+    # yaml-rust is unmaintained but only used at syntect build time to parse
+    # the bundled syntax YAML files — no runtime YAML parsing of user input.
+    # Re-evaluate when syntect 6 ships a maintained replacement.
+    "RUSTSEC-2024-0320",
+    "RUSTSEC-2025-0141",
+]
 
 [licenses]
 version = 2
@@ -20,6 +26,8 @@ allow = [
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",              # clipboard-win, error-code (transitive via arboard on Windows)
+    "CDLA-Permissive-2.0",  # webpki-root-certs (transitive via reqwest/rustls)
     "ISC",
     "Unicode-3.0",
     "Unicode-DFS-2016",
