@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-04-20
+
+### Fixed
+
+- Entering copy mode (`v`) in the PR or issue detail view no
+  longer collapses each logical line to a single display row. The
+  copy-mode paragraph was being built without `Wrap`, trading the
+  word-wrapper for a horizontal-scroll + stable-coordinate design;
+  in practice that turned long rendered comments into what looked
+  like 1-liners the moment selection was entered. Wrap is now on
+  for both normal and copy-mode branches. `copy_mode::apply_overlay`
+  still runs before the word-wrapper, so highlighted characters
+  follow the wrap onto whichever rendered row they end up on.
+
+### Internal
+
+- Collapse the two branches of the final `Paragraph` build in
+  `pr_detail::draw` and `issue_detail::draw` into one shared widget
+  with a conditional line-transformation up front. Eliminates a
+  small divergence between the two render paths.
+
 ## [0.1.2] — 2026-04-19
 
 ### Fixed
@@ -129,7 +150,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/leboiko/octopeek/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/leboiko/octopeek/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/leboiko/octopeek/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/leboiko/octopeek/releases/tag/v0.1.0

@@ -255,19 +255,21 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // the issue view, consistent with the PR detail's per-section map.
     let scroll = app.scroll_for(crate::ui::pr_detail::DetailSection::Description);
 
-    let widget = if app.copy_mode.active {
-        let overlaid = crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p);
-        Paragraph::new(overlaid)
-            .block(block)
-            .style(Style::default().bg(p.background).fg(p.foreground))
-            .scroll((scroll, app.copy_mode.h_scroll))
+    // See the matching block in `ui::pr_detail::mod::draw`: wrap stays on
+    // in copy mode so long comment bodies don't collapse to one row each
+    // when the user presses `v`. The selection overlay is applied before
+    // the Paragraph's word-wrapper runs, so highlighted characters follow
+    // the wrap.
+    let lines_to_render = if app.copy_mode.active {
+        crate::ui::copy_mode::apply_overlay(&content_lines, &app.copy_mode, p)
     } else {
-        Paragraph::new(content_lines)
-            .block(block)
-            .style(Style::default().bg(p.background).fg(p.foreground))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0))
+        content_lines
     };
+    let widget = Paragraph::new(lines_to_render)
+        .block(block)
+        .style(Style::default().bg(p.background).fg(p.foreground))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
 
     f.render_widget(widget, body_area);
 }

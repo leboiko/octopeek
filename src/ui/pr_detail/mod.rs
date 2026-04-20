@@ -294,19 +294,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let widget = if app.copy_mode.active {
-        let overlaid = crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p);
-        Paragraph::new(overlaid)
-            .block(block)
-            .style(Style::default().bg(p.background).fg(p.foreground))
-            .scroll((scroll, app.copy_mode.h_scroll))
+    // Copy mode and normal mode share the same Paragraph shape — wrap and
+    // all. The only difference is that copy mode runs `apply_overlay` over
+    // the tinted lines to draw the selection highlight. Keeping wrap on in
+    // both paths means entering copy mode no longer reflows long comments
+    // down to a single row each: a 20-line rendered comment stays 20 lines
+    // visible. The overlay is applied before wrap, so highlighted
+    // characters follow the word-wrapper into whichever row they land on.
+    let lines_to_render = if app.copy_mode.active {
+        crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p)
     } else {
-        Paragraph::new(tinted_lines)
-            .block(block)
-            .style(Style::default().bg(p.background).fg(p.foreground))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0))
+        tinted_lines
     };
+    let widget = Paragraph::new(lines_to_render)
+        .block(block)
+        .style(Style::default().bg(p.background).fg(p.foreground))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
 
     f.render_widget(widget, right_area);
 }
