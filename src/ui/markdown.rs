@@ -39,6 +39,21 @@ static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 // ── Internal builder types ────────────────────────────────────────────────────
 
+/// Determines where an `Event::Text` payload should be routed.
+///
+/// Computed once per `Event::Text` via [`Builder::text_sink`] and matched
+/// exhaustively, so adding a fourth context forces a compile error that
+/// surfaces both `text_sink()` and the `Event::Text` arm simultaneously.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextSink {
+    /// Ordinary paragraph / heading / blockquote / list-item inline text.
+    Inline,
+    /// Text inside a fenced (or indented) code block — buffered for syntect.
+    CodeBlock,
+    /// Text inside a GFM table cell — collected into `table_cell_spans`.
+    TableCell,
+}
+
 /// Accumulated text and style for a single inline run within a line.
 struct InlineSpan {
     text: String,
@@ -107,6 +122,23 @@ impl<'p> Builder<'p> {
             table_current_row: Vec::new(),
             table_header_row: None,
             table_body_rows: Vec::new(),
+        }
+    }
+
+    // ── Text routing ─────────────────────────────────────────────────────────
+
+    /// Compute where the current `Event::Text` payload should be routed.
+    ///
+    /// Priority mirrors the original if-chain in `handle_event`:
+    /// a fenced-code-block context takes precedence over a table context
+    /// (though pulldown-cmark never emits `Text` inside both simultaneously).
+    fn text_sink(&self) -> TextSink {
+        if self.code_block_lang.is_some() {
+            TextSink::CodeBlock
+        } else if self.in_table {
+            TextSink::TableCell
+        } else {
+            TextSink::Inline
         }
     }
 
@@ -796,6 +828,13 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
         }
 
         // ── Inline code ───────────────────────────────────────────────────
+        //
+        // `Event::Code` has only two possible contexts (inline vs table cell)
+        // because pulldown-cmark never emits a `Code` event inside a fenced
+        // code block — those tokens arrive via `Event::Text` while
+        // `code_block_lang.is_some()`. Cross-reference: `Event::Text`
+        // dispatches via `TextSink` (three variants); if a third context is
+        // ever needed here, update BOTH arms and extend `TextSink` accordingly.
         Event::Code(text) => {
             let style = Style::default().fg(palette.inline_code).bg(palette.code_bg);
             if b.in_table {
@@ -806,15 +845,24 @@ fn handle_event(event: Event<'_>, b: &mut Builder<'_>, palette: &Palette) {
         }
 
         // ── Text content ──────────────────────────────────────────────────
+        //
+        // `Event::Text` dispatches via `TextSink` (three variants); `Event::Code`
+        // has only two possible contexts (inline vs table cell) because inline
+        // code events are never emitted inside a fenced code block. If a third
+        // context is ever added to `Event::Code`, update BOTH arms.
         Event::Text(text) => {
-            if b.code_block_lang.is_some() {
-                b.code_block_buf.push_str(&text);
-            } else if b.in_table {
-                // Capture cell content with whatever style is active from
-                // Strong/Emphasis/Link/etc. wrapping tags.
-                b.table_cell_spans.push(Span::styled(text.to_string(), b.current_style()));
-            } else {
-                b.push_text(&text);
+            match b.text_sink() {
+                TextSink::CodeBlock => {
+                    b.code_block_buf.push_str(&text);
+                }
+                TextSink::TableCell => {
+                    // Capture cell content with whatever style is active from
+                    // Strong/Emphasis/Link/etc. wrapping tags.
+                    b.table_cell_spans.push(Span::styled(text.to_string(), b.current_style()));
+                }
+                TextSink::Inline => {
+                    b.push_text(&text);
+                }
             }
         }
 
@@ -1210,5 +1258,135 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .any(|s| s.content == "code" && s.style.bg == Some(p.code_bg));
         assert!(has_code, "inline-code cell lost its code_bg style");
+    }
+
+    // ── TextSink snapshot tests (Step 1) ──────────────────────────────────────
+    //
+    // These lock current behaviour for the three text-routing contexts before
+    // the TextSink enum refactor is applied. Assertions are aggregate/structural
+    // (not literal Vec<Line> comparisons) so they stay green across minor
+    // palette tweaks while still catching routing regressions.
+
+    /// Snapshot: inline paragraph with bold, inline code, and a link.
+    ///
+    /// Verifies that each inline context (plain text, bold span, inline code,
+    /// link) produces the expected spans and styles via the existing if-chain.
+    #[test]
+    fn text_sink_snapshot_inline_paragraph() {
+        let src = "Normal **bold** `code` and [link](https://example.com) text.";
+        let p = palette();
+        let lines = render_markdown(src, &p);
+
+        // The whole paragraph is one logical line (no hard breaks).
+        let non_empty: Vec<_> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
+        assert_eq!(
+            non_empty.len(),
+            1,
+            "expected exactly 1 non-empty line, got {}",
+            non_empty.len()
+        );
+
+        // All span text concatenated must contain every input word.
+        let all_text: String = non_empty[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        for word in ["Normal", "bold", "code", "link", "text"] {
+            assert!(all_text.contains(word), "missing word {word:?} in: {all_text:?}");
+        }
+
+        // At least one bold span.
+        let bold_count = non_empty[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .count();
+        assert!(bold_count >= 1, "expected at least 1 bold span, got {bold_count}");
+
+        // Exactly one inline-code span (palette.inline_code fg).
+        let inline_code_count =
+            non_empty[0].spans.iter().filter(|s| s.style.fg == Some(p.inline_code)).count();
+        assert_eq!(inline_code_count, 1, "expected 1 inline-code span, got {inline_code_count}");
+    }
+
+    /// Snapshot: triple-backtick-fenced Rust block with 3 source lines.
+    ///
+    /// Verifies that (a) the rendered line count matches the source lines,
+    /// (b) every content span carries a non-None fg (syntect applied colour),
+    /// and (c) the raw language tag "rust" does not leak into rendered text.
+    #[test]
+    fn text_sink_snapshot_fenced_code_block() {
+        let src = "```rust\nlet x = 1;\nlet y = 2;\nlet z = x + y;\n```\n";
+        let lines = render_markdown(src, &palette());
+
+        // Three source lines → three non-empty rendered lines
+        // (blank lines between/after blocks are also emitted, so filter them).
+        let content_lines: Vec<_> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
+        assert_eq!(
+            content_lines.len(),
+            3,
+            "expected 3 code content lines, got {}; lines: {content_lines:?}",
+            content_lines.len()
+        );
+
+        // Every span on code-content lines must have a fg colour (syntect was applied).
+        for (i, line) in content_lines.iter().enumerate() {
+            for span in &line.spans {
+                assert!(
+                    span.style.fg.is_some(),
+                    "code line {i} has a span with no fg colour: {span:?}"
+                );
+            }
+        }
+
+        // The raw language tag must not appear verbatim in the rendered output.
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        // "rust" might appear inside code (e.g. variable names), but the tag
+        // line itself renders as nothing — there should be no standalone "rust"
+        // on a line by itself (the lang line is consumed, not emitted).
+        let rust_only_line = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.trim() == "rust"
+        });
+        assert!(
+            !rust_only_line,
+            "language tag 'rust' leaked as a standalone line in: {all_text:?}"
+        );
+    }
+
+    /// Snapshot: 2-column, 3-row GFM table (header + 2 body rows).
+    ///
+    /// Verifies border characters, cell content preservation, and that the
+    /// rendered row count equals header + separator + data rows + 2 border rows.
+    #[test]
+    fn text_sink_snapshot_gfm_table() {
+        // 2 columns, 1 header row, 2 body rows → 3 data rows total.
+        let src = "| Name | Value |\n|---|---|\n| alpha | 1 |\n| beta | 2 |\n";
+        let lines = render_markdown(src, &palette());
+
+        let text_lines: Vec<String> = lines.iter().map(line_text).collect();
+        let joined = text_lines.join("\n");
+
+        // Cell content must be preserved.
+        for word in ["Name", "Value", "alpha", "1", "beta", "2"] {
+            assert!(joined.contains(word), "missing cell content {word:?} in:\n{joined}");
+        }
+
+        // Box-drawing border characters must be present.
+        assert!(
+            joined.contains('\u{250C}') || joined.contains('+'),
+            "top-left corner (┌ or +) missing from table output:\n{joined}"
+        );
+
+        // Non-empty rendered lines: top border + header + separator +
+        // 2 body rows + bottom border = 6. (Blank line after table is empty.)
+        let non_empty_count = lines.iter().filter(|l| !l.spans.is_empty()).count();
+        // rows=2, plus header=1, plus 3 border lines (top/sep/bottom) = 6.
+        assert_eq!(
+            non_empty_count, 6,
+            "expected 6 non-empty lines (borders+header+sep+2 rows), got {non_empty_count};\n{joined}"
+        );
     }
 }

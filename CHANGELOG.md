@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-04-20
+
+Second pure internal refactor in a row — no user-visible change.
+
+### Internal
+
+- **`TextSink` enum in `src/ui/markdown.rs`.** The `Event::Text`
+  arm inside `handle_event` previously routed incoming text via a
+  three-way `if` chain on `code_block_lang.is_some()` / `in_table`
+  / else. The state was implicit across three bool checks; adding
+  a fourth context would be an easy omission.
+- Introduce `TextSink { Inline, CodeBlock, TableCell }` and a
+  `Builder::text_sink()` helper that computes the variant from
+  existing state once per event. The `Event::Text` arm becomes an
+  exhaustive 3-variant `match` — adding a fourth future context
+  forces a compile error on both the enum and the arm.
+- Cross-reference comment added above `Event::Text` and
+  `Event::Code` explaining why `Code` has only two possible
+  contexts (never a code block) and calling out that any new
+  context must update both arms.
+- Behaviour locked by three new snapshot tests committed BEFORE
+  the refactor: `text_sink_snapshot_inline_paragraph`,
+  `text_sink_snapshot_fenced_code_block`,
+  `text_sink_snapshot_gfm_table`. They assert structural
+  invariants (line counts, palette-coloured span counts, border-
+  drawing glyphs present) rather than literal `Vec<Line>` equality
+  — stable against palette tweaks, strict against state-machine
+  drift.
+- Net: +56 LoC on `src/ui/markdown.rs`. 267 tests pass (was 264,
+  +3 snapshots).
+
 ## [0.1.9] — 2026-04-20
 
 Pure internal refactor — no user-visible behaviour change. Zero
@@ -389,7 +420,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/leboiko/octopeek/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/leboiko/octopeek/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/leboiko/octopeek/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/leboiko/octopeek/compare/v0.1.6...v0.1.7
