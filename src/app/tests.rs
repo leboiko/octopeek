@@ -1666,6 +1666,38 @@ fn modifier_circumflex_selects_commits_section() {
     ));
 
     assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+
+    app.pr_detail_selected_section = DetailSection::Description;
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('ˆ'),
+        crossterm::event::KeyModifiers::ALT,
+    ));
+
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+}
+
+/// Some terminals deliver Shift+6 as the literal digit with extra modifier
+/// bits attached. The section picker should still treat that as Commits.
+#[test]
+fn modified_shift_six_selects_commits_section() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    for modifiers in [
+        crossterm::event::KeyModifiers::SHIFT,
+        crossterm::event::KeyModifiers::SHIFT | crossterm::event::KeyModifiers::ALT,
+        crossterm::event::KeyModifiers::SHIFT | crossterm::event::KeyModifiers::CONTROL,
+    ] {
+        app.pr_detail_selected_section = DetailSection::Description;
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('6'),
+            modifiers,
+        ));
+
+        assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+    }
 }
 
 /// Some terminals/layouts emit typed punctuation such as `@` or `#` with
@@ -2536,6 +2568,31 @@ fn commit_diff_failure_after_cached_success_keeps_scope() {
     assert!(
         !app.commit_diff_fetching.contains(&(repo, sha)),
         "loaded/failed actions should clear the in-flight marker"
+    );
+}
+
+#[test]
+fn commit_diff_cache_counts_track_ready_and_inflight() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    let detail = fixture_pr_detail_with_commits(3);
+    let repo = detail.repo.clone();
+    let ready_sha = detail.commits[0].sha.clone();
+    let inflight_sha = detail.commits[1].sha.clone();
+    app.pr_detail = Some(detail);
+
+    let mut patches = std::collections::HashMap::new();
+    patches.insert("src/lib.rs".to_owned(), Some("@@ -1 +1 @@\n-old\n+new".to_owned()));
+    app.detail_cache.insert_commit_patches(repo.clone(), ready_sha, patches);
+    app.commit_diff_fetching.insert((repo, inflight_sha));
+
+    assert_eq!(
+        app.commit_diff_cache_counts(),
+        Some((1, 3, 1)),
+        "counts should expose ready, total, and in-flight commit diffs"
     );
 }
 

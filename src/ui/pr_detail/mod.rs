@@ -201,6 +201,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     // ── C3. Render sections list ───────────────────────────────────────────────
     let selected_section = app.pr_detail_selected_section;
+    let commit_diff_cache_counts = app.commit_diff_cache_counts();
 
     if !app.sidebar_hidden {
         let indicator = if app.config.show_ascii_glyphs { "> " } else { "\u{25b6} " }; // ▶
@@ -214,14 +215,32 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         for sec in DetailSection::ALL {
             let is_selected = sec == selected_section;
             let prefix = if is_selected { indicator } else { placeholder };
+            let commits_warming = sec == DetailSection::Commits
+                && commit_diff_cache_counts.is_some_and(|(ready, total, _)| ready < total);
             let style = if is_selected {
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else if commits_warming {
+                Style::default().fg(p.warning)
             } else if sec.has_content(detail) {
                 Style::default().fg(p.foreground)
             } else {
                 Style::default().fg(p.dim)
             };
-            section_lines.push(Line::from(Span::styled(format!("{prefix}{}", sec.label()), style)));
+            let mut spans = vec![Span::styled(format!("{prefix}{}", sec.label()), style)];
+            if commits_warming && let Some((ready, total, in_flight)) = commit_diff_cache_counts {
+                let marker = if app.config.show_ascii_glyphs {
+                    if in_flight > 0 { "~" } else { "!" }
+                } else if in_flight > 0 {
+                    "\u{21bb}" // ↻
+                } else {
+                    "!"
+                };
+                spans.push(Span::styled(
+                    format!(" {ready}/{total}{marker}"),
+                    Style::default().fg(p.warning),
+                ));
+            }
+            section_lines.push(Line::from(spans));
         }
 
         let sections_block = Block::default()
@@ -320,7 +339,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let commit_scope_pending = selected_section == DetailSection::Files
         && scoped_commit.is_some()
         && scoped_patches.is_none();
-    let (content_lines, alt_bg_ranges) = if commit_scope_pending {
+    let (mut content_lines, alt_bg_ranges) = if commit_scope_pending {
         (
             vec![Line::from(Span::styled(
                 "Fetching commit diff...".to_owned(),
@@ -346,6 +365,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             app.config.show_ascii_glyphs,
         )
     };
+    if selected_section == DetailSection::Commits
+        && let Some((ready, total, in_flight)) = commit_diff_cache_counts
+        && ready < total
+    {
+        let status = if in_flight > 0 {
+            format!("Commit diffs warming: {ready}/{total} ready")
+        } else {
+            format!("Commit diffs not fully cached: {ready}/{total} ready")
+        };
+        let insert_at = content_lines.len().min(2);
+        content_lines
+            .insert(insert_at, Line::from(Span::styled(status, Style::default().fg(p.warning))));
+        content_lines.insert(insert_at + 1, Line::from(""));
+    }
 
     let left_padding = if app.sidebar_hidden { 3 } else { 2 };
     let block = Block::default()

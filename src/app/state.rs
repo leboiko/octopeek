@@ -359,6 +359,31 @@ impl App {
         }
     }
 
+    /// Return `(ready, total, in_flight)` for per-commit diff cache entries on
+    /// the active PR detail.
+    pub fn commit_diff_cache_counts(&self) -> Option<(usize, usize, usize)> {
+        let detail = self.pr_detail.as_ref()?;
+        if detail.commits.is_empty() {
+            return None;
+        }
+
+        let mut ready = 0usize;
+        let mut in_flight = 0usize;
+        for commit in &detail.commits {
+            if self.detail_cache.get_commit_patches(&detail.repo, &commit.sha).is_some() {
+                ready += 1;
+            } else if self
+                .commit_diff_fetching
+                .iter()
+                .any(|(repo, sha)| repo == &detail.repo && sha == &commit.sha)
+            {
+                in_flight += 1;
+            }
+        }
+
+        Some((ready, detail.commits.len(), in_flight))
+    }
+
     /// Display a flash message in the status bar for `duration`.
     ///
     /// Replaces any currently active flash message.

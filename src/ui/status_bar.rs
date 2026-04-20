@@ -61,6 +61,11 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Span::styled(" syncing... ", Style::default().fg(p.dim))
     } else if app.detail_refreshing.is_some() {
         Span::styled(" refreshing... ", Style::default().fg(p.dim))
+    } else if let Some((ready, total, in_flight)) = app.commit_diff_cache_counts()
+        && ready < total
+        && in_flight > 0
+    {
+        Span::styled(format!(" warming diffs {ready}/{total}... "), Style::default().fg(p.warning))
     } else {
         Span::raw(" ")
     };

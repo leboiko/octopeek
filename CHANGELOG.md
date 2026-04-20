@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-04-20
+
+Patch release for Commits shortcut tolerance and commit-diff warmup visibility.
+
+### Fixed
+
+- `Shift+6` now handles terminals that report the key as `Char('6')` with
+  additional modifier bits such as Alt or Ctrl, instead of requiring the
+  modifier set to be exactly Shift.
+- Additional caret-like characters emitted by some layouts are accepted for the
+  Commits shortcut.
+
+### Changed
+
+- The Commits sidebar row now turns warning-colored while per-commit diffs are
+  still warming and shows a compact ready/total marker.
+- The Commits section and status bar now surface commit-diff warmup progress so
+  a delayed per-commit diff fetch is visible instead of looking like a missed key.
+- Commit-section scroll clamping now follows the same non-wrapping behavior as
+  the Commits renderer.
+
+### Tests
+
+289 pass: added coverage for modified `Shift+6` key events and commit-diff
+readiness counts.
+
 ## [0.2.5] — 2026-04-20
 
 Patch release for commit-scoped diff reliability and back navigation.
@@ -691,7 +717,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/leboiko/octopeek/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/leboiko/octopeek/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/leboiko/octopeek/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/leboiko/octopeek/compare/v0.2.2...v0.2.3

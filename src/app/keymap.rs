@@ -15,10 +15,13 @@ fn detail_section_shortcut(key: crossterm::event::KeyEvent) -> Option<(DetailSec
         KeyCode::Char('#') => DetailSection::Reviews,
         KeyCode::Char('$') => DetailSection::Files,
         KeyCode::Char('%') => DetailSection::Comments,
-        // Some keyboard layouts emit U+02C6 (`ˆ`) for Shift+6 instead of
-        // ASCII caret (`^`). Treat both as the Commits shortcut.
-        KeyCode::Char('^' | 'ˆ') => DetailSection::Commits,
-        KeyCode::Char(ch @ '1'..='6') if key.modifiers == KeyModifiers::SHIFT => {
+        // Some keyboard layouts emit a non-ASCII caret for Shift+6 instead of
+        // ASCII `^`. Treat the common variants as the Commits shortcut.
+        KeyCode::Char('^' | 'ˆ' | '＾' | '˄' | '\u{0302}') => DetailSection::Commits,
+        // Other terminals keep the digit and attach modifier bits. Match any
+        // event containing SHIFT so layout-added ALT/CTRL bits don't make
+        // Shift+6 fall through to the modifier blocker.
+        KeyCode::Char(ch @ '1'..='6') if key.modifiers.contains(KeyModifiers::SHIFT) => {
             let idx = (ch as usize) - ('1' as usize);
             DetailSection::ALL[idx]
         }

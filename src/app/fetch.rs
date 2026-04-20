@@ -295,7 +295,8 @@ impl App {
         // `lines.len()`. Counting wrapped rows for a non-wrapping section
         // would over-estimate and leave a big empty tail when the user
         // scrolls to the bottom of a diff.
-        let wraps = self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Files;
+        let wraps = self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Files
+            && self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Commits;
         let rendered_rows = if wraps {
             let probe = ratatui::widgets::Paragraph::new(lines)
                 .wrap(ratatui::widgets::Wrap { trim: false });
