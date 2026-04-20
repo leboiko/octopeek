@@ -294,23 +294,33 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    // Copy mode and normal mode share the same Paragraph shape — wrap and
-    // all. The only difference is that copy mode runs `apply_overlay` over
-    // the tinted lines to draw the selection highlight. Keeping wrap on in
-    // both paths means entering copy mode no longer reflows long comments
-    // down to a single row each: a 20-line rendered comment stays 20 lines
-    // visible. The overlay is applied before wrap, so highlighted
-    // characters follow the word-wrapper into whichever row they land on.
+    // Copy mode and normal mode share the same Paragraph shape. The only
+    // difference is that copy mode runs `apply_overlay` over the tinted
+    // lines to draw the selection highlight.
     let lines_to_render = if app.copy_mode.active {
         crate::ui::copy_mode::apply_overlay(&tinted_lines, &app.copy_mode, p)
     } else {
         tinted_lines
     };
-    let widget = Paragraph::new(lines_to_render)
+
+    // Wrap is appropriate for prose sections (Description, Checks, Reviews,
+    // Comments) so long paragraphs stay readable. It is **wrong** for the
+    // Files section's unified diff, because ratatui's word-wrapper drops
+    // each wrapped continuation to column 0 — stomping on the line-number
+    // gutter and producing the `createFollowParityChecker)` misalignment
+    // the user reported. Code diffs scroll horizontally at GitHub / VS
+    // Code / every other diff viewer for the same reason: wrapping breaks
+    // column-based reading. For Files we omit `.wrap(...)` so long lines
+    // are clipped at the right edge and the gutter alignment is preserved;
+    // horizontal scrolling is a follow-up.
+    let should_wrap = selected_section != DetailSection::Files;
+    let mut widget = Paragraph::new(lines_to_render)
         .block(block)
         .style(Style::default().bg(p.background).fg(p.foreground))
-        .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
+    if should_wrap {
+        widget = widget.wrap(Wrap { trim: false });
+    }
 
     f.render_widget(widget, right_area);
 }

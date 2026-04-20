@@ -257,13 +257,21 @@ impl App {
             return;
         }
         let lines = self.current_detail_lines();
-        // Mirror the `Wrap { trim: false }` used by the PR-detail and
-        // issue-detail renderers. Passing a `Block` would add padding / border
-        // rows; `area` is already the inner rect set by the renderer, so the
-        // bare Paragraph matches the actual render.
-        let probe =
-            ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
-        let rendered_rows = u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX);
+        // Mirror the renderer's wrap decision: prose sections
+        // (Description / Checks / Reviews / Comments) wrap, so count the
+        // wrapped rows; the Files section does NOT wrap (see the comment
+        // in `pr_detail::draw`), so its rendered row count is just
+        // `lines.len()`. Counting wrapped rows for a non-wrapping section
+        // would over-estimate and leave a big empty tail when the user
+        // scrolls to the bottom of a diff.
+        let wraps = self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Files;
+        let rendered_rows = if wraps {
+            let probe = ratatui::widgets::Paragraph::new(lines)
+                .wrap(ratatui::widgets::Wrap { trim: false });
+            u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX)
+        } else {
+            u16::try_from(lines.len()).unwrap_or(u16::MAX)
+        };
         let max_scroll = rendered_rows.saturating_sub(area.height);
         // Route through `right_pane_scroll_mut` so we clamp whichever map
         // currently owns the right-pane scroll — the per-section map for

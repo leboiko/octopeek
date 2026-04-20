@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-04-20
+
+### Fixed
+
+- Diff rendering in the Files section no longer misaligns when a
+  code line wraps. The PR-detail view enables `Wrap { trim: false }`
+  on the final `Paragraph`, which is right for prose sections but
+  wrong for a two-column-gutter diff: ratatui's word-wrapper drops
+  each wrapped continuation to column 0, stomping on the `old-lineno
+  new-lineno` gutter and making long tokens like
+  `createFollowParityChecker)` visually misaligned with the sign
+  column. Wrap now stays **off** for the Files section — same
+  convention as GitHub's diff view, VS Code, and every other code
+  diff viewer. Prose sections (Description, Checks, Reviews,
+  Comments) keep their wrap-on behavior.
+- `clamp_pr_detail_scroll` mirrors the render-side wrap decision:
+  the Files section counts rendered rows as `lines.len()` (no
+  wrap); every other section counts wrapped rows via
+  `Paragraph::line_count`. Previously the clamp over-estimated for
+  Files, leaving a stretch of empty rows below the last diff line
+  when scrolling to the bottom.
+
+### Known limitations
+
+- Long diff lines clip at the right edge of the pane. Horizontal
+  scrolling on diffs is a follow-up (0.1.5).
+
 ## [0.1.3] — 2026-04-20
 
 ### Fixed
@@ -150,7 +177,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/leboiko/octopeek/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/leboiko/octopeek/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/leboiko/octopeek/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/leboiko/octopeek/compare/v0.1.0...v0.1.1
