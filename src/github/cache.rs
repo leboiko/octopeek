@@ -157,6 +157,7 @@ mod tests {
 
     fn make_pr_detail(repo: &str, number: u32) -> PrDetail {
         PrDetail {
+            node_id: "PR_node".to_owned(),
             repo: repo.to_owned(),
             number,
             title: "Test PR".to_owned(),
@@ -165,6 +166,7 @@ mod tests {
             body_markdown: String::new(),
             base_ref: "main".to_owned(),
             head_ref: "feat/x".to_owned(),
+            head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
             is_draft: false,
             additions: 0,
             deletions: 0,
@@ -183,6 +185,7 @@ mod tests {
 
     fn make_issue_detail(repo: &str, number: u32) -> IssueDetail {
         IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: repo.to_owned(),
             number,
             title: "Test Issue".to_owned(),

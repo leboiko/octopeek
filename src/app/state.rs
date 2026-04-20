@@ -15,7 +15,9 @@ use crate::ui::pr_detail::DetailSection;
 use crate::ui::tabs::Tabs;
 
 use super::actions::Action;
-use super::types::{FirstRunSuggestion, Focus, PerTabState, RepoPickerMode};
+use super::types::{
+    CommentComposer, FirstRunSuggestion, Focus, PendingMutation, PerTabState, RepoPickerMode,
+};
 
 /// Top-level application state.
 #[allow(clippy::struct_excessive_bools)]
@@ -188,6 +190,20 @@ pub struct App {
     /// Focus state to restore when the confirmation overlay is dismissed.
     pub confirm_return_focus: Focus,
 
+    // ── GitHub mutation / composer state ─────────────────────────────────────
+    /// Markdown composer overlay state, present while `focus == Focus::Composer`.
+    pub composer: Option<CommentComposer>,
+    /// Draft submitted to GitHub but not yet acknowledged. Restored if the
+    /// mutation fails so user text is not lost.
+    pub pending_comment_draft: Option<CommentComposer>,
+    /// Focus state to restore when the composer is closed.
+    pub composer_return_focus: Focus,
+    /// User-visible mutation currently in flight.
+    pub pending_mutation: Option<PendingMutation>,
+    /// Last mutation error shown in persistent state until replaced by a new
+    /// mutation or detail refresh.
+    pub mutation_error: Option<String>,
+
     // ── First-run wizard state ──────���─────────────────────────────────────────
     /// Suggested repos shown in the first-run wizard; populated from the inbox
     /// when `config.repos` is empty on the first successful fetch.
@@ -302,6 +318,11 @@ impl App {
             repo_picker_return_focus: Focus::Dashboard,
             confirm: None,
             confirm_return_focus: Focus::Dashboard,
+            composer: None,
+            pending_comment_draft: None,
+            composer_return_focus: Focus::Dashboard,
+            pending_mutation: None,
+            mutation_error: None,
             first_run_suggestions: Vec::new(),
             first_run_cursor: 0,
             theme_picker_cursor: 0,

@@ -338,7 +338,8 @@ pub(super) fn build_files_diff(
         }
         None => {
             lines.push(Line::from(Span::styled(
-                "Patch unavailable — binary file, too large, beyond the 30-file cap, or fetch failed.".to_owned(),
+                "Patch unavailable — binary file, diff too large, or file-list fetch failed."
+                    .to_owned(),
                 Style::default().fg(p.dim),
             )));
         }

@@ -1,5 +1,6 @@
 //! UI rendering: one `draw` function composes all panels for a single frame.
 
+pub mod comment_composer;
 pub mod confirm;
 pub mod copy_mode;
 pub mod dashboard;
@@ -60,10 +61,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     let content_area = outer[1];
 
     // Route to the appropriate panel based on current focus.
-    // RepoPicker and Confirm focus states draw the dashboard beneath them;
+    // RepoPicker / Confirm / Composer focus states draw the dashboard beneath them;
     // the overlay is rendered after the main content area.
     match app.focus {
-        Focus::Detail => {
+        Focus::Detail | Focus::Composer => {
             // If PR detail is populated (or being fetched/errored), render it.
             // If issue detail is populated instead, render the issue detail.
             // Fall back to dashboard if neither is populated and no fetch is active.
@@ -105,6 +106,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.focus == Focus::Confirm && app.confirm.is_some() {
         confirm::draw(f, app);
+    }
+
+    if app.focus == Focus::Composer && app.composer.is_some() {
+        comment_composer::draw(f, app);
     }
 
     if app.focus == Focus::ThemePicker {

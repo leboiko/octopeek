@@ -1092,6 +1092,165 @@ fn confirm_n_cancels_and_restores_focus() {
     assert!(app.confirm.is_none(), "confirm must be cleared after cancel");
 }
 
+#[test]
+fn merge_shortcut_opens_confirm_with_head_sha_guard() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail = Some(fixture_pr_detail(0, 0, 0, 0));
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('M'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Confirm);
+    let confirm = app.confirm.as_ref().expect("merge confirmation");
+    assert!(matches!(
+        &confirm.pending_action,
+        crate::ui::confirm::ConfirmPending::MergePullRequest {
+            method: crate::github::mutations::MergeMethod::Merge,
+            expected_head_sha,
+            ..
+        } if expected_head_sha == "0123456789abcdef0123456789abcdef01234567"
+    ));
+}
+
+#[test]
+fn squash_shortcut_opens_confirm() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail = Some(fixture_pr_detail(0, 0, 0, 0));
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('S'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Confirm);
+    assert!(matches!(
+        app.confirm.as_ref().map(|c| &c.pending_action),
+        Some(crate::ui::confirm::ConfirmPending::MergePullRequest {
+            method: crate::github::mutations::MergeMethod::Squash,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn composer_keystrokes_edit_and_empty_submit_stays_open() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.handle_action(Action::OpenCommentComposer(super::types::CommentComposerTarget::TopLevel {
+        repo: "o/r".to_owned(),
+        number: 1,
+        subject_id: "PR_node".to_owned(),
+        kind: super::types::CommentSubjectKind::PullRequest,
+    }));
+
+    assert_eq!(app.focus, Focus::Composer);
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('h'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.composer.as_ref().map(|c| c.body.as_str()), Some("h\ni"));
+
+    app.composer.as_mut().expect("composer").body.clear();
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+
+    assert_eq!(app.focus, Focus::Composer, "empty submit must keep composer open");
+    assert!(app.composer.is_some(), "empty submit must preserve draft state");
+}
+
+#[test]
+fn failed_comment_mutation_restores_pending_draft() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    let draft = super::types::CommentComposer {
+        target: super::types::CommentComposerTarget::TopLevel {
+            repo: "o/r".to_owned(),
+            number: 1,
+            subject_id: "PR_node".to_owned(),
+            kind: super::types::CommentSubjectKind::PullRequest,
+        },
+        body: "please keep this".to_owned(),
+    };
+    app.pending_comment_draft = Some(draft);
+    app.pending_mutation = Some(super::types::PendingMutation::SubmitComment {
+        target: super::types::CommentComposerTarget::TopLevel {
+            repo: "o/r".to_owned(),
+            number: 1,
+            subject_id: "PR_node".to_owned(),
+            kind: super::types::CommentSubjectKind::PullRequest,
+        },
+    });
+
+    app.handle_action(Action::MutationFailed("Comment failed: nope".to_owned()));
+
+    assert_eq!(app.focus, Focus::Composer);
+    assert_eq!(
+        app.composer.as_ref().map(|c| c.body.as_str()),
+        Some("please keep this"),
+        "failed submit must not lose typed markdown"
+    );
+    assert!(app.pending_mutation.is_none());
+}
+
+#[test]
+fn reply_shortcut_targets_focused_diff_thread() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+    use crate::ui::pr_detail::{DetailSection, build_thread_index};
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    let detail = fixture_pr_detail(0, 0, 1, 1);
+    app.thread_index = Some(build_thread_index(&detail));
+    app.pr_detail = Some(detail);
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = true;
+    *app.pr_detail_diff_cursor.borrow_mut() = Some(("src/file-0.rs".to_owned(), 5));
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('R'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Composer);
+    assert!(matches!(
+        app.composer.as_ref().map(|c| &c.target),
+        Some(super::types::CommentComposerTarget::ReviewThreadReply {
+            thread_id,
+            path,
+            line: Some(5),
+            ..
+        }) if thread_id == "THREAD_node" && path == "src/file-0.rs"
+    ));
+}
+
 // ── First-run wizard tests ────────────────────────────────────────────────
 
 /// Helper: build an `Inbox` with a given set of PRs and issues.
@@ -1838,6 +1997,59 @@ fn shift_j_k_do_not_cycle_outside_files_section() {
     assert_eq!(app.pr_detail_files_cursor, 2, "J outside Files must not move cursor");
 }
 
+#[test]
+fn arrow_keys_cycle_files_cursor_in_files_overview() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail = Some(fixture_pr_detail(0, 0, 3, 0));
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = false;
+    app.pr_detail_files_cursor = 0;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Down,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(app.pr_detail_files_cursor, 1, "Down moves to next file");
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Up,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(app.pr_detail_files_cursor, 0, "Up moves to previous file");
+}
+
+#[test]
+fn esc_from_unscoped_files_diff_returns_to_files_overview() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail = Some(fixture_pr_detail(0, 0, 3, 0));
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = true;
+    app.pr_detail_files_cursor = 2;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Detail, "Esc from Files diff stays in detail");
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Files);
+    assert!(
+        !app.pr_detail_files_show_diff,
+        "Esc from Files diff should return to the Files overview"
+    );
+    assert_eq!(app.pr_detail_files_cursor, 2, "selected file should be preserved");
+}
+
 /// Selected-row index must resolve to the same PR the dashboard renders.
 ///
 /// Regression guard: the dashboard sorts PRs by `updated_at desc` then
@@ -2086,6 +2298,7 @@ fn scroll_is_preserved_per_section() {
 /// Helper: build a minimal [`github::detail::PrDetail`] for cache tests.
 fn make_pr_detail_for_app(repo: &str, number: u32) -> crate::github::detail::PrDetail {
     crate::github::detail::PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: repo.to_owned(),
         number,
         title: "Cache Test PR".to_owned(),
@@ -2094,6 +2307,7 @@ fn make_pr_detail_for_app(repo: &str, number: u32) -> crate::github::detail::PrD
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat/cache".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 1,
         deletions: 1,
@@ -2203,6 +2417,7 @@ fn restored_pr_cache_rebuilds_thread_index_for_file_thread_shortcut() {
         patch: Some("@@ -1,2 +1,2 @@\n line one\n line two".to_owned()),
     }];
     detail.review_threads = vec![crate::github::detail::ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: "src/lib.rs".to_owned(),
         line: Some(2),
         start_line: None,
@@ -2210,6 +2425,7 @@ fn restored_pr_cache_rebuilds_thread_index_for_file_thread_shortcut() {
         is_outdated: false,
         diff_hunk: None,
         comments: vec![crate::github::detail::ReviewComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "reviewer".to_owned(),
             body_markdown: "please check".to_owned(),
             created_at: now,

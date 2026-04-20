@@ -40,9 +40,10 @@ impl App {
         // (see `leave_detail_after_tab_switch`). The section-picker keys in
         // the detail view are the SHIFT-variants (`!@#$%`, `F`) precisely so
         // unshifted digits / Tab remain available here for tab switching.
-        let typing_in_input =
-            self.focus == Focus::RepoPicker && self.repo_picker_mode == RepoPickerMode::Input;
-        if key.modifiers == KeyModifiers::NONE {
+        let typing_in_input = (self.focus == Focus::RepoPicker
+            && self.repo_picker_mode == RepoPickerMode::Input)
+            || self.focus == Focus::Composer;
+        if key.modifiers == KeyModifiers::NONE && !typing_in_input {
             match key.code {
                 KeyCode::Char('q') => {
                     self.running = false;
@@ -110,6 +111,7 @@ impl App {
             Focus::Detail => self.handle_key_detail(key),
             Focus::RepoPicker => self.handle_key_repo_picker(key),
             Focus::Confirm => self.handle_key_confirm(key),
+            Focus::Composer => self.handle_key_composer(key),
             Focus::ThemePicker => self.handle_key_theme_picker(key),
             Focus::Help => {
                 // Handled above; unreachable here.
@@ -302,6 +304,14 @@ impl App {
                 self.pr_detail_selected_section = DetailSection::Commits;
                 self.copy_mode.h_scroll = 0;
             }
+            KeyCode::Esc | KeyCode::Char('b')
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && self.pr_detail_files_show_diff =>
+            {
+                self.detail_pending_g = false;
+                self.pr_detail_files_show_diff = false;
+                self.copy_mode.h_scroll = 0;
+            }
             KeyCode::Esc | KeyCode::Char('b') => {
                 self.detail_pending_g = false;
                 self.back_to_dashboard();
@@ -338,6 +348,20 @@ impl App {
                     let last = detail.commits.len().saturating_sub(1);
                     self.commits_cursor = last;
                 }
+            }
+            KeyCode::Down
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && !self.pr_detail_files_show_diff =>
+            {
+                self.detail_pending_g = false;
+                self.cycle_files_cursor(1);
+            }
+            KeyCode::Up
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && !self.pr_detail_files_show_diff =>
+            {
+                self.detail_pending_g = false;
+                self.cycle_files_cursor(-1);
             }
             // General j/k scroll (not in Commits section, which is handled above).
             KeyCode::Char('j') | KeyCode::Down => {
@@ -490,6 +514,35 @@ impl App {
             KeyCode::Char('c') => {
                 self.detail_pending_g = false;
                 self.handle_action(Action::CheckoutBranch);
+            }
+            KeyCode::Char('M') => {
+                self.detail_pending_g = false;
+                self.handle_action(Action::BeginMergePullRequest(
+                    crate::github::mutations::MergeMethod::Merge,
+                ));
+            }
+            KeyCode::Char('S') => {
+                self.detail_pending_g = false;
+                self.handle_action(Action::BeginMergePullRequest(
+                    crate::github::mutations::MergeMethod::Squash,
+                ));
+            }
+            KeyCode::Char('A') => {
+                self.detail_pending_g = false;
+                if let Some(target) = self.top_level_comment_target() {
+                    self.handle_action(Action::OpenCommentComposer(target));
+                }
+            }
+            KeyCode::Char('R') => {
+                self.detail_pending_g = false;
+                if let Some(target) = self.focused_review_thread_reply_target() {
+                    self.handle_action(Action::OpenCommentComposer(target));
+                } else {
+                    self.show_flash(
+                        "Move to a review thread in the Files diff before replying",
+                        std::time::Duration::from_secs(3),
+                    );
+                }
             }
             KeyCode::Char('v') => {
                 self.detail_pending_g = false;
@@ -844,10 +897,42 @@ impl App {
 
         match key.code {
             KeyCode::Char('y') => {
-                self.handle_action(Action::ConfirmCheckout(true));
+                self.handle_action(Action::ConfirmPending(true));
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                self.handle_action(Action::ConfirmCheckout(false));
+                self.handle_action(Action::ConfirmPending(false));
+            }
+            _ => {}
+        }
+    }
+
+    /// Key handler for the markdown composer overlay.
+    pub(super) fn handle_key_composer(&mut self, key: crossterm::event::KeyEvent) {
+        if key.modifiers == KeyModifiers::CONTROL && matches!(key.code, KeyCode::Char('s' | 'S')) {
+            self.handle_action(Action::SubmitCommentComposer);
+            return;
+        }
+
+        let Some(composer) = self.composer.as_mut() else {
+            self.focus = self.composer_return_focus;
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.composer = None;
+                self.focus = self.composer_return_focus;
+            }
+            KeyCode::Backspace => {
+                composer.body.pop();
+            }
+            KeyCode::Enter => {
+                composer.body.push('\n');
+            }
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                composer.body.push(ch);
             }
             _ => {}
         }
@@ -1054,6 +1139,30 @@ impl App {
             .as_ref()
             .map(|d| d.url.clone())
             .or_else(|| self.issue_detail.as_ref().map(|d| d.url.clone()))
+    }
+
+    /// Resolve the review thread currently selected by the Files diff cursor.
+    fn focused_review_thread_reply_target(&self) -> Option<super::types::CommentComposerTarget> {
+        if self.pr_detail_selected_section != DetailSection::Files
+            || !self.pr_detail_files_show_diff
+            || self.selected_commit.is_some()
+        {
+            return None;
+        }
+
+        let detail = self.pr_detail.as_ref()?;
+        let cursor = self.pr_detail_diff_cursor.borrow().clone()?;
+        let thread_index = self.thread_index.as_ref()?;
+        let thread_idx = *thread_index.active_at(&cursor.0, cursor.1).first()?;
+        let thread = detail.review_threads.get(thread_idx)?;
+
+        Some(super::types::CommentComposerTarget::ReviewThreadReply {
+            repo: detail.repo.clone(),
+            number: detail.number,
+            thread_id: thread.node_id.clone(),
+            path: thread.path.clone(),
+            line: thread.line,
+        })
     }
 
     /// Return the URL of the PR or issue currently highlighted on the

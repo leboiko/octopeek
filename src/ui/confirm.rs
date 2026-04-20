@@ -41,6 +41,17 @@ pub enum ConfirmPending {
         /// Branch name to pass to `git checkout`.
         branch: String,
     },
+    /// Merge a pull request.
+    MergePullRequest {
+        /// `owner/name` repository slug.
+        repo: String,
+        /// Pull request number.
+        number: u32,
+        /// Merge method to use.
+        method: crate::github::mutations::MergeMethod,
+        /// Head SHA guard passed to GitHub so force-push races fail closed.
+        expected_head_sha: String,
+    },
 }
 
 // ── Confirm ────────────────────────────────────────────────────────────────────

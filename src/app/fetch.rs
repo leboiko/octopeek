@@ -7,7 +7,10 @@ use crate::github;
 
 use super::actions::Action;
 use super::state::App;
-use super::types::{DetailKind, DetailRef, FirstRunSuggestion, Focus, PerTabState};
+use super::types::{
+    CommentComposerTarget, DetailKind, DetailRef, FirstRunSuggestion, Focus, MutationRefresh,
+    PendingMutation, PerTabState,
+};
 
 impl App {
     /// Spawn a background task that fetches the inbox and sends the result back
@@ -555,6 +558,114 @@ impl App {
             self.request_commit_diff_fetch(repo.to_owned(), sha);
         }
     }
+
+    /// Spawn a supervised pull-request merge mutation.
+    pub(super) fn spawn_merge_mutation(
+        &mut self,
+        repo: String,
+        number: u32,
+        method: crate::github::mutations::MergeMethod,
+        expected_head_sha: String,
+    ) {
+        if self.pending_mutation.is_some() {
+            self.show_flash(
+                "Another GitHub action is still running",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+        let (Some(client), Some(tx)) = (self.client.clone(), self.action_tx.clone()) else {
+            self.show_flash("No GitHub client configured", std::time::Duration::from_secs(3));
+            return;
+        };
+
+        let pending = PendingMutation::MergePullRequest { repo: repo.clone(), number, method };
+        self.pending_mutation = Some(pending.clone());
+        self.mutation_error = None;
+        send_or_warn(&tx, Action::MutationStarted(pending));
+        spawn_merge_mutation(client, repo, number, method, expected_head_sha, tx);
+    }
+
+    /// Spawn a supervised comment mutation.
+    pub(super) fn spawn_comment_mutation(&mut self, target: CommentComposerTarget, body: String) {
+        if self.pending_mutation.is_some() {
+            self.show_flash(
+                "Another GitHub action is still running",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+        let (Some(client), Some(tx)) = (self.client.clone(), self.action_tx.clone()) else {
+            self.show_flash("No GitHub client configured", std::time::Duration::from_secs(3));
+            return;
+        };
+
+        let pending = PendingMutation::SubmitComment { target: target.clone() };
+        self.pending_mutation = Some(pending.clone());
+        self.mutation_error = None;
+        send_or_warn(&tx, Action::MutationStarted(pending));
+        spawn_comment_mutation(client, target, body, tx);
+    }
+}
+
+// ── GitHub mutations ──────────────────────────────────────────────────────────
+
+fn spawn_merge_mutation(
+    client: std::sync::Arc<github::Client>,
+    repo: String,
+    number: u32,
+    method: crate::github::mutations::MergeMethod,
+    expected_head_sha: String,
+    tx: tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    tokio::spawn(async move {
+        let repo_for_err = repo.clone();
+        let action =
+            match client.merge_pull_request(&repo, number, method, &expected_head_sha).await {
+                Ok(outcome) => Action::MutationSucceeded(MutationRefresh {
+                    detail_ref: DetailRef { repo, number, kind: DetailKind::Pr },
+                    message: format!(
+                        "{} complete: {} ({})",
+                        method.label(),
+                        outcome.message,
+                        outcome.sha.chars().take(7).collect::<String>()
+                    ),
+                }),
+                Err(err) => Action::MutationFailed(format!(
+                    "{} {repo_for_err}#{number} failed: {err}",
+                    method.label()
+                )),
+            };
+        send_or_warn(&tx, action);
+    });
+}
+
+fn spawn_comment_mutation(
+    client: std::sync::Arc<github::Client>,
+    target: CommentComposerTarget,
+    body: String,
+    tx: tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    tokio::spawn(async move {
+        let detail_ref = target.detail_ref();
+        let result = match &target {
+            CommentComposerTarget::TopLevel { subject_id, .. } => {
+                client.add_comment(subject_id, &body).await
+            }
+            CommentComposerTarget::ReviewThreadReply { thread_id, .. } => {
+                client.reply_to_review_thread(thread_id, &body).await
+            }
+        };
+
+        let action = match result {
+            Ok(()) => Action::MutationSucceeded(MutationRefresh {
+                detail_ref,
+                message: "Comment posted".to_owned(),
+            }),
+            Err(err) => Action::MutationFailed(format!("Comment failed: {err}")),
+        };
+        send_or_warn(&tx, action);
+    });
 }
 
 // ── Per-commit diff fetch ─────────────────────────────────────────────────────

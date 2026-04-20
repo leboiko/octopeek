@@ -86,6 +86,8 @@ pub struct DetailedReview {
 /// A single inline comment on a specific line or hunk of a file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewComment {
+    /// GraphQL node ID for this comment.
+    pub node_id: String,
     /// GitHub login of the comment author.
     pub author: String,
     /// Markdown body of the comment.
@@ -117,6 +119,8 @@ pub struct ReviewComment {
 /// file-level (non-line) threads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewThread {
+    /// GraphQL node ID for this review thread.
+    pub node_id: String,
     /// File path the thread is anchored to.
     pub path: String,
     /// Line number in the diff, if the thread is line-anchored.
@@ -167,6 +171,8 @@ impl ReviewThread {
 /// A top-level comment on a pull request or issue (not an inline review comment).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueComment {
+    /// GraphQL node ID for this comment.
+    pub node_id: String,
     /// GitHub login of the comment author.
     pub author: String,
     /// Markdown body of the comment.
@@ -215,6 +221,8 @@ pub struct PrCommit {
 /// the dashboard. This type adds bodies, files, checks, reviews, and threads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrDetail {
+    /// GraphQL node ID for this pull request.
+    pub node_id: String,
     /// `owner/name` repository slug.
     pub repo: String,
     /// PR number within the repository.
@@ -231,6 +239,8 @@ pub struct PrDetail {
     pub base_ref: String,
     /// Head branch name (e.g. `"feat/xyz"`).
     pub head_ref: String,
+    /// Full OID of the pull request head commit.
+    pub head_oid: String,
     /// `true` when the PR is in draft state.
     pub is_draft: bool,
     /// Total lines added across all files.
@@ -245,7 +255,7 @@ pub struct PrDetail {
     pub created_at: DateTime<Utc>,
     /// `true` when the PR has been merged.
     pub merged: bool,
-    /// Files changed by this PR (up to 100).
+    /// Files changed by this PR.
     pub files: Vec<FileChange>,
     /// Check runs on the head commit (up to 50).
     pub check_runs: Vec<DetailedCheck>,
@@ -264,6 +274,8 @@ pub struct PrDetail {
 /// Full detail for a single issue, fetched on-demand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueDetail {
+    /// GraphQL node ID for this issue.
+    pub node_id: String,
     /// `owner/name` repository slug.
     pub repo: String,
     /// Issue number within the repository.
@@ -299,6 +311,7 @@ pub(super) const PR_DETAIL_QUERY: &str = r"
 query PrDetail($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      id
       number
       title
       url
@@ -312,6 +325,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
       changedFiles
       baseRefName
       headRefName
+      headRefOid
       author { login }
       files(first: 100) {
         nodes {
@@ -371,6 +385,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
       }
       reviewThreads(first: 100) {
         nodes {
+          id
           isResolved
           isOutdated
           path
@@ -380,6 +395,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           originalStartLine
           comments(first: 20) {
             nodes {
+              id
               author { login }
               body
               createdAt
@@ -391,6 +407,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
       }
       comments(first: 100) {
         nodes {
+          id
           author { login }
           body
           createdAt
@@ -408,6 +425,7 @@ pub(super) const ISSUE_DETAIL_QUERY: &str = r"
 query IssueDetail($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
+      id
       number
       title
       url
@@ -427,6 +445,7 @@ query IssueDetail($owner: String!, $name: String!, $number: Int!) {
       }
       comments(first: 100) {
         nodes {
+          id
           author { login }
           body
           createdAt
@@ -459,6 +478,7 @@ pub(super) struct RawDetailRepository {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawPrDetail {
+    pub id: String,
     pub number: u32,
     pub title: String,
     pub url: String,
@@ -472,6 +492,7 @@ pub(super) struct RawPrDetail {
     pub changed_files: u32,
     pub base_ref_name: String,
     pub head_ref_name: String,
+    pub head_ref_oid: String,
     pub author: Option<RawDetailActor>,
     pub files: RawNodeList<RawFileNode>,
     pub commits: RawNodeList<RawDetailCommitNode>,
@@ -483,6 +504,7 @@ pub(super) struct RawPrDetail {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawIssueDetail {
+    pub id: String,
     pub number: u32,
     pub title: String,
     pub url: String,
@@ -614,6 +636,7 @@ pub(super) struct RawReviewNode {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawReviewThreadNode {
+    pub id: String,
     pub is_resolved: bool,
     pub is_outdated: bool,
     pub path: String,
@@ -633,6 +656,7 @@ pub(super) struct RawDetailOriginalCommit {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawCommentNode {
+    pub id: String,
     pub author: Option<RawDetailActor>,
     pub body: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -657,6 +681,7 @@ pub(super) struct RawCommentNode {
 /// and the `body.unwrap_or_default()` handling in one place.
 fn map_comment_node(c: RawCommentNode) -> IssueComment {
     IssueComment {
+        node_id: c.id,
         author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
         body_markdown: c.body.unwrap_or_default(),
         created_at: c.created_at,
@@ -835,6 +860,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                 .nodes
                 .into_iter()
                 .map(|c| ReviewComment {
+                    node_id: c.id,
                     author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
                     body_markdown: c.body.unwrap_or_default(),
                     created_at: c.created_at,
@@ -849,6 +875,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
             let diff_hunk = comments.first().and_then(|c| c.diff_hunk.clone());
 
             ReviewThread {
+                node_id: t.id,
                 path: t.path,
                 line,
                 start_line,
@@ -863,6 +890,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
     let issue_comments = raw.comments.nodes.into_iter().map(map_comment_node).collect();
 
     PrDetail {
+        node_id: raw.id,
         repo,
         number: raw.number,
         title: raw.title,
@@ -871,6 +899,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         body_markdown: raw.body.unwrap_or_default(),
         base_ref: raw.base_ref_name,
         head_ref: raw.head_ref_name,
+        head_oid: raw.head_ref_oid,
         is_draft: raw.is_draft,
         additions: raw.additions,
         deletions: raw.deletions,
@@ -901,6 +930,7 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
     let comments = raw.comments.nodes.into_iter().map(map_comment_node).collect();
 
     IssueDetail {
+        node_id: raw.id,
         repo,
         number: raw.number,
         title: raw.title,
@@ -935,6 +965,7 @@ mod tests {
             "data": {
                 "repository": {
                     "pullRequest": {
+                        "id": "PR_kwfixture",
                         "number": 42,
                         "title": "feat: add dark mode",
                         "url": "https://github.com/owner/repo/pull/42",
@@ -948,6 +979,7 @@ mod tests {
                         "changedFiles": 5,
                         "baseRefName": "main",
                         "headRefName": "feat/dark-mode",
+                        "headRefOid": "abc1234567890abcdef1234567890abcdef123456",
                         "author": { "login": "alice" },
                         "files": {
                             "nodes": [
@@ -1008,6 +1040,7 @@ mod tests {
                         },
                         "reviewThreads": {
                             "nodes": [{
+                                "id": "PRRT_kwfixture",
                                 "isResolved": false,
                                 "isOutdated": false,
                                 "path": "src/theme.rs",
@@ -1016,11 +1049,13 @@ mod tests {
                                 "comments": {
                                     "nodes": [
                                         {
+                                            "id": "PRRC_kwfixture1",
                                             "author": { "login": "bob" },
                                             "body": "Consider extracting this constant.",
                                             "createdAt": "2024-01-02T09:05:00Z"
                                         },
                                         {
+                                            "id": "PRRC_kwfixture2",
                                             "author": { "login": "alice" },
                                             "body": "Good point, will do.",
                                             "createdAt": "2024-01-02T09:10:00Z"
@@ -1031,6 +1066,7 @@ mod tests {
                         },
                         "comments": {
                             "nodes": [{
+                                "id": "IC_kwfixture1",
                                 "author": { "login": "carol" },
                                 "body": "Nice work!",
                                 "createdAt": "2024-01-02T10:00:00Z"
@@ -1047,6 +1083,7 @@ mod tests {
             "data": {
                 "repository": {
                     "issue": {
+                        "id": "I_kwfixture",
                         "number": 7,
                         "title": "Bug: crash on empty config",
                         "url": "https://github.com/owner/repo/issues/7",
@@ -1065,6 +1102,7 @@ mod tests {
                         },
                         "comments": {
                             "nodes": [{
+                                "id": "IC_kwfixture2",
                                 "author": { "login": "bob" },
                                 "body": "I can reproduce this too.",
                                 "createdAt": "2024-01-01T08:30:00Z"
@@ -1165,11 +1203,13 @@ mod tests {
     fn check_run_duration_none_when_incomplete() {
         // Build a minimal PR JSON with only startedAt set.
         let json = serde_json::json!({
+            "id": "PR_kwduration",
             "number": 1, "title": "t", "url": "u", "isDraft": false, "merged": false,
             "body": null, "createdAt": "2024-01-01T00:00:00Z",
             "updatedAt": "2024-01-01T00:00:00Z",
             "additions": 0, "deletions": 0, "changedFiles": 0,
             "baseRefName": "main", "headRefName": "feat",
+            "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "author": null,
             "files": { "nodes": [] },
             "commits": { "nodes": [{

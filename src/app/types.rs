@@ -21,6 +21,8 @@ pub enum Focus {
     Help,
     /// The generic confirmation overlay.
     Confirm,
+    /// The comment/reply composer overlay.
+    Composer,
     /// The theme picker overlay.
     ThemePicker,
 }
@@ -66,7 +68,7 @@ pub enum DetailKind {
 /// Persisted in [`crate::app::App::per_tab_state`] so that switching away from a tab and
 /// returning to it restores the detail view the user was reading rather than
 /// dumping them back on the dashboard list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailRef {
     pub repo: String,
     pub number: u32,
@@ -86,4 +88,133 @@ pub struct DetailRef {
 pub struct PerTabState {
     /// PR or issue the user had open. `None` when they were on the list view.
     pub detail_ref: Option<DetailRef>,
+}
+
+/// Detail item kind that can receive a top-level comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentSubjectKind {
+    /// Comment on a pull request conversation.
+    PullRequest,
+    /// Comment on an issue conversation.
+    Issue,
+}
+
+/// Destination for the markdown composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentComposerTarget {
+    /// Add a top-level issue-style comment to a PR or issue.
+    TopLevel {
+        /// Repository slug in `owner/name` form.
+        repo: String,
+        /// PR or issue number.
+        number: u32,
+        /// GraphQL node ID of the PR or issue.
+        subject_id: String,
+        /// The type of subject being commented on.
+        kind: CommentSubjectKind,
+    },
+    /// Add a reply to an existing pull request review thread.
+    ReviewThreadReply {
+        /// Repository slug in `owner/name` form.
+        repo: String,
+        /// Pull request number.
+        number: u32,
+        /// GraphQL node ID of the review thread.
+        thread_id: String,
+        /// File path shown for user context.
+        path: String,
+        /// Optional line number shown for user context.
+        line: Option<u32>,
+    },
+}
+
+impl CommentComposerTarget {
+    /// Short label shown in the composer title.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::TopLevel { kind: CommentSubjectKind::PullRequest, .. } => "PR comment",
+            Self::TopLevel { kind: CommentSubjectKind::Issue, .. } => "Issue comment",
+            Self::ReviewThreadReply { .. } => "Thread reply",
+        }
+    }
+
+    /// Stable refresh target after a successful comment mutation.
+    pub fn detail_ref(&self) -> DetailRef {
+        match self {
+            Self::TopLevel { repo, number, kind, .. } => DetailRef {
+                repo: repo.clone(),
+                number: *number,
+                kind: match kind {
+                    CommentSubjectKind::PullRequest => DetailKind::Pr,
+                    CommentSubjectKind::Issue => DetailKind::Issue,
+                },
+            },
+            Self::ReviewThreadReply { repo, number, .. } => {
+                DetailRef { repo: repo.clone(), number: *number, kind: DetailKind::Pr }
+            }
+        }
+    }
+}
+
+/// Full state for the markdown composer overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentComposer {
+    /// Destination for the comment body.
+    pub target: CommentComposerTarget,
+    /// Markdown buffer being edited.
+    pub body: String,
+}
+
+impl CommentComposer {
+    /// Create an empty composer for `target`.
+    pub fn new(target: CommentComposerTarget) -> Self {
+        Self { target, body: String::new() }
+    }
+}
+
+/// User-visible mutation currently in flight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingMutation {
+    /// Merge a pull request.
+    MergePullRequest {
+        /// Repository slug in `owner/name` form.
+        repo: String,
+        /// Pull request number.
+        number: u32,
+        /// Selected merge method.
+        method: crate::github::mutations::MergeMethod,
+    },
+    /// Add a top-level PR/issue comment or a review-thread reply.
+    SubmitComment {
+        /// Destination for the submitted comment.
+        target: CommentComposerTarget,
+    },
+}
+
+impl PendingMutation {
+    /// Text shown in the status bar while the mutation is running.
+    pub fn label(&self) -> String {
+        match self {
+            Self::MergePullRequest { repo, number, method } => {
+                format!("{} {repo}#{number}", method.label())
+            }
+            Self::SubmitComment { target } => match target {
+                CommentComposerTarget::TopLevel { repo, number, .. } => {
+                    format!("comment {repo}#{number}")
+                }
+                CommentComposerTarget::ReviewThreadReply { repo, number, .. } => {
+                    format!("reply {repo}#{number}")
+                }
+            },
+        }
+    }
+}
+
+/// Detail target to refresh after a successful GitHub mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationRefresh {
+    /// Detail item that changed.
+    pub detail_ref: DetailRef,
+    /// Status-bar message for the success path.
+    pub message: String,
 }

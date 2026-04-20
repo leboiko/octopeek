@@ -6,7 +6,7 @@ use crate::ui::pr_detail::DetailSection;
 
 use super::actions::Action;
 use super::state::App;
-use super::types::{DetailKind, Focus, PerTabState};
+use super::types::{CommentSubjectKind, DetailKind, Focus, MutationRefresh, PerTabState};
 
 impl App {
     /// Route an action to the appropriate handler.
@@ -99,12 +99,37 @@ impl App {
             Action::CheckoutBranch => {
                 self.begin_checkout_from_selection();
             }
-            Action::ConfirmCheckout(confirmed) => {
+            Action::ConfirmCheckout(confirmed) | Action::ConfirmPending(confirmed) => {
                 if confirmed {
                     self.execute_confirm();
                 } else {
                     self.dismiss_confirm();
                 }
+            }
+            Action::BeginMergePullRequest(method) => {
+                self.begin_merge_from_detail(method);
+            }
+            Action::OpenCommentComposer(target) => {
+                self.open_comment_composer(target);
+            }
+            Action::SubmitCommentComposer => {
+                self.submit_comment_composer();
+            }
+            Action::MutationStarted(pending) => {
+                self.pending_mutation = Some(pending);
+                self.mutation_error = None;
+            }
+            Action::MutationSucceeded(refresh) => {
+                self.on_mutation_succeeded(refresh);
+            }
+            Action::MutationFailed(err) => {
+                self.pending_mutation = None;
+                self.mutation_error = Some(err.clone());
+                if let Some(draft) = self.pending_comment_draft.take() {
+                    self.composer = Some(draft);
+                    self.focus = Focus::Composer;
+                }
+                self.show_flash(err, std::time::Duration::from_secs(5));
             }
             Action::OpenRepoPicker => {
                 debug!("Action::OpenRepoPicker: switching focus from {:?}", self.focus);
@@ -448,6 +473,14 @@ impl App {
                     }
                 }
             }
+            crate::ui::confirm::ConfirmPending::MergePullRequest {
+                repo,
+                number,
+                method,
+                expected_head_sha,
+            } => {
+                self.spawn_merge_mutation(repo, number, method, expected_head_sha);
+            }
         }
     }
 
@@ -519,5 +552,164 @@ impl App {
         self.confirm = Some(confirm);
         self.confirm_return_focus = self.focus;
         self.focus = Focus::Confirm;
+    }
+
+    /// Build a confirmation overlay for merging the currently-open PR.
+    pub(super) fn begin_merge_from_detail(
+        &mut self,
+        method: crate::github::mutations::MergeMethod,
+    ) {
+        if self.pending_mutation.is_some() {
+            self.show_flash(
+                "Another GitHub action is still running",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let Some(detail) = self.pr_detail.as_ref() else {
+            self.show_flash(
+                "Open a pull request before merging",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        };
+        if detail.merged {
+            self.show_flash("Pull request is already merged", std::time::Duration::from_secs(3));
+            return;
+        }
+        if detail.is_draft {
+            self.show_flash(
+                "Draft pull requests cannot be merged",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+        if detail.head_oid.is_empty() {
+            self.show_flash(
+                "Head SHA unavailable; refresh the PR detail",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let short_sha = detail.head_oid.chars().take(7).collect::<String>();
+        let confirm = crate::ui::confirm::Confirm {
+            title: format!("{} PR", method.label()),
+            prompt: format!(
+                "{} {}#{} into `{}` from `{}` at {short_sha}?",
+                method.label(),
+                detail.repo,
+                detail.number,
+                detail.base_ref,
+                detail.head_ref
+            ),
+            pending_action: crate::ui::confirm::ConfirmPending::MergePullRequest {
+                repo: detail.repo.clone(),
+                number: detail.number,
+                method,
+                expected_head_sha: detail.head_oid.clone(),
+            },
+        };
+
+        self.confirm = Some(confirm);
+        self.confirm_return_focus = self.focus;
+        self.focus = Focus::Confirm;
+    }
+
+    /// Open the markdown composer overlay for `target`.
+    pub(super) fn open_comment_composer(&mut self, target: super::types::CommentComposerTarget) {
+        if self.pending_mutation.is_some() {
+            self.show_flash(
+                "Another GitHub action is still running",
+                std::time::Duration::from_secs(3),
+            );
+            return;
+        }
+        self.composer = Some(super::types::CommentComposer::new(target));
+        self.composer_return_focus = self.focus;
+        self.focus = Focus::Composer;
+    }
+
+    /// Submit the composer body if non-empty, preserving it on validation failure.
+    pub(super) fn submit_comment_composer(&mut self) {
+        let Some(composer) = self.composer.take() else {
+            return;
+        };
+        let body = composer.body.trim().to_owned();
+        if body.is_empty() {
+            self.composer = Some(composer);
+            self.show_flash("Comment body is empty", std::time::Duration::from_secs(2));
+            return;
+        }
+        if self.client.is_none() || self.action_tx.is_none() {
+            self.composer = Some(composer);
+            self.show_flash("No GitHub client configured", std::time::Duration::from_secs(3));
+            return;
+        }
+
+        let target = composer.target.clone();
+        self.pending_comment_draft = Some(composer);
+        self.focus = self.composer_return_focus;
+        self.spawn_comment_mutation(target, body);
+    }
+
+    /// Handle a successful mutation by refreshing the affected detail and inbox.
+    pub(super) fn on_mutation_succeeded(&mut self, refresh: MutationRefresh) {
+        self.pending_mutation = None;
+        self.pending_comment_draft = None;
+        self.mutation_error = None;
+        self.show_flash(refresh.message, std::time::Duration::from_secs(4));
+
+        match refresh.detail_ref.kind {
+            DetailKind::Pr => {
+                self.detail_cache
+                    .invalidate_pr(&refresh.detail_ref.repo, refresh.detail_ref.number);
+            }
+            DetailKind::Issue => {
+                self.detail_cache
+                    .invalidate_issue(&refresh.detail_ref.repo, refresh.detail_ref.number);
+            }
+        }
+
+        if let Some(tx) = self.action_tx.clone() {
+            self.spawn_fetch(tx.clone());
+            let is_visible = match refresh.detail_ref.kind {
+                DetailKind::Pr => self.pr_detail.as_ref().is_some_and(|d| {
+                    d.repo == refresh.detail_ref.repo && d.number == refresh.detail_ref.number
+                }),
+                DetailKind::Issue => self.issue_detail.as_ref().is_some_and(|d| {
+                    d.repo == refresh.detail_ref.repo && d.number == refresh.detail_ref.number
+                }),
+            };
+            if is_visible {
+                self.detail_refreshing =
+                    Some((refresh.detail_ref.repo.clone(), refresh.detail_ref.number));
+                self.spawn_detail_fetch_background(
+                    refresh.detail_ref.kind,
+                    refresh.detail_ref.repo,
+                    refresh.detail_ref.number,
+                    tx,
+                );
+            }
+        }
+    }
+
+    /// Build a top-level comment target for the currently-open PR or issue.
+    pub(super) fn top_level_comment_target(&self) -> Option<super::types::CommentComposerTarget> {
+        if let Some(detail) = &self.pr_detail {
+            return Some(super::types::CommentComposerTarget::TopLevel {
+                repo: detail.repo.clone(),
+                number: detail.number,
+                subject_id: detail.node_id.clone(),
+                kind: CommentSubjectKind::PullRequest,
+            });
+        }
+        self.issue_detail.as_ref().map(|detail| super::types::CommentComposerTarget::TopLevel {
+            repo: detail.repo.clone(),
+            number: detail.number,
+            subject_id: detail.node_id.clone(),
+            kind: CommentSubjectKind::Issue,
+        })
     }
 }

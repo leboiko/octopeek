@@ -289,6 +289,7 @@ mod tests {
         let now = Utc::now();
         let comments = (0..num_comments)
             .map(|i| IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: format!("user-{i}"),
                 body_markdown: format!("Comment body {i}"),
                 created_at: now,
@@ -296,6 +297,7 @@ mod tests {
             .collect();
 
         IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 7,
             title: "Test Issue".to_owned(),
@@ -366,6 +368,7 @@ mod tests {
         let now = Utc::now();
         let p = Palette::default();
         let detail = IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 1,
             title: "Issue".to_owned(),
@@ -378,6 +381,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             comments: vec![IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "eve".to_owned(),
                 // Bold + inline code in the body.
                 body_markdown: "**critical** and `fix_it()`".to_owned(),
@@ -410,6 +414,7 @@ mod tests {
         let long_body = (0..10).map(|i| format!("Para {i}.")).collect::<Vec<_>>().join("\n\n");
 
         let detail = IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 1,
             title: "Issue".to_owned(),
@@ -422,6 +427,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             comments: vec![IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "frank".to_owned(),
                 body_markdown: long_body,
                 created_at: now,

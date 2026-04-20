@@ -83,6 +83,7 @@ pub fn fixture_pr_detail(
 
     let review_threads = (0..num_threads)
         .map(|i| ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: format!("src/file-{i}.rs"),
             #[allow(clippy::cast_possible_truncation)]
             line: Some((i as u32 + 1) * 5),
@@ -91,6 +92,7 @@ pub fn fixture_pr_detail(
             is_outdated: false,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: format!("user-{i}"),
                 body_markdown: format!("Comment {i}"),
                 created_at: now,
@@ -101,6 +103,7 @@ pub fn fixture_pr_detail(
         .collect();
 
     PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "owner/repo".to_owned(),
         number: 1,
         title: "Test PR".to_owned(),
@@ -109,6 +112,7 @@ pub fn fixture_pr_detail(
         body_markdown: "## Summary\n\nThis is a test PR.".to_owned(),
         base_ref: "main".to_owned(),
         head_ref: "feat/test".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 100,
         deletions: 50,
@@ -122,6 +126,7 @@ pub fn fixture_pr_detail(
         reviews,
         review_threads,
         issue_comments: vec![IssueComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "carol".to_owned(),
             body_markdown: "Nice work!".to_owned(),
             created_at: now,
@@ -567,6 +572,7 @@ fn thread_comment_body_renders_as_markdown() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -575,6 +581,7 @@ fn thread_comment_body_renders_as_markdown() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -586,6 +593,7 @@ fn thread_comment_body_renders_as_markdown() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(10),
             start_line: None,
@@ -593,6 +601,7 @@ fn thread_comment_body_renders_as_markdown() {
             is_outdated: false,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "bob".to_owned(),
                 body_markdown: "# Heading\n\n**bold** text\n\n```rust\nfn f() {}\n```".to_owned(),
                 created_at: now,
@@ -641,6 +650,7 @@ fn files_overview_shows_thread_badge_when_index_reports_threads() {
     // Attach one unresolved thread to file-1 and clear the fixture's defaults.
     let now = Utc::now();
     detail.review_threads = vec![ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: "src/file-1.rs".to_owned(),
         line: Some(3),
         start_line: None,
@@ -648,6 +658,7 @@ fn files_overview_shows_thread_badge_when_index_reports_threads() {
         is_outdated: false,
         diff_hunk: None,
         comments: vec![ReviewComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "alice".to_owned(),
             body_markdown: "please fix".to_owned(),
             created_at: now,
@@ -696,6 +707,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
     let now = Utc::now();
     let p = Palette::default();
     let active = ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: "src/a.rs".to_owned(),
         line: Some(10),
         start_line: None,
@@ -703,6 +715,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         is_outdated: false,
         diff_hunk: None,
         comments: vec![ReviewComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "alice".to_owned(),
             body_markdown: "still open".to_owned(),
             created_at: now,
@@ -711,6 +724,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         }],
     };
     let outdated = ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: "src/b.rs".to_owned(),
         line: Some(5),
         start_line: None,
@@ -718,6 +732,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         is_outdated: true,
         diff_hunk: None,
         comments: vec![ReviewComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "bob".to_owned(),
             body_markdown: "already fixed".to_owned(),
             created_at: now,
@@ -726,6 +741,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         }],
     };
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -734,6 +750,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -787,6 +804,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
     let now = Utc::now();
     let p = Palette::default();
     let outdated = ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: "src/b.rs".to_owned(),
         line: Some(5),
         start_line: None,
@@ -794,6 +812,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         is_outdated: true,
         diff_hunk: None,
         comments: vec![ReviewComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "bob".to_owned(),
             body_markdown: "confidential gossip".to_owned(),
             created_at: now,
@@ -802,6 +821,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         }],
     };
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -810,6 +830,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -864,6 +885,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+            node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -872,6 +894,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+            head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -883,6 +906,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(3),
             start_line: None,
@@ -893,6 +917,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
                     .to_owned(),
             ),
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "alice".to_owned(),
                 body_markdown: "Looks good.".to_owned(),
                 created_at: now,
@@ -940,6 +965,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -948,6 +974,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -959,6 +986,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(3),
             start_line: None,
@@ -966,6 +994,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
             is_outdated: false,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "alice".to_owned(),
                 body_markdown: "No hunk.".to_owned(),
                 created_at: now,
@@ -1009,6 +1038,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1017,6 +1047,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1028,6 +1059,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(5),
             start_line: None,
@@ -1036,6 +1068,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
             diff_hunk: None,
             comments: vec![
                 ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "alice".to_owned(),
                     body_markdown: "First comment".to_owned(),
                     created_at: now,
@@ -1043,6 +1076,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
                     original_commit_id: None,
                 },
                 ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "bob".to_owned(),
                     body_markdown: "Second comment".to_owned(),
                     created_at: now,
@@ -1050,6 +1084,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
                     original_commit_id: None,
                 },
                 ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "carol".to_owned(),
                     body_markdown: "Third comment".to_owned(),
                     created_at: now,
@@ -1110,6 +1145,7 @@ fn unresolved_anchor_points_at_thread_header() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1118,6 +1154,7 @@ fn unresolved_anchor_points_at_thread_header() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1129,6 +1166,7 @@ fn unresolved_anchor_points_at_thread_header() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(42),
             start_line: None,
@@ -1136,6 +1174,7 @@ fn unresolved_anchor_points_at_thread_header() {
             is_outdated: false,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "bob".to_owned(),
                 body_markdown: "Needs refactor.".to_owned(),
                 created_at: now,
@@ -1169,6 +1208,7 @@ fn replies_render_in_accent_alt() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1177,6 +1217,7 @@ fn replies_render_in_accent_alt() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1188,6 +1229,7 @@ fn replies_render_in_accent_alt() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(1),
             start_line: None,
@@ -1196,6 +1238,7 @@ fn replies_render_in_accent_alt() {
             diff_hunk: None,
             comments: vec![
                 ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "opener".to_owned(),
                     body_markdown: "Opening thought.".to_owned(),
                     created_at: now,
@@ -1203,6 +1246,7 @@ fn replies_render_in_accent_alt() {
                     original_commit_id: None,
                 },
                 ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "replier".to_owned(),
                     body_markdown: "Counter-point.".to_owned(),
                     created_at: now,
@@ -1269,6 +1313,7 @@ fn collapsed_long_comment_shows_expand_hint() {
     let long_body = (0..10).map(|i| format!("Paragraph {i}.")).collect::<Vec<_>>().join("\n\n");
 
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1277,6 +1322,7 @@ fn collapsed_long_comment_shows_expand_hint() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1288,6 +1334,7 @@ fn collapsed_long_comment_shows_expand_hint() {
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line: Some(1),
             start_line: None,
@@ -1295,6 +1342,7 @@ fn collapsed_long_comment_shows_expand_hint() {
             is_outdated: false,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "alice".to_owned(),
                 body_markdown: long_body,
                 created_at: now,
@@ -1332,6 +1380,7 @@ fn issue_comments_render_markdown_styles() {
     let now = Utc::now();
     let p = Palette::default();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1340,6 +1389,7 @@ fn issue_comments_render_markdown_styles() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1352,6 +1402,7 @@ fn issue_comments_render_markdown_styles() {
         reviews: vec![],
         review_threads: vec![],
         issue_comments: vec![IssueComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "dave".to_owned(),
             body_markdown: "**important** and `code_snippet`".to_owned(),
             created_at: now,
@@ -1418,6 +1469,7 @@ fn section_labels_are_correct() {
 fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetail {
     let now = Utc::now();
     PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "owner/repo".to_owned(),
         number: 42,
         title: "Diff thread test".to_owned(),
@@ -1426,6 +1478,7 @@ fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetai
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat/inline".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 1,
         deletions: 0,
@@ -1446,6 +1499,7 @@ fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetai
         check_runs: vec![],
         reviews: vec![],
         review_threads: vec![ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: "src/lib.rs".to_owned(),
             line,
             start_line: None,
@@ -1453,6 +1507,7 @@ fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetai
             is_outdated: outdated,
             diff_hunk: None,
             comments: vec![ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "bob".to_owned(),
                 body_markdown: "thread body text".to_owned(),
                 created_at: now,
@@ -1562,6 +1617,7 @@ fn overflow_block_renders_outdated_and_file_level() {
 
     let now = Utc::now();
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "owner/repo".to_owned(),
         number: 99,
         title: "Overflow test".to_owned(),
@@ -1570,6 +1626,7 @@ fn overflow_block_renders_outdated_and_file_level() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 1,
         deletions: 0,
@@ -1589,6 +1646,7 @@ fn overflow_block_renders_outdated_and_file_level() {
         review_threads: vec![
             // File-level thread: line == None
             ReviewThread {
+                node_id: "THREAD_node".to_owned(),
                 path: "src/lib.rs".to_owned(),
                 line: None,
                 start_line: None,
@@ -1596,6 +1654,7 @@ fn overflow_block_renders_outdated_and_file_level() {
                 is_outdated: false,
                 diff_hunk: None,
                 comments: vec![ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "bob".to_owned(),
                     body_markdown: "file-level comment".to_owned(),
                     created_at: now,
@@ -1605,6 +1664,7 @@ fn overflow_block_renders_outdated_and_file_level() {
             },
             // Outdated thread: line == Some(5) but is_outdated == true
             ReviewThread {
+                node_id: "THREAD_node".to_owned(),
                 path: "src/lib.rs".to_owned(),
                 line: Some(5),
                 start_line: None,
@@ -1612,6 +1672,7 @@ fn overflow_block_renders_outdated_and_file_level() {
                 is_outdated: true,
                 diff_hunk: None,
                 comments: vec![ReviewComment {
+                    node_id: "COMMENT_node".to_owned(),
                     author: "carol".to_owned(),
                     body_markdown: "outdated comment".to_owned(),
                     created_at: now,
@@ -1885,6 +1946,7 @@ fn commits_section_key_is_sixth() {
 /// Helper: build a `ReviewComment` with an explicit `original_commit_id`.
 fn make_review_comment(author: &str, body: &str, commit_oid: Option<&str>) -> ReviewComment {
     ReviewComment {
+        node_id: "COMMENT_node".to_owned(),
         author: author.to_owned(),
         body_markdown: body.to_owned(),
         created_at: Utc::now(),
@@ -1897,6 +1959,7 @@ fn make_review_comment(author: &str, body: &str, commit_oid: Option<&str>) -> Re
 /// the given SHA (or `None` for old cached payloads).
 fn make_thread(path: &str, author: &str, body: &str, commit_oid: Option<&str>) -> ReviewThread {
     ReviewThread {
+        node_id: "THREAD_node".to_owned(),
         path: path.to_owned(),
         line: Some(1),
         start_line: None,
@@ -1915,6 +1978,7 @@ fn scoped_comments_filter_by_origin_commit() {
     let p = Palette::default();
 
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1923,6 +1987,7 @@ fn scoped_comments_filter_by_origin_commit() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -1938,6 +2003,7 @@ fn scoped_comments_filter_by_origin_commit() {
             make_thread("src/b.rs", "bob", "bob thread body", Some("bbbbbbb_sha")),
         ],
         issue_comments: vec![IssueComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "carol".to_owned(),
             body_markdown: "carol issue comment".to_owned(),
             created_at: now,
@@ -1968,6 +2034,7 @@ fn scoped_comments_show_scope_hint() {
 
     let sha = "a3f7b2caabbcc";
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -1976,6 +2043,7 @@ fn scoped_comments_show_scope_hint() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -2008,6 +2076,7 @@ fn scoped_comments_empty_scope_shows_notice() {
     let p = Palette::default();
 
     let detail = PrDetail {
+        node_id: "PR_node".to_owned(),
         repo: "r".to_owned(),
         number: 1,
         title: "T".to_owned(),
@@ -2016,6 +2085,7 @@ fn scoped_comments_empty_scope_shows_notice() {
         body_markdown: String::new(),
         base_ref: "main".to_owned(),
         head_ref: "feat".to_owned(),
+        head_oid: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         is_draft: false,
         additions: 0,
         deletions: 0,
@@ -2029,6 +2099,7 @@ fn scoped_comments_empty_scope_shows_notice() {
         // Thread on a different SHA — the scope will miss.
         review_threads: vec![make_thread("src/a.rs", "alice", "thread body", Some("other_sha"))],
         issue_comments: vec![IssueComment {
+            node_id: "COMMENT_node".to_owned(),
             author: "dave".to_owned(),
             body_markdown: "some issue comment".to_owned(),
             created_at: now,

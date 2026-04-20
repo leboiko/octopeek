@@ -53,12 +53,15 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::RepoPicker => "REPOS",
         Focus::Help => "HELP",
         Focus::Confirm => "CONFIRM",
+        Focus::Composer => "COMPOSE",
         Focus::ThemePicker => "THEME",
     };
 
     // Left: fetch indicator — inbox sync takes priority, then detail SWR.
     let fetch_indicator = if app.fetching {
         Span::styled(" syncing... ", Style::default().fg(p.dim))
+    } else if let Some(pending) = &app.pending_mutation {
+        Span::styled(format!(" {}... ", pending.label()), Style::default().fg(p.warning))
     } else if app.detail_refreshing.is_some() {
         Span::styled(" refreshing... ", Style::default().fg(p.dim))
     } else if let Some((ready, total, in_flight)) = app.commit_diff_cache_counts()
@@ -84,11 +87,12 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
             "h/j/k/l move  0/$ line ends  V select  y yank  Y yank line  Esc exit"
         }
         Focus::Detail => {
-            "!@#$% sections  C commits  Enter commit diff  Esc commits/back  J/K file  j/k scroll  v copy"
+            "!@#$% sections  C commits  Up/Down files  M merge  S squash  A comment  R reply"
         }
         Focus::RepoPicker => "j/k nav  a add  d delete  Enter select  Esc close",
         Focus::Help => "? / Esc / q close help",
         Focus::Confirm => "[y] confirm  [N] / Esc cancel",
+        Focus::Composer => "type markdown  Enter newline  Ctrl+S submit  Esc cancel",
         Focus::ThemePicker => "j/k move  Enter apply  Esc cancel",
     };
 

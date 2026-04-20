@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+### Added
+
+- Added GitHub mutations for pull-request merge and squash-merge, guarded by
+  the PR head SHA so force-push races fail closed.
+- Added a markdown composer for top-level PR/issue comments and existing review
+  thread replies, preserving drafts when submission fails.
+
+### Changed
+
+- PR detail now pages the REST pull-request files endpoint so the Files section
+  can show the same file set as GitHub's changed-files count instead of the
+  GraphQL `files(first: 100)` fallback.
+- Files overview supports `Up` / `Down` for file selection, matching Commits
+  navigation.
+
+### Fixed
+
+- `Esc` / `b` from an unscoped Files diff now returns to the Files overview
+  instead of leaving the detail view. Commit-scoped diffs still return to the
+  Commits list.
+
 ## [0.2.7] — 2026-04-20
 
 Patch release for keyboard layouts where `^` is a dead key.

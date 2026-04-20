@@ -11,6 +11,8 @@ use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::github;
 
+use super::types::{CommentComposerTarget, MutationRefresh, PendingMutation};
+
 /// All actions that can be dispatched through the application event loop.
 ///
 /// Many variants are matched in `handle_action` but not yet constructed
@@ -90,6 +92,27 @@ pub enum Action {
     /// `true` = confirmed, `false` = cancelled.
     /// Phase 5: runs `git checkout <branch>` in the current working directory.
     ConfirmCheckout(bool),
+
+    /// Start the merge-confirmation flow for the current PR.
+    BeginMergePullRequest(github::mutations::MergeMethod),
+
+    /// Confirm or cancel the currently-displayed confirmation overlay.
+    ConfirmPending(bool),
+
+    /// Open the markdown composer for a PR/issue comment or review-thread reply.
+    OpenCommentComposer(CommentComposerTarget),
+
+    /// Submit the markdown composer buffer.
+    SubmitCommentComposer,
+
+    /// A GitHub mutation started.
+    MutationStarted(PendingMutation),
+
+    /// A GitHub mutation succeeded.
+    MutationSucceeded(MutationRefresh),
+
+    /// A GitHub mutation failed.
+    MutationFailed(String),
 
     // ── View filtering ────────────────────────────────────────────────────────
     /// Toggle between "inbox" mode (only PRs/issues involving the viewer) and

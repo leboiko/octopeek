@@ -110,6 +110,7 @@ mod tests {
 
     fn mk_thread(path: &str, line: Option<u32>, outdated: bool, resolved: bool) -> ReviewThread {
         ReviewThread {
+            node_id: "THREAD_node".to_owned(),
             path: path.to_owned(),
             line,
             start_line: None,
@@ -117,6 +118,7 @@ mod tests {
             is_outdated: outdated,
             diff_hunk: None,
             comments: vec![crate::github::detail::ReviewComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "u".to_owned(),
                 body_markdown: "c".to_owned(),
                 created_at: Utc::now(),
