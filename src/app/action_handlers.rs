@@ -134,6 +134,14 @@ impl App {
                 }
             }
             Action::PrDetailLoaded(detail) => {
+                // Collect live SHAs before the borrow ends, used for pruning.
+                let current_shas: Vec<String> =
+                    detail.commits.iter().map(|c| c.sha.clone()).collect();
+
+                // Evict stale per-commit patch entries. A force-push can
+                // rewrite SHAs; keeping stale patches would serve wrong diffs.
+                self.detail_cache.prune_stale_commits(&detail.repo, &current_shas);
+
                 // Always upsert into cache — background SWR fetches land here
                 // too, even if the user has tabbed away.
                 self.detail_cache.insert_pr(*detail.clone());
@@ -155,6 +163,10 @@ impl App {
                     // the Files overview + future inline-expansion path have
                     // O(1) `(path, line)` lookups on the current thread set.
                     self.thread_index = Some(crate::ui::pr_detail::build_thread_index(&pr_detail));
+                    // Reset the commits cursor and clear commit scope on a fresh
+                    // detail so stale indices can't point into a rewritten list.
+                    self.commits_cursor = 0;
+                    self.selected_commit = None;
                     self.pr_detail = Some(pr_detail);
                 }
                 self.clear_detail_loading_markers(&detail.repo, detail.number);
@@ -185,6 +197,33 @@ impl App {
                 }
                 // Clear the SWR marker regardless so a future tick can retry.
                 self.detail_refreshing = None;
+            }
+            Action::CommitDiffLoaded(repo, sha, patches) => {
+                // Store the per-commit patch map so the Files renderer can use it
+                // when `selected_commit` points at this SHA.
+                self.detail_cache.insert_commit_patches(repo, sha, patches);
+                // No explicit redraw call needed: the next event-loop iteration
+                // always re-renders after processing an action.
+            }
+            Action::CommitDiffFailed(repo, sha, err) => {
+                warn!("commit diff fetch failed for {repo}@{sha}: {err}");
+                // Flash the error and snap back to HEAD so the Files section
+                // doesn't stay blank. Failing silently is worse than snapping back.
+                self.show_flash(
+                    format!("Commit diff fetch failed: {err}"),
+                    std::time::Duration::from_secs(4),
+                );
+                // Only clear scope if we're still scoped to this SHA.
+                if let Some(idx) = self.selected_commit {
+                    let still_scoped = self
+                        .pr_detail
+                        .as_ref()
+                        .and_then(|d| d.commits.get(idx))
+                        .is_some_and(|c| c.sha == sha);
+                    if still_scoped {
+                        self.selected_commit = None;
+                    }
+                }
             }
             Action::AutoRefresh => {
                 // Inbox refresh (same as RefreshAll / Refresh).
@@ -252,6 +291,8 @@ impl App {
         self.pr_detail_sidebar_scroll = 0;
         self.pr_detail_expanded_threads.clear();
         *self.pr_detail_diff_cursor.borrow_mut() = None;
+        self.selected_commit = None;
+        self.commits_cursor = 0;
         self.copy_mode.exit();
     }
 

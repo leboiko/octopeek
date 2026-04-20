@@ -41,6 +41,9 @@ const ADDS_COLS: usize = 6;
 /// Fixed width for the deletions column (e.g. "-1234" = 5 chars).
 const DELS_COLS: usize = 5;
 
+/// Fixed width reserved for the cursor indicator (`▶ ` or `  ` = 2 chars).
+const CURSOR_COLS: usize = 2;
+
 /// Minimum terminal width below which we start dropping optional columns.
 const DROP_STATS_BELOW: usize = 60;
 
@@ -54,11 +57,15 @@ const DROP_AGE_BELOW: usize = 50;
 ///
 /// # Arguments
 ///
-/// * `detail` - The loaded PR detail (commits already sorted newest-first).
-/// * `p`      - Active colour palette.
+/// * `detail`  - The loaded PR detail (commits already sorted newest-first).
+/// * `p`       - Active colour palette.
+/// * `cursor`  - Index of the highlighted row (drawn as `▶`). `None` disables
+///   the cursor indicator (e.g. when called from copy-mode line-building where
+///   cursor position is irrelevant).
 pub(super) fn build_commits(
     detail: &PrDetail,
     p: &Palette,
+    cursor: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     if detail.commits.is_empty() {
         return (Vec::new(), Vec::new());
@@ -75,7 +82,7 @@ pub(super) fn build_commits(
     let show_age = avail >= DROP_AGE_BELOW;
 
     // Compute the budget for the headline column.
-    let mut fixed = SHA_COLS + AUTHOR_COLS;
+    let mut fixed = CURSOR_COLS + SHA_COLS + AUTHOR_COLS;
     if show_age {
         fixed += AGE_COLS;
     }
@@ -93,11 +100,20 @@ pub(super) fn build_commits(
     lines.push(section_header(&format!("COMMITS ({count})"), p));
     lines.push(Line::from(""));
 
-    for commit in &detail.commits {
-        let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
+    for (row_idx, commit) in detail.commits.iter().enumerate() {
+        let is_cursor = cursor.is_some_and(|c| c == row_idx);
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(9);
 
-        // Column 1: short SHA (7 chars) in muted colour.
-        spans.push(Span::styled(format!("{:<7} ", commit.short_sha), Style::default().fg(p.muted)));
+        // Cursor indicator: `▶ ` when this row is highlighted, `  ` otherwise.
+        let indicator = if is_cursor { "\u{25b6} " } else { "  " }; // ▶
+        let indicator_style =
+            if is_cursor { Style::default().fg(p.accent) } else { Style::default() };
+        spans.push(Span::styled(indicator.to_owned(), indicator_style));
+
+        // Column 1: short SHA (7 chars) in muted colour (accent when selected).
+        let sha_style =
+            if is_cursor { Style::default().fg(p.accent) } else { Style::default().fg(p.muted) };
+        spans.push(Span::styled(format!("{:<7} ", commit.short_sha), sha_style));
 
         // Column 2: message headline — flex, truncated to budget.
         let headline = truncate(&commit.headline, headline_cols);

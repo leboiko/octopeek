@@ -2,6 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::github;
 use crate::ui::pr_detail::DetailSection;
 
 use super::actions::Action;
@@ -266,6 +267,32 @@ impl App {
                 self.detail_pending_g = false;
                 self.handle_action(Action::OpenHelp);
             }
+            // Commits section: j/k move the cursor; G jumps bottom; Enter scopes.
+            // These guards must appear BEFORE the unconditional j/k/G scroll arms
+            // so that match short-circuits here when in the Commits section.
+            KeyCode::Char('j') | KeyCode::Down
+                if self.pr_detail_selected_section == DetailSection::Commits =>
+            {
+                self.detail_pending_g = false;
+                if let Some(detail) = &self.pr_detail {
+                    let last = detail.commits.len().saturating_sub(1);
+                    self.commits_cursor = (self.commits_cursor + 1).min(last);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self.pr_detail_selected_section == DetailSection::Commits =>
+            {
+                self.detail_pending_g = false;
+                self.commits_cursor = self.commits_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('G') if self.pr_detail_selected_section == DetailSection::Commits => {
+                self.detail_pending_g = false;
+                if let Some(detail) = &self.pr_detail {
+                    let last = detail.commits.len().saturating_sub(1);
+                    self.commits_cursor = last;
+                }
+            }
+            // General j/k scroll (not in Commits section, which is handled above).
             KeyCode::Char('j') | KeyCode::Down => {
                 self.detail_pending_g = false;
                 let next = self.right_pane_scroll().saturating_add(1);
@@ -289,7 +316,12 @@ impl App {
             KeyCode::Char('g') => {
                 if self.detail_pending_g {
                     self.detail_pending_g = false;
-                    *self.right_pane_scroll_mut() = 0;
+                    // gg in Commits section jumps cursor to top; elsewhere scrolls to top.
+                    if self.pr_detail_selected_section == DetailSection::Commits {
+                        self.commits_cursor = 0;
+                    } else {
+                        *self.right_pane_scroll_mut() = 0;
+                    }
                 } else {
                     self.detail_pending_g = true;
                 }
@@ -309,6 +341,52 @@ impl App {
             KeyCode::Char('K') if self.pr_detail_selected_section == DetailSection::Files => {
                 self.detail_pending_g = false;
                 self.cycle_files_cursor(-1);
+            }
+            KeyCode::Enter if self.pr_detail_selected_section == DetailSection::Commits => {
+                self.detail_pending_g = false;
+                // Scope the Files section to the highlighted commit's delta.
+                // Intentionally clear thread expansion and diff cursor state
+                // when switching scope — threads are anchored to HEAD-view line
+                // numbers and become meaningless under a per-commit diff view.
+                self.pr_detail_expanded_threads.clear();
+                *self.pr_detail_diff_cursor.borrow_mut() = None;
+                self.selected_commit = Some(self.commits_cursor);
+
+                // Kick a background fetch for the commit's patch if not cached.
+                // Collect what we need before calling the spawn helper (which
+                // takes ownership of client/repo/sha).
+                let fetch_args: Option<(std::sync::Arc<github::Client>, String, String)> = self
+                    .action_tx
+                    .as_ref()
+                    .and(self.pr_detail.as_ref())
+                    .and(self.client.as_ref())
+                    .and_then(|_| {
+                        let detail = self.pr_detail.as_ref()?;
+                        let commit = detail.commits.get(self.commits_cursor)?;
+                        let sha = commit.sha.clone();
+                        let repo = detail.repo.clone();
+                        if self.detail_cache.get_commit_patches(&repo, &sha).is_some() {
+                            return None; // already cached
+                        }
+                        let client = self.client.clone()?;
+                        Some((client, repo, sha))
+                    });
+                if let (Some(tx), Some((client, repo, sha))) = (self.action_tx.clone(), fetch_args)
+                {
+                    crate::app::fetch::spawn_commit_diff_fetch(client, repo, sha, tx);
+                }
+            }
+            // H (capital): return to HEAD cumulative view from any scoped state.
+            // Guard: only fires when actually scoped (selected_commit.is_some())
+            // so we don't accidentally shadow vim-style `H` for non-scoped usage.
+            KeyCode::Char('H') if self.selected_commit.is_some() => {
+                self.detail_pending_g = false;
+                // Intentionally clear thread expansion and diff cursor when
+                // returning to HEAD — same reasoning as scoping into a commit.
+                self.pr_detail_expanded_threads.clear();
+                *self.pr_detail_diff_cursor.borrow_mut() = None;
+                self.selected_commit = None;
+                self.show_flash("Returned to HEAD", std::time::Duration::from_millis(1500));
             }
             // Section picker: `!@#$%` for Description/Checks/Reviews/Files/
             // Comments (SHIFT+1..5 on US keyboards). Terminals that deliver
@@ -1020,5 +1098,8 @@ impl App {
         // Clear ephemeral thread expansion state alongside the index.
         self.pr_detail_expanded_threads.clear();
         *self.pr_detail_diff_cursor.borrow_mut() = None;
+        // Clear commit-scope state so a manual refresh always starts unscoped.
+        self.selected_commit = None;
+        self.commits_cursor = 0;
     }
 }

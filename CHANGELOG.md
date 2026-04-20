@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-04-20
+
+Second slice of the three-patch Commits feature arc. The Commits
+section shipped as a read-only list in 0.2.0 — now it's
+interactive: selecting a commit re-scopes the Files section to
+that commit's delta, a loud inline indicator makes the scoped
+state unmissable, and `H` returns to HEAD from anywhere.
+
+### Added
+
+- **Commit selection + Files scoping.** `Enter` on the highlighted
+  row in the Commits section fetches that commit's delta via
+  `GET /repos/.../commits/{sha}` and routes the Files view
+  through the scoped patches. Files the commit didn't touch are
+  hidden from navigation while scoped.
+- **`H` key** returns to HEAD from any section while
+  `selected_commit.is_some()`. Flashes `"Returned to HEAD"`. No-op
+  on HEAD so vim-style movement can land here later without
+  conflict.
+- **Inline scope strip** at the top of the right pane when
+  scoped: `◈ Scoped to a3f7b2c — "feat: commit scope selector" ·
+  H returns to HEAD` in `palette.warning` on a `help_bg` row.
+  Absent entirely at HEAD — zero noise for the 100% case.
+- **Status bar segment**: `◈ a3f7b2c · H→HEAD` in
+  `palette.warning` when scoped. Complements the strip.
+- **`j` / `k` / `gg` / `G`** navigate the commit list
+  (`commits_cursor`). Standard vim motions; no new infrastructure.
+
+### Data layer
+
+- **`DetailCache::commit_patches`** — new `HashMap<(repo, sha),
+  Cached<HashMap<path, Option<patch>>>>`. Same `FRESH_TTL` as
+  existing caches.
+- **Force-push defense.** On every fresh `PrDetail`, the cache
+  prunes `commit_patches` entries whose SHA is absent from the
+  new commit list. If `selected_commit` pointed at a removed
+  index, it resets to `None` and flashes a notice.
+- **REST fetch.** New `Client::fetch_commit_diff(repo, sha)`
+  parses the response into the same `HashMap<path,
+  Option<patch>>` shape the PR files path already uses. Binary
+  files and oversized diffs preserve `None` just like today.
+
+### Internal
+
+- `App` gains `selected_commit: Option<usize>` and
+  `commits_cursor: usize`. Both cleared in `clear_detail_state`.
+- `Action::CommitDiffLoaded` + `Action::CommitDiffFailed` +
+  `App::spawn_commit_diff_fetch` follow the existing
+  `spawn_supervised_detail_fetch` + `send_or_warn` patterns.
+- Expanded-thread state (`pr_detail_expanded_threads`,
+  `pr_detail_diff_cursor`) clears on every `selected_commit`
+  change — line anchors aren't valid across a scope switch.
+  Documented inline as intentional UX, not a bug.
+- Inline thread expansion (`t`/`T`) disabled while scoped. The
+  thread hint line above the diff adjusts accordingly.
+
+### Known limitations
+
+- Comments are NOT filtered by commit yet — they render full
+  PR-wide. 0.2.2 adds `original_commit_id`-based filtering.
+- Per-commit `statusCheckRollup` isn't shown in the commit list
+  rows. Also 0.2.2.
+
 ## [0.2.0] — 2026-04-20
 
 First slice of a three-patch arc adding per-commit navigation to the
@@ -499,7 +562,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/leboiko/octopeek/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/leboiko/octopeek/compare/v0.1.11...v0.2.0
 [0.1.11]: https://github.com/leboiko/octopeek/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/leboiko/octopeek/compare/v0.1.9...v0.1.10

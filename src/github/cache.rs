@@ -9,6 +9,12 @@ use std::time::{Duration, Instant};
 
 use crate::github::detail::{IssueDetail, PrDetail};
 
+/// Convenience alias for the per-commit patch map stored in [`DetailCache`].
+///
+/// Maps file path to an optional unified-diff patch string (`None` for binary
+/// files or diffs that GitHub refuses to inline).
+pub type CommitPatchMap = HashMap<String, Option<String>>;
+
 /// How long a cache entry is considered fresh before a background re-fetch is
 /// triggered (stale-while-revalidate). The entry is still served immediately;
 /// only the background kick changes.
@@ -57,6 +63,12 @@ pub struct DetailCache {
     pub(crate) prs: HashMap<(String, u32), Cached<PrDetail>>,
     /// Issue cache, keyed by `(repo_slug, number)`.
     pub(crate) issues: HashMap<(String, u32), Cached<IssueDetail>>,
+    /// Per-commit file-patch cache.
+    ///
+    /// Keyed by `(repo_slug, full_sha)`. Value is `path → Option<patch>`,
+    /// matching the shape of the PR-level REST patches map. `None` for the
+    /// inner `Option` means the file is binary or the diff is too large.
+    pub(crate) commit_patches: HashMap<(String, String), Cached<CommitPatchMap>>,
 }
 
 impl DetailCache {
@@ -106,6 +118,32 @@ impl DetailCache {
     /// Remove the cached issue entry for `(repo, number)`, if present.
     pub fn invalidate_issue(&mut self, repo: &str, number: u32) {
         self.issues.remove(&(repo.to_owned(), number));
+    }
+
+    /// Look up a cached per-commit patch map.
+    ///
+    /// Returns `None` on a cold miss (not yet fetched or evicted by
+    /// [`Self::prune_stale_commits`]).
+    pub fn get_commit_patches(&self, repo: &str, sha: &str) -> Option<&Cached<CommitPatchMap>> {
+        self.commit_patches.get(&(repo.to_owned(), sha.to_owned()))
+    }
+
+    /// Insert or replace the cached per-commit patch map for `(repo, sha)`.
+    ///
+    /// The `fetched_at` timestamp is reset to `Instant::now()`.
+    pub fn insert_commit_patches(&mut self, repo: String, sha: String, map: CommitPatchMap) {
+        self.commit_patches.insert((repo, sha), Cached::new(map));
+    }
+
+    /// Evict any per-commit patch entries whose SHA is absent from
+    /// `current_shas`.
+    ///
+    /// Called whenever a fresh `PrDetail` replaces the old one (force-push
+    /// can rewrite SHAs). An evicted SHA that `selected_commit` pointed at
+    /// is handled by the caller (the action handler resets `selected_commit`
+    /// to `None`).
+    pub fn prune_stale_commits(&mut self, repo: &str, current_shas: &[String]) {
+        self.commit_patches.retain(|(r, sha), _| r != repo || current_shas.contains(sha));
     }
 }
 

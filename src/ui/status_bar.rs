@@ -87,7 +87,22 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         Focus::ThemePicker => "j/k move  Enter apply  Esc cancel",
     };
 
-    let line = Line::from(vec![
+    // Commit-scope badge: appended after the hints when the user has scoped
+    // the Files section to a single commit's delta.
+    let commit_scope_span: Option<Span<'static>> =
+        if let (Some(idx), Focus::Detail) = (app.selected_commit, app.focus) {
+            app.pr_detail.as_ref().and_then(|d| d.commits.get(idx)).map(|c| {
+                let glyph = if app.config.show_ascii_glyphs { "@" } else { "\u{25c8}" }; // ◈
+                Span::styled(
+                    format!("  {glyph} {}   H\u{2192}HEAD ", c.short_sha),
+                    Style::default().fg(p.warning),
+                )
+            })
+        } else {
+            None
+        };
+
+    let mut spans = vec![
         Span::styled(
             format!(" {focus_label} "),
             Style::default().fg(p.on_accent_fg).bg(p.accent).add_modifier(Modifier::BOLD),
@@ -95,7 +110,11 @@ pub fn draw(f: &mut Frame, app: &App, flash: Option<&FlashMessage>, area: Rect) 
         fetch_indicator,
         Span::styled(center_text, Style::default().fg(p.status_bar_fg)),
         Span::styled(format!(" {hints} "), Style::default().fg(p.dim)),
-    ]);
+    ];
+    if let Some(scope_span) = commit_scope_span {
+        spans.push(scope_span);
+    }
+    let line = Line::from(spans);
 
     let paragraph = Paragraph::new(line).style(Style::default().bg(p.status_bar_bg));
     f.render_widget(paragraph, area);

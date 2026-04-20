@@ -132,6 +132,15 @@ pub struct App {
     pub pr_detail_sidebar_scroll: u16,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
     pub detail_pending_g: bool,
+    /// Index into `pr_detail.commits` of the commit the user has scoped to.
+    ///
+    /// `None` = no scope = cumulative HEAD view (today's default behaviour).
+    /// `Some(i)` = show only the delta introduced by `pr_detail.commits[i]`.
+    pub selected_commit: Option<usize>,
+    /// Cursor position in the Commits list (for `j`/`k` nav and the visual `▶`).
+    ///
+    /// Reset to 0 whenever a fresh `PrDetail` arrives.
+    pub commits_cursor: usize,
     /// Which `(file_path, new_lineno)` thread-card anchors are currently
     /// expanded (showing full thread body rather than the collapsed summary).
     /// Ephemeral — not persisted across sessions. Cleared in `clear_detail_state`.
@@ -269,6 +278,8 @@ impl App {
             sidebar_hidden: sidebar_hidden_from_session,
             pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
+            selected_commit: None,
+            commits_cursor: 0,
             pr_detail_expanded_threads: HashSet::new(),
             pr_detail_diff_cursor: RefCell::new(None),
             copy_mode: crate::ui::copy_mode::CopyMode::default(),

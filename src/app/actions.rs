@@ -5,6 +5,8 @@
 //! become active in later phases; they are defined here so the type system
 //! stays authoritative throughout the codebase.
 
+use std::collections::HashMap;
+
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::github;
@@ -132,4 +134,15 @@ pub enum Action {
 
     /// A detail fetch failed; the string is a human-readable description.
     DetailFetchFailed(String),
+
+    // ── Per-commit diff fetching ───────────────────────────────────────────────
+    /// A per-commit file-patch map was successfully fetched from the REST API.
+    ///
+    /// Fields: `(repo_slug, full_sha, path_to_patch_map)`.
+    CommitDiffLoaded(String, String, HashMap<String, Option<String>>),
+
+    /// A per-commit file-patch fetch failed.
+    ///
+    /// Fields: `(repo_slug, full_sha, error_message)`.
+    CommitDiffFailed(String, String, String),
 }

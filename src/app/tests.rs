@@ -2265,6 +2265,140 @@ fn back_to_dashboard_does_not_clear_cache() {
     );
 }
 
+// ── v0.2.1: Commit selection + scoped Files tests ────────────────────────────
+
+/// Pressing Enter in the Commits section must set `selected_commit`, clear
+/// `pr_detail_expanded_threads`, and clear `pr_detail_diff_cursor`.
+///
+/// This verifies the three side-effects described in the keymap comment:
+/// thread expansion and diff cursor are anchored to HEAD-view line numbers
+/// and become meaningless when scoping to a single commit's delta.
+#[test]
+fn scope_to_commit_clears_thread_state() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Commits;
+
+    // Build a PR detail with 2 commits and load it.
+    let detail = fixture_pr_detail_with_commits(2);
+    app.pr_detail = Some(detail);
+
+    // Pre-populate thread state that the keymap is expected to clear.
+    app.pr_detail_expanded_threads.insert(("src/lib.rs".to_owned(), 10));
+    *app.pr_detail_diff_cursor.borrow_mut() = Some(("src/lib.rs".to_owned(), 10));
+
+    // Place the cursor on the second commit (index 1) and press Enter.
+    app.commits_cursor = 1;
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.selected_commit, Some(1), "selected_commit must be set to commits_cursor");
+    assert!(
+        app.pr_detail_expanded_threads.is_empty(),
+        "expanded_threads must be cleared when scoping"
+    );
+    assert!(
+        app.pr_detail_diff_cursor.borrow().is_none(),
+        "diff_cursor must be cleared when scoping"
+    );
+}
+
+/// Pressing `H` while a commit is scoped must clear `selected_commit` and
+/// show a flash message.
+#[test]
+fn return_to_head_clears_scope() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Commits;
+
+    app.pr_detail = Some(fixture_pr_detail_with_commits(2));
+    // Simulate an already-scoped state.
+    app.selected_commit = Some(0);
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('H'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert!(app.selected_commit.is_none(), "H must clear selected_commit");
+    assert!(app.flash.is_some(), "H must show a 'Returned to HEAD' flash message");
+}
+
+/// When a fresh `PrDetail` arrives whose commit list no longer contains a
+/// previously-cached SHA (e.g. after a force-push), `prune_stale_commits`
+/// must evict that entry so `get_commit_patches` returns `None`.
+///
+/// The action handler also resets `selected_commit` to `None` — verified
+/// via `PrDetailLoaded` dispatch.
+#[test]
+fn force_push_evicts_stale_commit_patches() {
+    use chrono::Utc;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    // Use Detail focus with a matching loaded PR so `active_pr_matches` is
+    // true and the visible-state reset (commits_cursor, selected_commit) runs.
+    app.focus = Focus::Detail;
+
+    // Seed the cache with a patch entry for a SHA that will be "rewritten".
+    let stale_sha = "deadbeef".repeat(5); // 40 chars
+    let mut patches = std::collections::HashMap::new();
+    patches.insert("src/old.rs".to_owned(), Some("@@ -1 +1 @@\n+x".to_owned()));
+    app.detail_cache.insert_commit_patches("o/r".to_owned(), stale_sha.clone(), patches);
+
+    // Verify it is present before the prune.
+    assert!(
+        app.detail_cache.get_commit_patches("o/r", &stale_sha).is_some(),
+        "patch entry must exist before prune"
+    );
+
+    // Build a new PrDetail that omits the stale SHA and dispatch it as a
+    // loaded action. No tokio runtime needed — the action handler is sync
+    // (the cache prune and state reset happen before any spawn call).
+    let mut fresh_detail = make_pr_detail_for_app("o/r", 5);
+    // Give the fresh detail a different commit so the list is non-empty but
+    // does not contain the stale SHA.
+    fresh_detail.commits = vec![crate::github::detail::PrCommit {
+        sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        short_sha: "aaaaaaa".to_owned(),
+        headline: "new commit".to_owned(),
+        author: "dev".to_owned(),
+        committed_at: Utc::now(),
+        additions: 1,
+        deletions: 0,
+        changed_files: 1,
+    }];
+    // Pre-load a stub with matching repo/number so `active_pr_matches` is true.
+    // This puts the handler on the code path that resets `selected_commit`.
+    app.pr_detail = Some(make_pr_detail_for_app("o/r", 5));
+    // Point selected_commit at index 0 so the reset to None is observable.
+    app.selected_commit = Some(0);
+
+    app.handle_action(Action::PrDetailLoaded(Box::new(fresh_detail)));
+
+    // The stale SHA must have been evicted.
+    assert!(
+        app.detail_cache.get_commit_patches("o/r", &stale_sha).is_none(),
+        "stale commit patches must be evicted after PrDetailLoaded with rewritten SHAs"
+    );
+    // The commit scope must be reset so no stale index can point into the new list.
+    assert!(
+        app.selected_commit.is_none(),
+        "selected_commit must be reset to None on PrDetailLoaded"
+    );
+}
+
 /// Dispatching `AutoRefresh` while in Detail focus with a loaded PR must
 /// set `detail_refreshing` (SWR kick). The inbox-refresh leg is gated
 /// behind the `fetching` guard, so we pre-set `app.fetching = true` to

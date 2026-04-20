@@ -266,6 +266,52 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // ── C5. Render right pane ──────────────────────────────────────────────────
+
+    // Compute the commit-scope context once here so the renderer and the
+    // indicator strip below can both reference it without double-borrowing.
+    let scoped_commit: Option<&crate::github::detail::PrCommit> =
+        app.selected_commit.and_then(|idx| detail.commits.get(idx));
+    let scoped_patches: Option<&std::collections::HashMap<String, Option<String>>> = scoped_commit
+        .and_then(|c| {
+            app.detail_cache.get_commit_patches(&detail.repo, &c.sha).map(|cached| &cached.data)
+        });
+
+    // ── C5a. Indicator strip (one row, only in scoped mode) ───────────────────
+    // Emitted at the very top of the right pane so the user always knows they
+    // are looking at a per-commit delta rather than the cumulative HEAD diff.
+    let indicator_height: u16 = u16::from(scoped_commit.is_some());
+
+    // We need to carve out the indicator row from the right area before
+    // building the scrollable content area.
+    let (indicator_area, content_right_area) = if indicator_height > 0 && right_area.height > 1 {
+        let vsplit = ratatui::layout::Layout::vertical([
+            Constraint::Length(indicator_height),
+            Constraint::Min(0),
+        ])
+        .split(right_area);
+        (Some(vsplit[0]), vsplit[1])
+    } else {
+        (None, right_area)
+    };
+
+    if let (Some(strip_area), Some(commit)) = (indicator_area, scoped_commit) {
+        let short_sha = &commit.short_sha;
+        // Truncate the headline so the strip stays on one line even in
+        // narrow terminals. 40 chars is generous for an 80-col terminal.
+        let max_headline = usize::from(strip_area.width).saturating_sub(40);
+        let headline = crate::ui::util::truncate(&commit.headline, max_headline.max(10));
+        let glyph = if app.config.show_ascii_glyphs { "@" } else { "\u{25c8}" }; // ◈
+        let strip_text = format!(
+            " {glyph} Scoped to {short_sha} \u{2014} \"{headline}\"  \u{00b7}  H returns to HEAD "
+        );
+        let strip_line =
+            Line::from(Span::styled(strip_text, Style::default().fg(p.warning).bg(p.help_bg)));
+        f.render_widget(
+            Paragraph::new(strip_line).style(Style::default().bg(p.help_bg)),
+            strip_area,
+        );
+    }
+
     let (content_lines, alt_bg_ranges) = build_section(
         selected_section,
         detail,
@@ -276,6 +322,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.thread_index.as_ref(),
         &app.pr_detail_expanded_threads,
         &app.pr_detail_diff_cursor,
+        scoped_patches,
+        app.commits_cursor,
         p,
         app.config.show_ascii_glyphs,
     );
@@ -284,7 +332,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .style(Style::default().bg(p.background).fg(p.foreground))
         .padding(Padding::new(left_padding, 2, 0, 0));
-    let inner = block.inner(right_area);
+    let inner = block.inner(content_right_area);
 
     app.pr_detail_viewport.set(inner);
     app.pr_detail_right_viewport.set(inner);
@@ -300,7 +348,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     );
 
     if app.sidebar_hidden && inner.height > 0 {
-        let hint_area = ratatui::layout::Rect { x: right_area.x, y: inner.y, width: 1, height: 1 };
+        let hint_area =
+            ratatui::layout::Rect { x: content_right_area.x, y: inner.y, width: 1, height: 1 };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "\u{203a}", // ›
@@ -341,5 +390,5 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         widget = widget.wrap(Wrap { trim: false });
     }
 
-    f.render_widget(widget, right_area);
+    f.render_widget(widget, content_right_area);
 }

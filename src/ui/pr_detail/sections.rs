@@ -1,7 +1,7 @@
 //! Per-section content builders and the `build_section` dispatcher.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::text::Line;
 
@@ -80,6 +80,10 @@ pub(super) fn build_reviews(
 /// * `thread_index` - Optional index for per-line thread lookups in the Files diff.
 /// * `expanded_threads` - Set of `(path, lineno)` anchors expanded by the user.
 /// * `diff_cursor` - Written by the Files renderer to track the last thread anchor.
+/// * `scoped_patches` - When `Some`, restricts the Files section to this per-commit
+///   patch map (commit-scope mode). `None` = cumulative HEAD view.
+/// * `commits_cursor` - Index of the highlighted row in the Commits list (for
+///   the `▶` indicator). Only used when `section == Commits`.
 /// * `p` - Current colour palette.
 /// * `ascii` - Use ASCII glyphs instead of Unicode box-drawing.
 //
@@ -98,6 +102,8 @@ pub fn build_section(
     thread_index: Option<&ThreadIndex>,
     expanded_threads: &HashSet<(String, u32)>,
     diff_cursor: &RefCell<Option<(String, u32)>>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
+    commits_cursor: usize,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -105,19 +111,32 @@ pub fn build_section(
         DetailSection::Description => build_description(detail, p),
         DetailSection::Checks => build_checks(detail, p),
         DetailSection::Reviews => build_reviews(detail, p),
-        DetailSection::Files => build_files(
-            detail,
-            files_cursor,
-            files_show_diff,
-            thread_index,
-            expanded_threads,
-            diff_cursor,
-            p,
-            ascii,
-        ),
+        DetailSection::Files => {
+            // When scoped: thread expansion is disabled (scoped diffs show
+            // per-commit patches without HEAD-view thread anchors). Use a
+            // local empty set so its lifetime covers the build_files call.
+            let empty_expanded = HashSet::new();
+            let effective_expanded =
+                if scoped_patches.is_some() { &empty_expanded } else { expanded_threads };
+            build_files(
+                detail,
+                files_cursor,
+                files_show_diff,
+                thread_index,
+                effective_expanded,
+                // Don't update the diff cursor while scoped — the `t`
+                // key handler is a no-op in scoped mode (keymap guard).
+                diff_cursor,
+                scoped_patches,
+                p,
+                ascii,
+            )
+        }
         DetailSection::Comments => {
+            // Comment filtering by commit lands in 0.2.2. For now, always
+            // show the full PR-level comment list regardless of scope.
             build_comments(detail, comments_expanded, comments_show_outdated, p, ascii)
         }
-        DetailSection::Commits => build_commits(detail, p),
+        DetailSection::Commits => build_commits(detail, p, Some(commits_cursor)),
     }
 }

@@ -59,6 +59,16 @@ struct RestFileEntry {
     patch: Option<String>,
 }
 
+/// Wrapper for the REST `GET /repos/{owner}/{name}/commits/{sha}` response body.
+///
+/// Only the `files` array is consumed; all other commit metadata fields are
+/// ignored (GitHub's GraphQL already gave us those).
+#[derive(Deserialize)]
+struct CommitResponse {
+    #[serde(default)]
+    files: Vec<RestFileEntry>,
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 /// Authenticated GitHub GraphQL client.
@@ -228,6 +238,52 @@ impl Client {
     #[allow(dead_code)]
     pub fn cached_viewer_login(&self) -> Option<&str> {
         self.viewer_login.get().map(String::as_str)
+    }
+
+    /// Fetch the file-level diff introduced by a single commit.
+    ///
+    /// Calls `GET /repos/{owner}/{name}/commits/{sha}` and extracts the
+    /// `files[].patch` entries, mapping filename → `Option<patch>`.
+    /// `None` for the inner `Option` indicates a binary file or a diff that
+    /// GitHub refuses to inline (same semantics as the PR-files endpoint).
+    ///
+    /// # Arguments
+    ///
+    /// * `repo` - Repository slug in `owner/name` form.
+    /// * `sha`  - Full 40-character commit SHA.
+    ///
+    /// # Errors
+    ///
+    /// - `repo` cannot be split into `owner/name` → descriptive error.
+    /// - Network failure, non-2xx HTTP, or JSON parse failure.
+    pub(crate) async fn fetch_commit_diff(
+        &self,
+        repo: &str,
+        sha: &str,
+    ) -> Result<HashMap<String, Option<String>>> {
+        let (owner, name) = split_repo(repo)?;
+        let url = format!("{REST_BASE_URL}/repos/{owner}/{name}/commits/{sha}");
+
+        let response = self
+            .http
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, format!("octopeek/{PKG_VERSION}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .context("network error reaching GitHub REST API (commit diff)")?;
+
+        let status = response.status();
+        check_http_status(status, response.headers())?;
+
+        // The commits endpoint returns `{ "files": [...] }` rather than a
+        // bare array like the pulls/files endpoint does.
+        let body: CommitResponse =
+            response.json().await.context("failed to parse GitHub REST commit response")?;
+
+        let map = body.files.into_iter().map(|e| (e.filename, e.patch)).collect();
+        Ok(map)
     }
 
     /// Fetch per-file unified-diff patches from the GitHub REST API.
@@ -597,6 +653,42 @@ mod tests {
 
         // Empty inputs must not panic.
         merge_patches_into_files(&mut [], &HashMap::new());
+    }
+
+    /// The `GET /repos/{owner}/{name}/commits/{sha}` REST response wraps the
+    /// file list inside a `{ "files": [...] }` object, unlike the PR-files
+    /// endpoint which returns a bare array. Verify that `CommitResponse`
+    /// deserialises correctly for one text file (patch present) and one
+    /// binary file (patch absent).
+    #[test]
+    fn commit_diff_fetch_parses_rest_response() {
+        let json = r#"{
+            "sha": "abc1234def5678abc1234def5678abc1234def56",
+            "commit": { "message": "fix: something" },
+            "files": [
+                {
+                    "filename": "src/main.rs",
+                    "additions": 3,
+                    "deletions": 1,
+                    "patch": "@@ -1,3 +1,6 @@\n+new line"
+                },
+                {
+                    "filename": "assets/image.png",
+                    "additions": 0,
+                    "deletions": 0
+                }
+            ]
+        }"#;
+
+        let body: CommitResponse = serde_json::from_str(json).expect("deserialise CommitResponse");
+        assert_eq!(body.files.len(), 2);
+
+        // Build the map the same way `fetch_commit_diff` does.
+        let map: HashMap<String, Option<String>> =
+            body.files.into_iter().map(|e| (e.filename, e.patch)).collect();
+
+        assert!(map["src/main.rs"].is_some(), "text file must have a patch");
+        assert!(map["assets/image.png"].is_none(), "binary file must have patch == None");
     }
 
     /// A `FileChange` constructed via the GraphQL path must default `patch` to `None`.

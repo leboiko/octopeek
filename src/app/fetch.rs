@@ -212,6 +212,16 @@ impl App {
     /// builder here. Returns an empty `Vec` when no detail is loaded.
     pub(super) fn current_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
         if let Some(detail) = &self.pr_detail {
+            // Resolve scoped patches for copy-mode line building, same logic
+            // as the renderer in `pr_detail::draw`.
+            let scoped_patches: Option<&std::collections::HashMap<String, Option<String>>> =
+                self.selected_commit.and_then(|idx| {
+                    detail.commits.get(idx).and_then(|c| {
+                        self.detail_cache
+                            .get_commit_patches(&detail.repo, &c.sha)
+                            .map(|cached| &cached.data)
+                    })
+                });
             let (lines, _) = crate::ui::pr_detail::build_section(
                 self.pr_detail_selected_section,
                 detail,
@@ -222,6 +232,8 @@ impl App {
                 self.thread_index.as_ref(),
                 &self.pr_detail_expanded_threads,
                 &self.pr_detail_diff_cursor,
+                scoped_patches,
+                self.commits_cursor,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );
@@ -481,6 +493,54 @@ impl App {
             }
         }
     }
+}
+
+// ── Per-commit diff fetch ─────────────────────────────────────────────────────
+
+/// Spawn a background task that fetches the file-patch map for a single commit
+/// and sends [`Action::CommitDiffLoaded`] or [`Action::CommitDiffFailed`] back
+/// on `tx`.
+///
+/// There is intentionally no `detail_fetching` guard: this is an on-demand
+/// fetch triggered by the user pressing `Enter` on a commit row, and the key
+/// handler verifies the cache before calling here.
+///
+/// # Arguments
+///
+/// * `client` - Authenticated GitHub client.
+/// * `repo`   - Repository slug in `owner/name` form.
+/// * `sha`    - Full 40-character commit SHA.
+/// * `tx`     - Action-channel sender for the result.
+pub fn spawn_commit_diff_fetch(
+    client: std::sync::Arc<github::Client>,
+    repo: String,
+    sha: String,
+    tx: tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    tokio::spawn(async move {
+        let inner: tokio::task::JoinHandle<anyhow::Result<Action>> = {
+            let client = client.clone();
+            let repo2 = repo.clone();
+            let sha2 = sha.clone();
+            tokio::spawn(async move {
+                let patches = client.fetch_commit_diff(&repo2, &sha2).await?;
+                Ok(Action::CommitDiffLoaded(repo2, sha2, patches))
+            })
+        };
+        let action = match inner.await {
+            Ok(Ok(action)) => action,
+            Ok(Err(e)) => Action::CommitDiffFailed(repo, sha, e.to_string()),
+            Err(join_err) if join_err.is_panic() => Action::CommitDiffFailed(
+                repo,
+                sha,
+                format!("commit diff task panicked: {join_err}"),
+            ),
+            Err(join_err) => {
+                Action::CommitDiffFailed(repo, sha, format!("commit diff task aborted: {join_err}"))
+            }
+        };
+        send_or_warn(&tx, action);
+    });
 }
 
 // ── Free helpers shared by the spawn_* methods ────────────────────────────────

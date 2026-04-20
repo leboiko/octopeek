@@ -1,14 +1,14 @@
 //! File listing and diff renderers for the Files section.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
 
-use crate::github::detail::{FileChangeKind, PrDetail, ReviewThread};
+use crate::github::detail::{FileChange, FileChangeKind, PrDetail, ReviewThread};
 use crate::theme::Palette;
 use crate::ui::diff::{DiffFile, DiffLineKind};
 use crate::ui::util::truncate;
@@ -58,6 +58,9 @@ pub(super) fn push_alt_range(ranges: &mut Vec<(u16, u16)>, start: usize, end: us
 /// * `diff_cursor` - Written by the renderer to track which thread anchor is
 ///   at or just before the current scroll position, enabling the `t` key to
 ///   know what to toggle.
+/// * `scoped_patches` - When `Some`, restricts the file list to paths present in
+///   the map and uses those patches instead of `FileChange.patch`. This is the
+///   per-commit scope mode activated by pressing `Enter` on a commit row.
 /// * `ascii` - Use ASCII glyphs instead of Unicode.
 // build_files coordinates two orthogonal features (overview vs diff) with
 // several optional inputs; a config struct would be cleaner but would ripple
@@ -70,13 +73,25 @@ pub(super) fn build_files(
     thread_index: Option<&ThreadIndex>,
     expanded: &HashSet<(String, u32)>,
     diff_cursor: &RefCell<Option<(String, u32)>>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
-    if detail.files.is_empty() {
+    // In commit-scope mode, restrict the visible file list to paths that
+    // appear in the scoped patch map. Files not touched by the selected
+    // commit are hidden from both overview and diff navigation.
+    let effective_empty = scoped_patches.map_or(detail.files.is_empty(), |patches| {
+        !detail.files.iter().any(|f| patches.contains_key(&f.path))
+    });
+
+    if effective_empty {
         return (
             vec![Line::from(Span::styled(
-                "No files changed".to_owned(),
+                if scoped_patches.is_some() {
+                    "No files changed in this commit".to_owned()
+                } else {
+                    "No files changed".to_owned()
+                },
                 Style::default().fg(p.dim),
             ))],
             Vec::new(),
@@ -84,21 +99,38 @@ pub(super) fn build_files(
     }
 
     if !show_diff {
-        return build_files_overview(detail, files_cursor, thread_index, p);
+        return build_files_overview_scoped(detail, files_cursor, thread_index, scoped_patches, p);
     }
 
-    build_files_diff(detail, files_cursor, thread_index, expanded, diff_cursor, p, ascii)
+    build_files_diff(
+        detail,
+        files_cursor,
+        thread_index,
+        expanded,
+        diff_cursor,
+        scoped_patches,
+        p,
+        ascii,
+    )
 }
 
 /// Files overview: one row per file sorted by magnitude descending.
-pub(super) fn build_files_overview(
+///
+/// `scoped_patches` optionally restricts the file list to paths present in the
+/// map (commit-scope mode). When `None`, all PR files are shown (HEAD view).
+pub(super) fn build_files_overview_scoped(
     detail: &PrDetail,
     files_cursor: usize,
     thread_index: Option<&super::ThreadIndex>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
     p: &Palette,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     // Sort by magnitude descending — same order as the sidebar files list.
-    let mut sorted: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
+    let mut sorted: Vec<&crate::github::detail::FileChange> = detail
+        .files
+        .iter()
+        .filter(|f| scoped_patches.is_none_or(|p| p.contains_key(&f.path)))
+        .collect();
     sorted.sort_by_key(|f| std::cmp::Reverse(f.additions + f.deletions));
 
     let cursor = files_cursor.min(sorted.len().saturating_sub(1));
@@ -173,6 +205,9 @@ pub(super) fn build_files_overview(
 /// When `thread_index` is `Some`, calls [`render_diff_with_threads`] so
 /// review threads are spliced inline at their anchor lines. When `None`,
 /// falls back to plain [`crate::ui::diff::render_diff`] (0.1.7 behaviour).
+///
+/// `scoped_patches`: when `Some`, the file list is filtered to paths present
+/// in the map and patches are sourced from the map rather than `file.patch`.
 // The signature grows with the thread-expansion feature; the allow keeps
 // clippy happy without sacrificing clarity.
 #[allow(clippy::too_many_arguments)]
@@ -182,12 +217,31 @@ pub(super) fn build_files_diff(
     thread_index: Option<&ThreadIndex>,
     expanded: &HashSet<(String, u32)>,
     diff_cursor: &RefCell<Option<(String, u32)>>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
-    let idx = files_cursor.min(detail.files.len() - 1);
-    let file = &detail.files[idx];
-    let total = detail.files.len();
+    // Build the effective file list: in scoped mode, only files present in
+    // the commit's patch map are visible.
+    let effective_files: Vec<&FileChange> = detail
+        .files
+        .iter()
+        .filter(|f| scoped_patches.is_none_or(|patches| patches.contains_key(&f.path)))
+        .collect();
+
+    if effective_files.is_empty() {
+        return (
+            vec![Line::from(Span::styled(
+                "No files changed".to_owned(),
+                Style::default().fg(p.dim),
+            ))],
+            Vec::new(),
+        );
+    }
+
+    let idx = files_cursor.min(effective_files.len() - 1);
+    let file = effective_files[idx];
+    let total = effective_files.len();
 
     // File-header banner: cursor position (1-based), file path, and +add/-del
     // stats — tells the reader exactly which file in the list they're on
@@ -215,32 +269,33 @@ pub(super) fn build_files_diff(
     };
     let nav_hint_line = Line::from(Span::styled(base_hint.to_owned(), Style::default().fg(p.dim)));
 
-    // Thread-aware hint: surface `t` / `T` only when threads exist for this
-    // file. The 0.1.8 keys were hard to discover because they were only
-    // documented inside the inline collapsed cards; this line makes them
-    // visible from the moment a file's diff opens. Count separates total
-    // from unresolved so the user sees both the scope and the attention
-    // signal ("5 threads · 2 unresolved").
-    let thread_hint_line = thread_index.and_then(|idx| {
-        let total_threads = idx.total_for(&file.path);
-        if total_threads == 0 {
-            return None;
-        }
-        let unresolved = idx.unresolved_for(&file.path);
-        let count_label = if unresolved > 0 {
-            format!("{total_threads} threads \u{00B7} {unresolved} unresolved")
-        } else {
-            format!("{total_threads} threads")
-        };
-        let count_color = if unresolved > 0 { p.warning } else { p.muted };
-        Some(Line::from(vec![
-            Span::styled(count_label, Style::default().fg(count_color)),
-            Span::styled(
-                "   \u{00B7}   [t] expand at cursor   \u{00B7}   [T] collapse all".to_owned(),
-                Style::default().fg(p.dim),
-            ),
-        ]))
-    });
+    // Thread hint: only surfaced in HEAD view (scoped mode has per-commit patches
+    // with no HEAD-view thread anchors, so t/T are inactive there).
+    // 0.2.2 will add per-commit comment filtering; for now, omit in scoped mode.
+    let thread_hint_line = if scoped_patches.is_none() {
+        thread_index.and_then(|tidx| {
+            let total_threads = tidx.total_for(&file.path);
+            if total_threads == 0 {
+                return None;
+            }
+            let unresolved = tidx.unresolved_for(&file.path);
+            let count_label = if unresolved > 0 {
+                format!("{total_threads} threads \u{00B7} {unresolved} unresolved")
+            } else {
+                format!("{total_threads} threads")
+            };
+            let count_color = if unresolved > 0 { p.warning } else { p.muted };
+            Some(Line::from(vec![
+                Span::styled(count_label, Style::default().fg(count_color)),
+                Span::styled(
+                    "   \u{00B7}   [t] expand at cursor   \u{00B7}   [T] collapse all".to_owned(),
+                    Style::default().fg(p.dim),
+                ),
+            ]))
+        })
+    } else {
+        None
+    };
 
     let mut lines = vec![header, nav_hint_line];
     if let Some(line) = thread_hint_line {
@@ -248,12 +303,24 @@ pub(super) fn build_files_diff(
     }
     lines.push(Line::from(""));
 
+    // Resolve the patch: in scoped mode, prefer the per-commit patch from the
+    // cache; fall back to `file.patch` (the PR-level REST patch) in HEAD mode.
+    let effective_patch: Option<&str> = if let Some(patches) = scoped_patches {
+        patches.get(&file.path).and_then(|p| p.as_deref())
+    } else {
+        file.patch.as_deref()
+    };
+
     // Body: either the parsed+rendered diff (with optional thread splicing),
     // or a placeholder for binary / too-large / unavailable patches.
-    match &file.patch {
+    match effective_patch {
         Some(patch) => {
             let diff_file = crate::ui::diff::parse_unified_diff(patch);
-            let body = if let Some(index) = thread_index {
+            // In scoped mode, thread rendering is disabled: thread anchors are
+            // keyed to HEAD-view line numbers and are meaningless in a per-commit
+            // diff. Pass `None` for thread_index when scoped. (0.2.2 will revisit.)
+            let effective_thread_index = if scoped_patches.is_some() { None } else { thread_index };
+            let body = if let Some(index) = effective_thread_index {
                 render_diff_with_threads(
                     &diff_file,
                     index,

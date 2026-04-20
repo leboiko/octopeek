@@ -149,6 +149,8 @@ fn build_section_non_empty_sections_have_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -164,6 +166,8 @@ fn build_section_non_empty_sections_have_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -179,6 +183,8 @@ fn build_section_non_empty_sections_have_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -194,6 +200,8 @@ fn build_section_non_empty_sections_have_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -209,6 +217,8 @@ fn build_section_non_empty_sections_have_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -230,6 +240,8 @@ fn build_section_empty_sections_have_no_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -245,6 +257,8 @@ fn build_section_empty_sections_have_no_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -260,6 +274,8 @@ fn build_section_empty_sections_have_no_lines() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -319,6 +335,8 @@ fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -357,6 +375,8 @@ fn alt_bg_empty_when_single_comment() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -454,6 +474,8 @@ fn files_section_renders_cursor_pointed_file_header() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -471,6 +493,8 @@ fn files_section_renders_cursor_pointed_file_header() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -495,6 +519,8 @@ fn build_files_overview_produces_one_line_per_file() {
             None,
             &no_expanded(),
             &no_cursor(),
+            None,
+            0,
             &p,
             false,
         );
@@ -573,6 +599,8 @@ fn thread_comment_body_renders_as_markdown() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -613,7 +641,7 @@ fn files_overview_shows_thread_badge_when_index_reports_threads() {
     let idx = build_thread_index(&detail);
     let p = Palette::default();
 
-    let (lines, _) = super::files::build_files_overview(&detail, 0, Some(&idx), &p);
+    let (lines, _) = super::files::build_files_overview_scoped(&detail, 0, Some(&idx), None, &p);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -631,7 +659,7 @@ fn files_overview_without_threads_renders_no_badge() {
     // spurious glyphs.
     let detail = fixture_pr_detail(0, 0, 2, 0);
     let p = Palette::default();
-    let (lines, _) = super::files::build_files_overview(&detail, 0, None, &p);
+    let (lines, _) = super::files::build_files_overview_scoped(&detail, 0, None, None, &p);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -712,6 +740,8 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -784,6 +814,8 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -859,6 +891,8 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -928,6 +962,8 @@ fn thread_without_diff_hunk_renders_cleanly() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -1007,6 +1043,8 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -1154,6 +1192,8 @@ fn replies_render_in_accent_alt() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -1241,6 +1281,8 @@ fn collapsed_long_comment_shows_expand_hint() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -1291,6 +1333,8 @@ fn issue_comments_render_markdown_styles() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
@@ -1397,7 +1441,8 @@ fn inline_thread_card_collapsed_emits_single_summary_row() {
     let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
     let p = Palette::default();
 
-    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+    let (lines, _) =
+        build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, None, &p, false);
 
     // Collect all text to check for the collapsed card marker.
     let text: String = lines
@@ -1436,7 +1481,8 @@ fn inline_thread_card_expanded_emits_body_rows() {
     let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
     let p = Palette::default();
 
-    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+    let (lines, _) =
+        build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, None, &p, false);
 
     let text: String = lines
         .iter()
@@ -1543,7 +1589,8 @@ fn overflow_block_renders_outdated_and_file_level() {
     let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
     let p = Palette::default();
 
-    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+    let (lines, _) =
+        build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, None, &p, false);
 
     let text: String = lines
         .iter()
@@ -1593,7 +1640,7 @@ fn toggle_keybind_round_trip() {
     // ── Collapsed state ───────────────────────────────────────────────────────
     let expanded_empty: HashSet<(String, u32)> = HashSet::new();
     let cursor_a: RefCell<Option<(String, u32)>> = RefCell::new(None);
-    build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_a, &p, false);
+    build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_a, None, &p, false);
 
     // The renderer must have written the anchor to the cursor cell.
     let anchor = cursor_a.borrow().clone();
@@ -1608,7 +1655,7 @@ fn toggle_keybind_round_trip() {
     expanded_one.insert(("src/lib.rs".to_owned(), 10));
     let cursor_b: RefCell<Option<(String, u32)>> = RefCell::new(None);
     let (lines_expanded, _) =
-        build_files_diff(&detail, 0, Some(&index), &expanded_one, &cursor_b, &p, false);
+        build_files_diff(&detail, 0, Some(&index), &expanded_one, &cursor_b, None, &p, false);
 
     let expanded_text: String =
         lines_expanded.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
@@ -1620,7 +1667,7 @@ fn toggle_keybind_round_trip() {
     // ── Simulate toggle-off: remove the anchor ────────────────────────────────
     let cursor_c: RefCell<Option<(String, u32)>> = RefCell::new(None);
     let (lines_collapsed, _) =
-        build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_c, &p, false);
+        build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_c, None, &p, false);
 
     let collapsed_text: String =
         lines_collapsed.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
@@ -1634,7 +1681,7 @@ fn toggle_keybind_round_trip() {
 
 /// Build a `PrDetail` populated with `n` commits having explicit dates so the
 /// sort behaviour can be verified without relying on wall-clock `Utc::now()`.
-fn fixture_pr_detail_with_commits(n: usize) -> PrDetail {
+pub fn fixture_pr_detail_with_commits(n: usize) -> PrDetail {
     use chrono::TimeZone;
 
     let now = Utc::now();
@@ -1686,6 +1733,8 @@ fn commits_section_renders_one_line_per_commit() {
         None,
         &no_expanded(),
         &no_cursor(),
+        None,
+        0,
         &p,
         false,
     );
