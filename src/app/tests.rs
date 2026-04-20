@@ -2413,6 +2413,162 @@ fn scope_to_commit_clears_thread_state() {
     );
 }
 
+#[test]
+fn esc_from_commit_scoped_files_returns_to_commits_source() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Commits;
+    app.pr_detail = Some(fixture_pr_detail_with_commits(2));
+    app.commits_cursor = 1;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Detail, "Esc from scoped Files must stay in detail");
+    assert!(app.pr_detail.is_some(), "Esc from scoped Files must keep PR detail loaded");
+    assert_eq!(
+        app.pr_detail_selected_section,
+        DetailSection::Commits,
+        "Esc from scoped Files should return to the source Commits list"
+    );
+    assert_eq!(app.commits_cursor, 1, "the originating commit row should remain highlighted");
+    assert_eq!(app.selected_commit, Some(1), "the scoped commit context should be preserved");
+}
+
+#[test]
+fn b_from_commit_scoped_files_returns_to_commits_source() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = true;
+    app.pr_detail = Some(fixture_pr_detail_with_commits(2));
+    app.selected_commit = Some(1);
+    app.commits_cursor = 0;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('b'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert_eq!(app.focus, Focus::Detail, "`b` from scoped Files must stay in detail");
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+    assert_eq!(app.commits_cursor, 1, "`b` should restore the scoped commit cursor");
+}
+
+#[test]
+fn pr_detail_refresh_preserves_selected_commit_by_sha() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    let detail = fixture_pr_detail_with_commits(3);
+    let repo = detail.repo.clone();
+    let number = detail.number;
+    let selected_sha = detail.commits[1].sha.clone();
+    app.pr_detail = Some(detail);
+    app.selected_commit = Some(1);
+    app.commits_cursor = 1;
+
+    let mut refreshed = fixture_pr_detail_with_commits(3);
+    refreshed.repo = repo;
+    refreshed.number = number;
+    refreshed.title = "Refreshed title".to_owned();
+
+    app.handle_action(Action::PrDetailLoaded(Box::new(refreshed)));
+
+    assert_eq!(
+        app.selected_commit
+            .and_then(|idx| app.pr_detail.as_ref().and_then(|d| d.commits.get(idx)))
+            .map(|commit| commit.sha.as_str()),
+        Some(selected_sha.as_str()),
+        "SWR refresh should preserve an existing commit scope by SHA"
+    );
+    assert_eq!(app.commits_cursor, 1, "commit cursor should also stay on the same SHA");
+}
+
+#[test]
+fn commit_diff_failure_after_cached_success_keeps_scope() {
+    use crate::ui::pr_detail::tests::fixture_pr_detail_with_commits;
+
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+    let detail = fixture_pr_detail_with_commits(1);
+    let repo = detail.repo.clone();
+    let sha = detail.commits[0].sha.clone();
+    app.pr_detail = Some(detail);
+    app.selected_commit = Some(0);
+    app.commit_diff_fetching.insert((repo.clone(), sha.clone()));
+
+    let mut patches = std::collections::HashMap::new();
+    patches.insert("src/lib.rs".to_owned(), Some("@@ -1 +1 @@\n-old\n+new".to_owned()));
+    app.handle_action(Action::CommitDiffLoaded(repo.clone(), sha.clone(), patches));
+    app.handle_action(Action::CommitDiffFailed(
+        repo.clone(),
+        sha.clone(),
+        "late duplicate failure".to_owned(),
+    ));
+
+    assert_eq!(
+        app.selected_commit,
+        Some(0),
+        "late failure must not clear a scope that already has cached patches"
+    );
+    assert!(app.detail_cache.get_commit_patches(&repo, &sha).is_some());
+    assert!(
+        !app.commit_diff_fetching.contains(&(repo, sha)),
+        "loaded/failed actions should clear the in-flight marker"
+    );
+}
+
+#[test]
+fn cached_tab_restore_clears_unpersisted_commit_scope() {
+    let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+
+    let detail = make_pr_detail_for_app("o/r", 1);
+    app.detail_cache.insert_pr(detail);
+    app.per_tab_state.insert(
+        "o/r".to_owned(),
+        PerTabState {
+            detail_ref: Some(DetailRef { repo: "o/r".to_owned(), number: 1, kind: DetailKind::Pr }),
+        },
+    );
+    app.focus = Focus::Detail;
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = true;
+    app.selected_commit = Some(0);
+    app.commits_cursor = 3;
+
+    app.restore_active_tab_state();
+
+    assert!(app.pr_detail.is_some(), "cached restore should still populate detail");
+    assert!(
+        app.selected_commit.is_none(),
+        "tab restore should not inherit an unpersisted commit scope"
+    );
+    assert_eq!(app.commits_cursor, 0, "tab restore should reset commit cursor");
+}
+
 /// Pressing `H` while a commit is scoped must clear `selected_commit` and
 /// show a flash message.
 #[test]

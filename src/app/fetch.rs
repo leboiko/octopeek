@@ -409,10 +409,15 @@ impl App {
         // The kind-specific part: look up the cache, copy the cached data into
         // the matching detail field, and report freshness. `None` means a
         // cache miss; `Some(true)` fresh; `Some(false)` stale.
+        let mut commit_prefetch: Option<(String, Vec<String>)> = None;
         let is_fresh: Option<bool> = match kind {
             DetailKind::Pr => self.detail_cache.get_pr(&repo, number).map(|c| {
                 let fresh = c.is_fresh();
                 let data = c.data.clone();
+                commit_prefetch = Some((
+                    data.repo.clone(),
+                    data.commits.iter().map(|commit| commit.sha.clone()).collect(),
+                ));
                 self.thread_index = Some(crate::ui::pr_detail::build_thread_index(&data));
                 self.pr_detail = Some(data);
                 fresh
@@ -425,6 +430,10 @@ impl App {
                 fresh
             }),
         };
+
+        if let Some((repo, shas)) = commit_prefetch {
+            self.prefetch_commit_diffs(&repo, shas);
+        }
 
         // The shared part: SWR flow is identical for PR and issue.
         match is_fresh {
@@ -468,6 +477,8 @@ impl App {
         self.thread_index = None;
         self.detail_error = None;
         self.detail_fetching = false;
+        self.selected_commit = None;
+        self.commits_cursor = 0;
 
         let Some(repo) = self.tabs.active_tab().map(|t| t.repo.clone()) else {
             self.focus = Focus::Dashboard;
@@ -509,6 +520,38 @@ impl App {
                     std::time::Duration::from_secs(3),
                 ));
             }
+        }
+    }
+
+    /// Request a per-commit diff fetch unless it is already cached or in-flight.
+    ///
+    /// Returns `true` only when a new background task was spawned.
+    pub(super) fn request_commit_diff_fetch(&mut self, repo: String, sha: String) -> bool {
+        if self.detail_cache.get_commit_patches(&repo, &sha).is_some() {
+            return false;
+        }
+        let key = (repo.clone(), sha.clone());
+        if self.commit_diff_fetching.contains(&key) {
+            return false;
+        }
+        let (Some(client), Some(tx)) = (self.client.clone(), self.action_tx.clone()) else {
+            return false;
+        };
+
+        self.commit_diff_fetching.insert(key);
+        spawn_commit_diff_fetch(client, repo, sha, tx);
+        true
+    }
+
+    /// Eagerly warm per-commit diff cache entries for a loaded PR detail.
+    ///
+    /// PR details already cap the commit list at the last 100 commits, so this
+    /// remains bounded while making Enter-on-commit feel instant for the common
+    /// case where the user opens the Commits section after the detail view has
+    /// had a moment to settle.
+    pub(super) fn prefetch_commit_diffs(&mut self, repo: &str, shas: Vec<String>) {
+        for sha in shas {
+            self.request_commit_diff_fetch(repo.to_owned(), sha);
         }
     }
 }

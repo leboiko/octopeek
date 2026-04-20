@@ -137,6 +137,19 @@ impl App {
                 // Collect live SHAs before the borrow ends, used for pruning.
                 let current_shas: Vec<String> =
                     detail.commits.iter().map(|c| c.sha.clone()).collect();
+                let prefetch_repo = detail.repo.clone();
+                let prefetch_shas = current_shas.clone();
+                let previous_selected_sha = self.selected_commit.and_then(|idx| {
+                    self.pr_detail
+                        .as_ref()
+                        .and_then(|d| d.commits.get(idx))
+                        .map(|commit| commit.sha.clone())
+                });
+                let previous_cursor_sha = self
+                    .pr_detail
+                    .as_ref()
+                    .and_then(|d| d.commits.get(self.commits_cursor))
+                    .map(|commit| commit.sha.clone());
 
                 // Evict stale per-commit patch entries. A force-push can
                 // rewrite SHAs; keeping stale patches would serve wrong diffs.
@@ -159,16 +172,29 @@ impl App {
                     self.pr_detail.is_none() && self.focus == Focus::Detail && self.detail_fetching;
                 if self.focus == Focus::Detail && (active_pr_matches || foreground_cold_miss) {
                     let pr_detail = *detail.clone();
+                    let selected_commit = previous_selected_sha.as_ref().and_then(|sha| {
+                        pr_detail.commits.iter().position(|commit| &commit.sha == sha)
+                    });
+                    let commits_cursor = previous_cursor_sha
+                        .as_ref()
+                        .and_then(|sha| {
+                            pr_detail.commits.iter().position(|commit| &commit.sha == sha)
+                        })
+                        .or(selected_commit)
+                        .unwrap_or(0)
+                        .min(pr_detail.commits.len().saturating_sub(1));
                     // Rebuild the thread index alongside every new PrDetail so
                     // the Files overview + future inline-expansion path have
                     // O(1) `(path, line)` lookups on the current thread set.
                     self.thread_index = Some(crate::ui::pr_detail::build_thread_index(&pr_detail));
-                    // Reset the commits cursor and clear commit scope on a fresh
-                    // detail so stale indices can't point into a rewritten list.
-                    self.commits_cursor = 0;
-                    self.selected_commit = None;
+                    // Preserve commit navigation by SHA across SWR refreshes.
+                    // If a force-push removed the selected SHA, the scope is
+                    // cleared rather than keeping a stale index.
+                    self.commits_cursor = commits_cursor;
+                    self.selected_commit = selected_commit;
                     self.pr_detail = Some(pr_detail);
                 }
+                self.prefetch_commit_diffs(&prefetch_repo, prefetch_shas);
                 self.clear_detail_loading_markers(&detail.repo, detail.number);
             }
             Action::IssueDetailLoaded(detail) => {
@@ -199,6 +225,7 @@ impl App {
                 self.detail_refreshing = None;
             }
             Action::CommitDiffLoaded(repo, sha, patches) => {
+                self.commit_diff_fetching.remove(&(repo.clone(), sha.clone()));
                 // Store the per-commit patch map so the Files renderer can use it
                 // when `selected_commit` points at this SHA.
                 self.detail_cache.insert_commit_patches(repo, sha, patches);
@@ -206,23 +233,29 @@ impl App {
                 // always re-renders after processing an action.
             }
             Action::CommitDiffFailed(repo, sha, err) => {
+                self.commit_diff_fetching.remove(&(repo.clone(), sha.clone()));
                 warn!("commit diff fetch failed for {repo}@{sha}: {err}");
-                // Flash the error and snap back to HEAD so the Files section
-                // doesn't stay blank. Failing silently is worse than snapping back.
-                self.show_flash(
-                    format!("Commit diff fetch failed: {err}"),
-                    std::time::Duration::from_secs(4),
-                );
-                // Only clear scope if we're still scoped to this SHA.
-                if let Some(idx) = self.selected_commit {
-                    let still_scoped = self
-                        .pr_detail
+                // A late failure from an older duplicate request must not
+                // override a successful response that already populated cache.
+                if self.detail_cache.get_commit_patches(&repo, &sha).is_some() {
+                    return;
+                }
+
+                let still_scoped = self.selected_commit.is_some_and(|idx| {
+                    self.pr_detail
                         .as_ref()
                         .and_then(|d| d.commits.get(idx))
-                        .is_some_and(|c| c.sha == sha);
-                    if still_scoped {
-                        self.selected_commit = None;
-                    }
+                        .is_some_and(|c| c.sha == sha)
+                });
+                if still_scoped {
+                    // Flash the error and snap back to HEAD so the Files
+                    // section doesn't stay blank. Prefetch failures for
+                    // unselected commits are only logged above.
+                    self.show_flash(
+                        format!("Commit diff fetch failed: {err}"),
+                        std::time::Duration::from_secs(4),
+                    );
+                    self.selected_commit = None;
                 }
             }
             Action::AutoRefresh => {

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-04-20
+
+Patch release for commit-scoped diff reliability and back navigation.
+
+### Fixed
+
+- PR detail loads now eagerly prefetch per-commit diffs in the background and
+  de-duplicate in-flight commit diff requests. Pressing `Enter` on a commit now
+  reuses the same cache/pending path instead of spawning duplicate REST calls.
+- Late failures from duplicate or background commit-diff requests no longer
+  clear an already-cached, working scoped diff.
+- Background PR-detail refreshes preserve the selected commit by SHA when that
+  commit still exists after the refresh, avoiding surprise fallbacks to the
+  cumulative HEAD diff.
+- Restoring a cached tab clears unpersisted commit-scope state so it cannot get
+  stuck on a `Fetching commit diff...` placeholder without a fetch in flight.
+- `Esc` and `b` from a commit-scoped Files diff now return to the Commits list
+  with the same commit highlighted; a second `Esc`/`b` still exits detail.
+
+### Tests
+
+287 pass: added coverage for scoped back navigation, refresh preservation,
+late failure races, and cached-tab restore scope clearing.
+
 ## [0.2.4] — 2026-04-20
 
 Patch release for commit-navigation ergonomics on non-US keyboards.
@@ -667,7 +691,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/leboiko/octopeek/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/leboiko/octopeek/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/leboiko/octopeek/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/leboiko/octopeek/compare/v0.2.1...v0.2.2

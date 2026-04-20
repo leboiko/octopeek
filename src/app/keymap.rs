@@ -2,7 +2,6 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::github;
 use crate::ui::pr_detail::DetailSection;
 
 use super::actions::Action;
@@ -289,6 +288,17 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Esc | KeyCode::Char('b')
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && self.selected_commit.is_some() =>
+            {
+                self.detail_pending_g = false;
+                if let Some(idx) = self.selected_commit {
+                    self.commits_cursor = idx;
+                }
+                self.pr_detail_selected_section = DetailSection::Commits;
+                self.copy_mode.h_scroll = 0;
+            }
             KeyCode::Esc | KeyCode::Char('b') => {
                 self.detail_pending_g = false;
                 self.back_to_dashboard();
@@ -397,29 +407,17 @@ impl App {
                 self.pr_detail_files_cursor = 0;
                 self.copy_mode.h_scroll = 0;
 
-                // Kick a background fetch for the commit's patch if not cached.
-                // Collect what we need before calling the spawn helper (which
-                // takes ownership of client/repo/sha).
-                let fetch_args: Option<(std::sync::Arc<github::Client>, String, String)> = self
-                    .action_tx
-                    .as_ref()
-                    .and(self.pr_detail.as_ref())
-                    .and(self.client.as_ref())
-                    .and_then(|_| {
-                        let detail = self.pr_detail.as_ref()?;
-                        let commit = detail.commits.get(self.commits_cursor)?;
-                        let sha = commit.sha.clone();
-                        let repo = detail.repo.clone();
-                        if self.detail_cache.get_commit_patches(&repo, &sha).is_some() {
-                            return None; // already cached
-                        }
-                        let client = self.client.clone()?;
-                        Some((client, repo, sha))
-                    });
-                if let (Some(tx), Some((client, repo, sha))) = (self.action_tx.clone(), fetch_args)
-                {
-                    crate::app::fetch::spawn_commit_diff_fetch(client, repo, sha, tx);
-                }
+                // Kick a background fetch for the commit's patch if the eager
+                // PR-load prefetch has not already cached or started it.
+                let Some((repo, sha)) = self.pr_detail.as_ref().and_then(|detail| {
+                    detail
+                        .commits
+                        .get(self.commits_cursor)
+                        .map(|commit| (detail.repo.clone(), commit.sha.clone()))
+                }) else {
+                    return;
+                };
+                self.request_commit_diff_fetch(repo, sha);
             }
             // H (capital): return to HEAD cumulative view from any scoped state.
             // Guard: only fires when actually scoped (selected_commit.is_some())

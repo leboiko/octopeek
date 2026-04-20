@@ -137,6 +137,12 @@ pub struct App {
     /// `None` = no scope = cumulative HEAD view (today's default behaviour).
     /// `Some(i)` = show only the delta introduced by `pr_detail.commits[i]`.
     pub selected_commit: Option<usize>,
+    /// Per-commit diff fetches currently in flight.
+    ///
+    /// Keyed by `(repo_slug, full_sha)`. This dedupes eager prefetches kicked
+    /// by PR-detail loads against on-demand fetches from pressing `Enter` in
+    /// the Commits section.
+    pub commit_diff_fetching: HashSet<(String, String)>,
     /// Cursor position in the Commits list (for `j`/`k` nav and the visual `▶`).
     ///
     /// Reset to 0 whenever a fresh `PrDetail` arrives.
@@ -279,6 +285,7 @@ impl App {
             pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
             selected_commit: None,
+            commit_diff_fetching: HashSet::new(),
             commits_cursor: 0,
             pr_detail_expanded_threads: HashSet::new(),
             pr_detail_diff_cursor: RefCell::new(None),
