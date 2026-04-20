@@ -1,5 +1,8 @@
 //! Per-section content builders and the `build_section` dispatcher.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+
 use ratatui::text::Line;
 
 use crate::github::detail::PrDetail;
@@ -7,6 +10,7 @@ use crate::theme::Palette;
 use crate::ui::markdown::render_markdown;
 
 use super::DetailSection;
+use super::ThreadIndex;
 use super::checks::checks_lines;
 use super::comments::build_comments;
 use super::files::build_files;
@@ -72,6 +76,9 @@ pub(super) fn build_reviews(
 /// * `comments_show_outdated` - Whether outdated review threads are shown
 ///   (visible-but-muted under the `OUTDATED` divider) or collapsed behind
 ///   a disclosure line. Bound to `App::detail_show_outdated`.
+/// * `thread_index` - Optional index for per-line thread lookups in the Files diff.
+/// * `expanded_threads` - Set of `(path, lineno)` anchors expanded by the user.
+/// * `diff_cursor` - Written by the Files renderer to track the last thread anchor.
 /// * `p` - Current colour palette.
 /// * `ascii` - Use ASCII glyphs instead of Unicode box-drawing.
 //
@@ -87,7 +94,9 @@ pub fn build_section(
     files_show_diff: bool,
     comments_expanded: bool,
     comments_show_outdated: bool,
-    thread_index: Option<&super::ThreadIndex>,
+    thread_index: Option<&ThreadIndex>,
+    expanded_threads: &HashSet<(String, u32)>,
+    diff_cursor: &RefCell<Option<(String, u32)>>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -95,7 +104,16 @@ pub fn build_section(
         DetailSection::Description => build_description(detail, p),
         DetailSection::Checks => build_checks(detail, p),
         DetailSection::Reviews => build_reviews(detail, p),
-        DetailSection::Files => build_files(detail, files_cursor, files_show_diff, thread_index, p),
+        DetailSection::Files => build_files(
+            detail,
+            files_cursor,
+            files_show_diff,
+            thread_index,
+            expanded_threads,
+            diff_cursor,
+            p,
+            ascii,
+        ),
         DetailSection::Comments => {
             build_comments(detail, comments_expanded, comments_show_outdated, p, ascii)
         }

@@ -7,6 +7,9 @@
 // lints set in Cargo.toml.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -22,6 +25,16 @@ use super::DetailSection;
 use super::comments::comments_lines;
 use super::header::{build_header, char_wrap_tint, tint_line};
 use super::sections::build_section;
+
+/// Convenience: empty expanded-threads set for tests that don't exercise expansion.
+fn no_expanded() -> HashSet<(String, u32)> {
+    HashSet::new()
+}
+
+/// Convenience: empty diff cursor for tests that don't exercise cursor tracking.
+fn no_cursor() -> RefCell<Option<(String, u32)>> {
+    RefCell::new(None)
+}
 
 /// Build a fixture `PrDetail` with a configurable number of checks, reviews, files, and threads.
 pub fn fixture_pr_detail(
@@ -125,24 +138,79 @@ fn build_section_non_empty_sections_have_lines() {
     let detail = fixture_pr_detail(2, 1, 3, 1);
     let p = Palette::default();
 
-    let (desc, _) =
-        build_section(DetailSection::Description, &detail, 0, false, false, true, None, &p, false);
+    let (desc, _) = build_section(
+        DetailSection::Description,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
 
-    let (checks, _) =
-        build_section(DetailSection::Checks, &detail, 0, false, false, true, None, &p, false);
+    let (checks, _) = build_section(
+        DetailSection::Checks,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
 
-    let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, true, None, &p, false);
+    let (reviews, _) = build_section(
+        DetailSection::Reviews,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
 
-    let (files, _) =
-        build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
+    let (files, _) = build_section(
+        DetailSection::Files,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
-    let (comments, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
+    let (comments, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
 }
 
@@ -151,16 +219,49 @@ fn build_section_empty_sections_have_no_lines() {
     let detail = fixture_pr_detail(0, 0, 0, 0); // only issue comment, no threads
     let p = Palette::default();
 
-    let (checks, _) =
-        build_section(DetailSection::Checks, &detail, 0, false, false, true, None, &p, false);
+    let (checks, _) = build_section(
+        DetailSection::Checks,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(checks.is_empty(), "Checks must be empty when no check_runs");
 
-    let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, true, None, &p, false);
+    let (reviews, _) = build_section(
+        DetailSection::Reviews,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
 
-    let (files, _) =
-        build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
+    let (files, _) = build_section(
+        DetailSection::Files,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String =
         files.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("No files"), "Files placeholder must explain emptiness, got: {text:?}");
@@ -207,8 +308,19 @@ fn build_header_state_label_reflects_state() {
 fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
     let detail = fixture_pr_detail(0, 0, 0, 3);
     let p = Palette::default();
-    let (lines, alt_ranges) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (lines, alt_ranges) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     assert_eq!(
         alt_ranges.len(),
@@ -234,8 +346,19 @@ fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
 fn alt_bg_empty_when_single_comment() {
     let detail = fixture_pr_detail(0, 0, 0, 0);
     let p = Palette::default();
-    let (_, alt_ranges) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (_, alt_ranges) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
 }
 
@@ -320,14 +443,36 @@ fn files_section_renders_cursor_pointed_file_header() {
     let detail = fixture_pr_detail(0, 0, 5, 0);
     let p = Palette::default();
 
-    let (lines, _) =
-        build_section(DetailSection::Files, &detail, 0, true, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Files,
+        &detail,
+        0,
+        true,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("src/file-0.rs"), "files_cursor=0 must show first file path: {text:?}");
 
-    let (lines, _) =
-        build_section(DetailSection::Files, &detail, 2, true, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Files,
+        &detail,
+        2,
+        true,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("src/file-2.rs"), "files_cursor=2 must show third file path: {text:?}");
@@ -339,8 +484,19 @@ fn build_files_overview_produces_one_line_per_file() {
 
     for num_files in [1usize, 3, 7] {
         let detail = fixture_pr_detail(0, 0, num_files, 0);
-        let (lines, _) =
-            build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
+        let (lines, _) = build_section(
+            DetailSection::Files,
+            &detail,
+            0,
+            false,
+            false,
+            true,
+            None,
+            &no_expanded(),
+            &no_cursor(),
+            &p,
+            false,
+        );
 
         assert_eq!(
             lines.len(),
@@ -405,8 +561,19 @@ fn thread_comment_body_renders_as_markdown() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     let styled_count = lines
         .iter()
@@ -532,8 +699,19 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -592,8 +770,19 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, false, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        false,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -655,8 +844,19 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -712,8 +912,19 @@ fn thread_without_diff_hunk_renders_cleanly() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -779,8 +990,19 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     let reply_glyph = "\u{21b3} ";
     let has_reply_prefix =
@@ -913,8 +1135,19 @@ fn replies_render_in_accent_alt() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     let reply_author = lines
         .iter()
@@ -988,8 +1221,19 @@ fn collapsed_long_comment_shows_expand_hint() {
         issue_comments: vec![],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
     assert!(has_expand_hint, "collapsed long comment must show [m] expand hint");
@@ -1026,8 +1270,19 @@ fn issue_comments_render_markdown_styles() {
         }],
     };
 
-    let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        true,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
 
     let has_bold = lines
         .iter()
@@ -1060,4 +1315,300 @@ fn section_labels_are_correct() {
     assert_eq!(DetailSection::Reviews.label(), "Reviews");
     assert_eq!(DetailSection::Files.label(), "Files");
     assert_eq!(DetailSection::Comments.label(), "Comments");
+}
+
+// ── 0.1.8: inline thread-card tests ──────────────────────────────────────────
+
+/// Helper: build a minimal `PrDetail` with a patch so `build_files_diff` has
+/// a diff to walk. The patch has one context line at new-file line 10 and one
+/// added line at new-file line 11, so threads anchored to line 10 can be
+/// tested inline.
+fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetail {
+    let now = Utc::now();
+    PrDetail {
+        repo: "owner/repo".to_owned(),
+        number: 42,
+        title: "Diff thread test".to_owned(),
+        url: "https://github.com/owner/repo/pull/42".to_owned(),
+        author: "alice".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat/inline".to_owned(),
+        is_draft: false,
+        additions: 1,
+        deletions: 0,
+        changed_files_count: 1,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![crate::github::detail::FileChange {
+            path: "src/lib.rs".to_owned(),
+            additions: 1,
+            deletions: 0,
+            change_kind: FileChangeKind::Modified,
+            // One hunk: context line at new-lineno 10, then an added line.
+            patch: Some(
+                "@@ -9,2 +9,3 @@\n fn existing() {}\n+fn new_fn() {}\n fn after() {}\n".to_owned(),
+            ),
+        }],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![ReviewThread {
+            path: "src/lib.rs".to_owned(),
+            line,
+            start_line: None,
+            is_resolved: false,
+            is_outdated: outdated,
+            diff_hunk: None,
+            comments: vec![ReviewComment {
+                author: "bob".to_owned(),
+                body_markdown: "thread body text".to_owned(),
+                created_at: now,
+                diff_hunk: None,
+            }],
+        }],
+        issue_comments: vec![],
+    }
+}
+
+#[test]
+fn inline_thread_card_collapsed_emits_single_summary_row() {
+    // A thread at line 10 of a diff → exactly one card line (not more) when collapsed.
+    // The patch puts a context line at new-lineno 9 and an added line at 10, 11.
+    // We need to find line 10 in the parsed diff to anchor the thread.
+    use super::files::build_files_diff;
+    use super::thread_index::ThreadIndex;
+
+    let detail = fixture_diff_detail_with_thread(Some(10), false);
+    let index = ThreadIndex::build(&detail.review_threads);
+    let expanded: HashSet<(String, u32)> = HashSet::new();
+    let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    let p = Palette::default();
+
+    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+
+    // Collect all text to check for the collapsed card marker.
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(text.contains("[t] expand"), "collapsed card must show '[t] expand' hint; got: {text}");
+
+    // Count consecutive card lines (those starting with the 13-space pad + glyph).
+    // In collapsed mode exactly one card line appears per thread anchor.
+    let card_lines: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            let t = l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+            t.contains("[t] expand")
+        })
+        .collect();
+    assert_eq!(card_lines.len(), 1, "exactly one collapsed card line; got {}", card_lines.len());
+}
+
+#[test]
+fn inline_thread_card_expanded_emits_body_rows() {
+    // Same thread but with the anchor in `expanded` — output must have at
+    // least anchor-line + header-line + body-line = 3 rows from the thread card.
+    use super::files::build_files_diff;
+    use super::thread_index::ThreadIndex;
+
+    let detail = fixture_diff_detail_with_thread(Some(10), false);
+    let index = ThreadIndex::build(&detail.review_threads);
+    let mut expanded: HashSet<(String, u32)> = HashSet::new();
+    expanded.insert(("src/lib.rs".to_owned(), 10));
+    let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    let p = Palette::default();
+
+    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    // Expanded header row must carry the collapse hint.
+    assert!(
+        text.contains("[t] collapse"),
+        "expanded card must show '[t] collapse' hint; got: {text}"
+    );
+    // The comment body should appear.
+    assert!(text.contains("thread body text"), "expanded card must show comment body; got: {text}");
+
+    // At least 2 card rows: the expanded header + at least one body line.
+    let card_rows: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains("[t] collapse") || t.contains("thread body text")
+        })
+        .collect();
+    assert!(
+        card_rows.len() >= 2,
+        "expanded card must have >= 2 content rows (header + body), got {}",
+        card_rows.len()
+    );
+}
+
+#[test]
+fn overflow_block_renders_outdated_and_file_level() {
+    // A thread with `line=None` (file-level) and one outdated thread must both
+    // appear after the last hunk in the overflow block, NOT inserted mid-diff.
+    use super::files::build_files_diff;
+    use super::thread_index::ThreadIndex;
+    use chrono::Utc;
+
+    let now = Utc::now();
+    let detail = PrDetail {
+        repo: "owner/repo".to_owned(),
+        number: 99,
+        title: "Overflow test".to_owned(),
+        url: "https://github.com/owner/repo/pull/99".to_owned(),
+        author: "alice".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 1,
+        deletions: 0,
+        changed_files_count: 1,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![crate::github::detail::FileChange {
+            path: "src/lib.rs".to_owned(),
+            additions: 1,
+            deletions: 0,
+            change_kind: FileChangeKind::Modified,
+            patch: Some("@@ -1,1 +1,2 @@\n context\n+added\n".to_owned()),
+        }],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![
+            // File-level thread: line == None
+            ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: None,
+                start_line: None,
+                is_resolved: false,
+                is_outdated: false,
+                diff_hunk: None,
+                comments: vec![ReviewComment {
+                    author: "bob".to_owned(),
+                    body_markdown: "file-level comment".to_owned(),
+                    created_at: now,
+                    diff_hunk: None,
+                }],
+            },
+            // Outdated thread: line == Some(5) but is_outdated == true
+            ReviewThread {
+                path: "src/lib.rs".to_owned(),
+                line: Some(5),
+                start_line: None,
+                is_resolved: false,
+                is_outdated: true,
+                diff_hunk: None,
+                comments: vec![ReviewComment {
+                    author: "carol".to_owned(),
+                    body_markdown: "outdated comment".to_owned(),
+                    created_at: now,
+                    diff_hunk: None,
+                }],
+            },
+        ],
+        issue_comments: vec![],
+    };
+
+    let index = ThreadIndex::build(&detail.review_threads);
+    let expanded: HashSet<(String, u32)> = HashSet::new();
+    let cursor: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    let p = Palette::default();
+
+    let (lines, _) = build_files_diff(&detail, 0, Some(&index), &expanded, &cursor, &p, false);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    // The overflow divider must appear.
+    assert!(
+        text.contains("File-level & outdated threads"),
+        "overflow divider must appear; got: {text}"
+    );
+
+    // Neither thread must appear mid-diff (before the hunk lines): verify
+    // that the diff hunk header appears before the overflow divider.
+    let hunk_pos = text.find("@@").expect("hunk header must be present");
+    let overflow_pos = text.find("File-level & outdated threads").expect("overflow block");
+    assert!(
+        hunk_pos < overflow_pos,
+        "overflow block must come after the diff hunk; hunk_pos={hunk_pos}, overflow_pos={overflow_pos}"
+    );
+
+    // Both threads produce collapsed cards in the overflow block.
+    let expand_hints = text.matches("[t] expand").count();
+    assert_eq!(expand_hints, 2, "overflow block must render 2 collapsed cards; got {expand_hints}");
+}
+
+#[test]
+fn toggle_keybind_round_trip() {
+    // Tests the `t` key toggle logic by verifying the `pr_detail_expanded_threads`
+    // set state before and after a simulated cursor presence. Since `handle_key`
+    // is `pub(super)` and not reachable from this module, we exercise the same
+    // business logic by calling `build_files_diff` twice — once collapsed (empty
+    // expanded set), once with the anchor pre-inserted — and checking that the
+    // cursor `RefCell` records the anchor that the `t` handler would use.
+    use super::files::build_files_diff;
+    use super::thread_index::ThreadIndex;
+
+    let detail = fixture_diff_detail_with_thread(Some(10), false);
+    let index = ThreadIndex::build(&detail.review_threads);
+    let p = Palette::default();
+
+    // ── Collapsed state ───────────────────────────────────────────────────────
+    let expanded_empty: HashSet<(String, u32)> = HashSet::new();
+    let cursor_a: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_a, &p, false);
+
+    // The renderer must have written the anchor to the cursor cell.
+    let anchor = cursor_a.borrow().clone();
+    assert_eq!(
+        anchor,
+        Some(("src/lib.rs".to_owned(), 10)),
+        "renderer must record the thread-anchor line in diff_cursor; got {anchor:?}"
+    );
+
+    // ── Simulate toggle-on: insert the anchor into expanded ───────────────────
+    let mut expanded_one = HashSet::new();
+    expanded_one.insert(("src/lib.rs".to_owned(), 10));
+    let cursor_b: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    let (lines_expanded, _) =
+        build_files_diff(&detail, 0, Some(&index), &expanded_one, &cursor_b, &p, false);
+
+    let expanded_text: String =
+        lines_expanded.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    assert!(
+        expanded_text.contains("[t] collapse"),
+        "after toggle-on the card must show '[t] collapse'; got: {expanded_text}"
+    );
+
+    // ── Simulate toggle-off: remove the anchor ────────────────────────────────
+    let cursor_c: RefCell<Option<(String, u32)>> = RefCell::new(None);
+    let (lines_collapsed, _) =
+        build_files_diff(&detail, 0, Some(&index), &expanded_empty, &cursor_c, &p, false);
+
+    let collapsed_text: String =
+        lines_collapsed.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+    assert!(
+        collapsed_text.contains("[t] expand"),
+        "after toggle-off the card must show '[t] expand'; got: {collapsed_text}"
+    );
 }

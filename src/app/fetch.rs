@@ -220,6 +220,8 @@ impl App {
                 self.detail_comments_expanded,
                 self.detail_show_outdated,
                 self.thread_index.as_ref(),
+                &self.pr_detail_expanded_threads,
+                &self.pr_detail_diff_cursor,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );

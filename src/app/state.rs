@@ -1,7 +1,8 @@
 //! [`App`] struct definition, constructor, and single-field accessor methods.
 
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
@@ -131,6 +132,16 @@ pub struct App {
     pub pr_detail_sidebar_scroll: u16,
     /// `true` when the user pressed `g` in detail focus and is awaiting a second `g`.
     pub detail_pending_g: bool,
+    /// Which `(file_path, new_lineno)` thread-card anchors are currently
+    /// expanded (showing full thread body rather than the collapsed summary).
+    /// Ephemeral — not persisted across sessions. Cleared in `clear_detail_state`.
+    pub pr_detail_expanded_threads: HashSet<(String, u32)>,
+    /// The thread anchor `(file_path, new_lineno)` that the diff cursor is
+    /// currently on or just past. Written each render frame by the
+    /// `render_diff_with_threads` renderer; read by the `t` key handler to
+    /// know which thread to toggle. `RefCell` because the renderer holds only
+    /// `&App` but must write this field.
+    pub pr_detail_diff_cursor: RefCell<Option<(String, u32)>>,
     /// Copy-mode state for the PR/issue detail view. Inactive until the user
     /// presses `v`. When active, normal detail key bindings are suppressed in
     /// favour of cursor movement, selection, and yank.
@@ -258,6 +269,8 @@ impl App {
             sidebar_hidden: sidebar_hidden_from_session,
             pr_detail_sidebar_scroll: 0,
             detail_pending_g: false,
+            pr_detail_expanded_threads: HashSet::new(),
+            pr_detail_diff_cursor: RefCell::new(None),
             copy_mode: crate::ui::copy_mode::CopyMode::default(),
             pr_detail_viewport: std::cell::Cell::new(ratatui::layout::Rect::default()),
             pr_detail_right_viewport: std::cell::Cell::new(ratatui::layout::Rect::default()),

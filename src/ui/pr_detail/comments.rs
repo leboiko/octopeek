@@ -29,7 +29,10 @@ const DIVIDER_WIDTH: usize = 60;
 /// optional diff-hunk excerpt, then each comment's author line + body +
 /// per-comment truncation marker. Reused by the ACTIVE and OUTDATED passes
 /// in `comments_lines` so the two can't drift.
-fn render_thread_body(
+///
+/// Promoted to `pub(super)` so `thread_card` can call it when rendering an
+/// expanded inline thread card inside the diff view.
+pub(super) fn render_thread_body(
     thread: &crate::github::detail::ReviewThread,
     expanded: bool,
     gutter: &'static str,

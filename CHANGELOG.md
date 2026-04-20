@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-04-20
+
+Phase B.2 — closes the review-thread UX story opened in 0.1.5.
+When the user drills into a file's diff, threads anchored to
+specific lines now expand inline at those lines, and file-level
+or outdated threads collect in a labelled block at the bottom of
+the file body.
+
+### Added
+
+- **Inline thread cards in the Files diff.** Each line that has
+  active, non-outdated threads in the `ThreadIndex` gets a
+  collapsed summary row immediately beneath it: `○ N threads ·
+  M unresolved    [t] expand` in `palette.warning` when any
+  thread on that anchor is unresolved, or `✔ N threads` in
+  `palette.muted` when all are resolved. Glyph deliberately
+  differs from the sidebar's `⚑` to avoid visual collision.
+- **Expanded cards.** Pressing `t` on the cursor's anchor line
+  replaces the collapsed summary with the full thread body —
+  same gutter / author / markdown-body layout as the Comments
+  section, indented to the content column so the diff's
+  `+`/`-` gutter coloring on adjacent rows isn't disturbed. The
+  expanded header row carries an inline `[t] collapse  [T]`
+  hint.
+- **Overflow block.** File-level threads (`line == None`) and
+  outdated threads whose anchor line isn't in the current diff
+  collect after the last hunk under a
+  `╌╌ File-level & outdated threads (N) ╌╌` divider. Silent-
+  drop of force-push orphaned threads is explicitly avoided.
+- **Keybindings.** `t` toggles the thread at the diff cursor;
+  `T` (Shift+t) collapses all expanded threads. Both guarded to
+  the Files section in diff-mode; the help overlay documents
+  them.
+
+### Internal
+
+- New `src/ui/pr_detail/thread_card.rs` with `render_thread_card`
+  (collapsed / expanded dispatch) plus a `collapsed_summary_line`
+  helper.
+- New `render_diff_with_threads` in `src/ui/pr_detail/files.rs`
+  — walks `file.hunks` directly so it has `DiffLine.new_lineno`
+  natively (no post-hoc annotation of `render_diff` output); emits
+  per-line thread cards from the `ThreadIndex` and writes the
+  current anchor to `App::pr_detail_diff_cursor` each frame for
+  the `t` key handler to read.
+- `render_diff_line` promoted to `pub(crate)` so the new path
+  can reuse the existing per-line renderer.
+- `App` gains `pr_detail_expanded_threads: HashSet<(String, u32)>`
+  and `pr_detail_diff_cursor: RefCell<Option<(String, u32)>>`.
+  Both ephemeral; cleared alongside `thread_index` in
+  `clear_detail_state` and on `back_to_dashboard`.
+- `comments::render_thread_body` now `pub(super)` so the inline
+  card can reuse the Comments section's visual language.
+- `build_section` signature grows `expanded_threads` + `diff_cursor`
+  parameters, plumbed from `App` at both render sites.
+
+### Known limitations
+
+- Multi-line review comment ranges (`startLine < line`) still
+  render at `line` only. Deferred to 0.2.x.
+- `T` preserves scroll position; no explicit "jump back to top
+  after collapse-all" is implemented.
+
 ## [0.1.7] — 2026-04-20
 
 Third of the review-thread UX patches (Phase B.1 — per-file
@@ -291,7 +354,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/leboiko/octopeek/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/leboiko/octopeek/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/leboiko/octopeek/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/leboiko/octopeek/compare/v0.1.4...v0.1.5

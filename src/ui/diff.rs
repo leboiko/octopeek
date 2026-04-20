@@ -320,7 +320,11 @@ fn format_lineno(lineno: Option<u32>) -> String {
 }
 
 /// Render a single [`DiffLine`] as a styled ratatui [`Line`].
-fn render_diff_line(diff_line: &DiffLine, palette: &Palette) -> Line<'static> {
+///
+/// Promoted to `pub(crate)` so `pr_detail::files::render_diff_with_threads`
+/// can call it directly per line without going through the full `render_diff`
+/// path. This keeps `diff.rs` free of thread concerns (single responsibility).
+pub(crate) fn render_diff_line(diff_line: &DiffLine, palette: &Palette) -> Line<'static> {
     // The `NoNewline` pseudo-line gets a distinct minimal layout — no line
     // numbers, no prefix column — just the message in a muted style.
     if diff_line.kind == DiffLineKind::NoNewline {

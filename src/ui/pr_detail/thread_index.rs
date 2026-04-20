@@ -65,18 +65,13 @@ impl ThreadIndex {
 
     /// Threads active on `(path, line)`, in insertion order.
     ///
-    /// Consumed by the inline diff-expansion path landing in 0.1.8; the
-    /// 0.1.7 overview + sidebar badges only need the per-file counts.
-    #[allow(dead_code)]
+    /// Used by the inline diff-expansion renderer in 0.1.8.
     pub(crate) fn active_at(&self, path: &str, line: u32) -> &[usize] {
-        self.active_by_line
-            .get(&(path.to_owned(), line))
-            .map_or(&[], Vec::as_slice)
+        self.active_by_line.get(&(path.to_owned(), line)).map_or(&[], Vec::as_slice)
     }
 
     /// File-level and outdated threads for `path`, in insertion order.
-    /// Rendered at the bottom of the file's diff view. Consumed by 0.1.8.
-    #[allow(dead_code)]
+    /// Rendered at the bottom of the file's diff view.
     pub(crate) fn overflow(&self, path: &str) -> &[usize] {
         self.overflow_by_file.get(path).map_or(&[], Vec::as_slice)
     }

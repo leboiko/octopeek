@@ -250,6 +250,8 @@ impl App {
         self.pr_detail_files_cursor = 0;
         self.pr_detail_files_show_diff = false;
         self.pr_detail_sidebar_scroll = 0;
+        self.pr_detail_expanded_threads.clear();
+        *self.pr_detail_diff_cursor.borrow_mut() = None;
         self.copy_mode.exit();
     }
 

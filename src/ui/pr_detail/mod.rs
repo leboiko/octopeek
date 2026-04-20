@@ -27,6 +27,7 @@ mod files;
 mod header;
 mod reviews;
 mod sections;
+mod thread_card;
 mod thread_index;
 
 pub(crate) use thread_index::{ThreadIndex, build_for as build_thread_index};
@@ -266,6 +267,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.detail_comments_expanded,
         app.detail_show_outdated,
         app.thread_index.as_ref(),
+        &app.pr_detail_expanded_threads,
+        &app.pr_detail_diff_cursor,
         p,
         app.config.show_ascii_glyphs,
     );

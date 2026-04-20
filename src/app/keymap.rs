@@ -417,6 +417,33 @@ impl App {
                 let row = (scroll as usize).min(last_row);
                 self.copy_mode.enter(row, 0);
             }
+            // Toggle inline thread expansion at the current diff cursor position.
+            // Only active when the Files section is showing a diff so unrelated
+            // `t` presses (e.g. while scrolling Description) are no-ops.
+            KeyCode::Char('t')
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && self.pr_detail_files_show_diff =>
+            {
+                self.detail_pending_g = false;
+                // `borrow()` is safe here — no other borrow is live across
+                // this synchronous path.
+                let cursor = self.pr_detail_diff_cursor.borrow().clone();
+                if let Some(anchor) = cursor {
+                    if self.pr_detail_expanded_threads.contains(&anchor) {
+                        self.pr_detail_expanded_threads.remove(&anchor);
+                    } else {
+                        self.pr_detail_expanded_threads.insert(anchor);
+                    }
+                }
+            }
+            // Collapse all expanded thread cards at once (does NOT reset scroll).
+            KeyCode::Char('T')
+                if self.pr_detail_selected_section == DetailSection::Files
+                    && self.pr_detail_files_show_diff =>
+            {
+                self.detail_pending_g = false;
+                self.pr_detail_expanded_threads.clear();
+            }
             KeyCode::Char('r') => {
                 self.detail_pending_g = false;
                 // Manual refresh bypasses the cache. Invalidate the entry so
@@ -980,5 +1007,8 @@ impl App {
         // the Files overview read a stale index keyed to the old PR's
         // threads.
         self.thread_index = None;
+        // Clear ephemeral thread expansion state alongside the index.
+        self.pr_detail_expanded_threads.clear();
+        *self.pr_detail_diff_cursor.borrow_mut() = None;
     }
 }
