@@ -7,11 +7,59 @@ use ratatui::{
 
 use crate::github::detail::PrDetail;
 use crate::theme::Palette;
+use crate::ui::diff::{parse_unified_diff, render_diff};
 use crate::ui::markdown::render_markdown;
 use crate::ui::util::humanize_delta;
 use crate::ui::util::section_header;
 
 use super::files::push_alt_range;
+
+/// Maximum number of rendered rows (header + diff lines) used when showing
+/// the `diff_hunk` excerpt under a thread header. GitHub typically returns
+/// 4–12 lines of context in `diffHunk`; this cap protects against a runaway
+/// hunk dominating the Comments section on old comments with huge contexts.
+const DIFF_HUNK_EXCERPT_MAX_ROWS: usize = 12;
+
+// ── Diff hunk excerpt ─────────────────────────────────────────────────────────
+
+/// Render the `diffHunk` string GitHub ships with each review comment as a
+/// small styled code excerpt, indented to visually belong to the thread
+/// above it.
+///
+/// Returns an empty `Vec` when `hunk` is `None`, empty, or fails to parse as
+/// a unified diff — the caller simply emits no excerpt in that case and the
+/// thread still renders with just the header + comment bodies. Defensive
+/// behaviour matters here because older cached `PrDetail` payloads predate
+/// the field's addition to our GraphQL query.
+fn diff_hunk_excerpt(hunk: Option<&str>, p: &Palette) -> Vec<Line<'static>> {
+    let Some(text) = hunk.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let parsed = parse_unified_diff(text);
+    if parsed.hunks.is_empty() {
+        return Vec::new();
+    }
+    let rendered = render_diff(&parsed, p);
+
+    // Indent by 4 columns so the excerpt sits inside the thread block without
+    // competing with the thread's `│` gutter (which starts at column 2).
+    let indent = "    ";
+    let truncated = rendered.len() > DIFF_HUNK_EXCERPT_MAX_ROWS;
+    let visible_rows = rendered.len().min(DIFF_HUNK_EXCERPT_MAX_ROWS);
+
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(visible_rows + usize::from(truncated));
+    for mut line in rendered.into_iter().take(visible_rows) {
+        line.spans.insert(0, Span::raw(indent));
+        out.push(line);
+    }
+    if truncated {
+        out.push(Line::from(Span::styled(
+            format!("{indent}\u{2026}  hunk truncated"),
+            Style::default().fg(p.dim),
+        )));
+    }
+    out
+}
 
 // ── Gutter helpers ────────────────────────────────────────────────────────────
 
@@ -153,6 +201,18 @@ pub(super) fn comments_lines(
 
         // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
         lines.push(thread_header_line(thread, p, ascii));
+
+        // Inline code excerpt from GitHub's `diffHunk` (if present). Gives the
+        // reader the ±N lines of context the comment was anchored to without
+        // forcing a jump into the Files section. See `diff_hunk_excerpt` for
+        // the empty-input / parse-failure fallback.
+        let hunk_lines = diff_hunk_excerpt(thread.diff_hunk.as_deref(), p);
+        if !hunk_lines.is_empty() {
+            lines.extend(hunk_lines);
+            // Blank separator before the comment bodies so the excerpt reads
+            // as a distinct inset block, not part of the first comment.
+            lines.push(Line::from(""));
+        }
 
         for (idx, comment) in thread.comments.iter().enumerate() {
             let age = humanize_delta(&comment.created_at);

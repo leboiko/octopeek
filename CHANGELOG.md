@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-04-20
+
+First of three related feature drops around review-thread display
+(0.1.5, 0.1.6, 0.1.7).
+
+### Added
+
+- **Inline diff-hunk excerpt in the Comments section.** Each review
+  thread now renders the `diffHunk` GitHub captures at comment time
+  as a small styled code excerpt — `@@ -a,b +c,d @@` header plus
+  the surrounding context lines, coloured the same as the Files
+  diff. Sits between the thread header and the first comment
+  body, so readers no longer need to jump into the Files section
+  to understand which code a review discusses. Capped at
+  12 rendered rows; hunks longer than that show a muted
+  `… hunk truncated` marker.
+
+### Data layer
+
+- GraphQL `PR_DETAIL_QUERY` adds `startLine`, `originalStartLine`
+  on each review thread, and `diffHunk` on each review comment.
+  Zero extra node-budget cost (all scalars). `startLine` is held
+  on `ReviewThread` as groundwork for multi-line comment handling
+  in 0.1.7; no UI surface for ranges in 0.1.5.
+- `ReviewComment` gains `diff_hunk: Option<String>`.
+  `ReviewThread` gains `start_line: Option<u32>` and
+  `diff_hunk: Option<String>` (promoted from `comments[0].diff_hunk`
+  at conversion time so renderers never reach into replies). All
+  new fields are `#[serde(default)]` so session-cached `PrDetail`
+  payloads from 0.1.4 deserialize without error and render
+  without a hunk excerpt.
+
+### Known limitations
+
+- Multi-line review comments (where `startLine < line`) render at
+  `line` only — the range isn't surfaced in the header yet. Tracked
+  for 0.2.x.
+
 ## [0.1.4] — 2026-04-20
 
 ### Fixed
@@ -177,7 +215,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/leboiko/octopeek/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/leboiko/octopeek/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/leboiko/octopeek/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/leboiko/octopeek/compare/v0.1.1...v0.1.2

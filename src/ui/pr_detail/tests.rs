@@ -73,12 +73,15 @@ pub fn fixture_pr_detail(
             path: format!("src/file-{i}.rs"),
             #[allow(clippy::cast_possible_truncation)]
             line: Some((i as u32 + 1) * 5),
+            start_line: None,
             is_resolved: i % 3 == 0,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![ReviewComment {
                 author: format!("user-{i}"),
                 body_markdown: format!("Comment {i}"),
                 created_at: now,
+                diff_hunk: None,
             }],
         })
         .collect();
@@ -377,12 +380,15 @@ fn thread_comment_body_renders_as_markdown() {
         review_threads: vec![ReviewThread {
             path: "src/lib.rs".to_owned(),
             line: Some(10),
+            start_line: None,
             is_resolved: false,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![ReviewComment {
                 author: "bob".to_owned(),
                 body_markdown: "# Heading\n\n**bold** text\n\n```rust\nfn f() {}\n```".to_owned(),
                 created_at: now,
+                diff_hunk: None,
             }],
         }],
         issue_comments: vec![],
@@ -397,6 +403,120 @@ fn thread_comment_body_renders_as_markdown() {
         .count();
 
     assert!(styled_count >= 2, "expected >= 2 styled spans (heading + code), got {styled_count}");
+}
+
+#[test]
+fn diff_hunk_excerpt_renders_under_thread_header() {
+    // A review thread with a populated `diff_hunk` must emit the parsed
+    // excerpt (hunk header + `+`/`-`/context lines) between the thread
+    // header and the first comment body. Guards Feature A from 0.1.5.
+    let now = Utc::now();
+    let p = Palette::default();
+    let detail = PrDetail {
+        repo: "r".to_owned(),
+        number: 1,
+        title: "T".to_owned(),
+        url: "u".to_owned(),
+        author: "a".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files_count: 0,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![ReviewThread {
+            path: "src/lib.rs".to_owned(),
+            line: Some(3),
+            start_line: None,
+            is_resolved: false,
+            is_outdated: false,
+            diff_hunk: Some(
+                "@@ -1,3 +1,4 @@\n fn main() {\n-    let x = 1;\n+    let x = 2;\n+    let y = 3;\n }"
+                    .to_owned(),
+            ),
+            comments: vec![ReviewComment {
+                author: "alice".to_owned(),
+                body_markdown: "Looks good.".to_owned(),
+                created_at: now,
+                diff_hunk: None,
+            }],
+        }],
+        issue_comments: vec![],
+    };
+
+    let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(text.contains("@@ -1,3 +1,4 @@"), "excerpt must include hunk header; got: {text}");
+    assert!(text.contains("let x = 2"), "excerpt must include the added line");
+    assert!(text.contains("Looks good."), "the comment body must still render below the excerpt");
+}
+
+#[test]
+fn thread_without_diff_hunk_renders_cleanly() {
+    // A thread with `diff_hunk = None` (old cached payload) must render
+    // without a hunk excerpt and without panicking. Fallback path for
+    // PRs whose detail was cached before 0.1.5 added the field.
+    let now = Utc::now();
+    let p = Palette::default();
+    let detail = PrDetail {
+        repo: "r".to_owned(),
+        number: 1,
+        title: "T".to_owned(),
+        url: "u".to_owned(),
+        author: "a".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files_count: 0,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![ReviewThread {
+            path: "src/lib.rs".to_owned(),
+            line: Some(3),
+            start_line: None,
+            is_resolved: false,
+            is_outdated: false,
+            diff_hunk: None,
+            comments: vec![ReviewComment {
+                author: "alice".to_owned(),
+                body_markdown: "No hunk.".to_owned(),
+                created_at: now,
+                diff_hunk: None,
+            }],
+        }],
+        issue_comments: vec![],
+    };
+
+    let (lines, _) = build_section(DetailSection::Comments, &detail, 0, false, false, &p, false);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(!text.contains("@@"), "no hunk must produce no '@@' header; got: {text}");
+    assert!(text.contains("No hunk."), "the comment body must still render");
 }
 
 #[test]
@@ -425,23 +545,28 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         review_threads: vec![ReviewThread {
             path: "src/lib.rs".to_owned(),
             line: Some(5),
+            start_line: None,
             is_resolved: false,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![
                 ReviewComment {
                     author: "alice".to_owned(),
                     body_markdown: "First comment".to_owned(),
                     created_at: now,
+                    diff_hunk: None,
                 },
                 ReviewComment {
                     author: "bob".to_owned(),
                     body_markdown: "Second comment".to_owned(),
                     created_at: now,
+                    diff_hunk: None,
                 },
                 ReviewComment {
                     author: "carol".to_owned(),
                     body_markdown: "Third comment".to_owned(),
                     created_at: now,
+                    diff_hunk: None,
                 },
             ],
         }],
@@ -502,12 +627,15 @@ fn unresolved_anchor_points_at_thread_header() {
         review_threads: vec![ReviewThread {
             path: "src/lib.rs".to_owned(),
             line: Some(42),
+            start_line: None,
             is_resolved: false,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![ReviewComment {
                 author: "bob".to_owned(),
                 body_markdown: "Needs refactor.".to_owned(),
                 created_at: now,
+                diff_hunk: None,
             }],
         }],
         issue_comments: vec![],
@@ -556,18 +684,22 @@ fn replies_render_in_accent_alt() {
         review_threads: vec![ReviewThread {
             path: "src/lib.rs".to_owned(),
             line: Some(1),
+            start_line: None,
             is_resolved: false,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![
                 ReviewComment {
                     author: "opener".to_owned(),
                     body_markdown: "Opening thought.".to_owned(),
                     created_at: now,
+                    diff_hunk: None,
                 },
                 ReviewComment {
                     author: "replier".to_owned(),
                     body_markdown: "Counter-point.".to_owned(),
                     created_at: now,
+                    diff_hunk: None,
                 },
             ],
         }],
@@ -634,12 +766,15 @@ fn collapsed_long_comment_shows_expand_hint() {
         review_threads: vec![ReviewThread {
             path: "src/lib.rs".to_owned(),
             line: Some(1),
+            start_line: None,
             is_resolved: false,
             is_outdated: false,
+            diff_hunk: None,
             comments: vec![ReviewComment {
                 author: "alice".to_owned(),
                 body_markdown: long_body,
                 created_at: now,
+                diff_hunk: None,
             }],
         }],
         issue_comments: vec![],

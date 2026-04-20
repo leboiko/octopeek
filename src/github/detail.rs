@@ -92,6 +92,15 @@ pub struct ReviewComment {
     pub body_markdown: String,
     /// When the comment was posted.
     pub created_at: DateTime<Utc>,
+    /// Raw unified-diff excerpt GitHub captured when the comment was posted.
+    ///
+    /// A `@@ -a,b +c,d @@` header plus up to ~10 lines of context ending at
+    /// the commented line. All replies in the same thread share the first
+    /// comment's hunk; [`ReviewThread::diff_hunk`] promotes it for
+    /// convenience. `None` for older cached payloads that predate the
+    /// field's addition to the query.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
 }
 
 /// A thread of inline review comments anchored to a file location.
@@ -104,11 +113,32 @@ pub struct ReviewThread {
     /// File path the thread is anchored to.
     pub path: String,
     /// Line number in the diff, if the thread is line-anchored.
+    ///
+    /// Resolution order: prefer `line` (current-diff coordinate) and fall
+    /// back to `originalLine` (pre-rebase coordinate) in
+    /// [`raw_pr_to_detail`]. Outdated threads typically only have
+    /// `originalLine`, so this field is still populated — callers infer
+    /// "outdated coordinate" from `is_outdated == true`.
     pub line: Option<u32>,
+    /// Start line of a multi-line comment range, if any.
+    ///
+    /// Non-line comments and single-line anchors both have `start_line`
+    /// equal to `None`; a true range has `start_line < line`. UI treatment
+    /// of ranges is deferred to a later release; for now we surface the
+    /// value so the header can render `"lines A-B"` on ranges.
+    pub start_line: Option<u32>,
     /// `true` when all participants resolved the thread.
     pub is_resolved: bool,
     /// `true` when the thread's diff hunk no longer exists in the current diff.
     pub is_outdated: bool,
+    /// Diff-hunk excerpt captured when the thread was created.
+    ///
+    /// Promoted from `comments[0].diff_hunk` at conversion time so renderers
+    /// never have to reach into the first comment. `None` when the thread
+    /// has no comments (should never happen in practice) or when the cached
+    /// payload predates this field.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
     /// Comments within this thread, in chronological order.
     pub comments: Vec<ReviewComment>,
 }
@@ -283,11 +313,14 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           path
           line
           originalLine
+          startLine
+          originalStartLine
           comments(first: 20) {
             nodes {
               author { login }
               body
               createdAt
+              diffHunk
             }
           }
         }
@@ -500,6 +533,8 @@ pub(super) struct RawReviewThreadNode {
     /// Preferred line field; falls back to `original_line` when absent.
     pub line: Option<u32>,
     pub original_line: Option<u32>,
+    pub start_line: Option<u32>,
+    pub original_start_line: Option<u32>,
     pub comments: RawNodeList<RawCommentNode>,
 }
 
@@ -509,6 +544,13 @@ pub(super) struct RawCommentNode {
     pub author: Option<RawDetailActor>,
     pub body: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Unified-diff excerpt anchoring this comment.
+    ///
+    /// Present on review-thread comments; absent (and thus `None` via
+    /// `#[serde(default)]`) on issue-level comments that share this node
+    /// shape but don't expose `diffHunk` in the query.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
 }
 
 /// Convert a raw GraphQL comment node into the public [`IssueComment`] type.
@@ -650,10 +692,12 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         .map(|t| {
             // `line` is the current-diff line; `original_line` is the pre-rebase
             // line. Prefer `line` (most useful for display); fall back to
-            // `original_line` when the hunk has shifted.
+            // `original_line` when the hunk has shifted. Same resolution order
+            // for the multi-line `start_line` range.
             let line = t.line.or(t.original_line);
+            let start_line = t.start_line.or(t.original_start_line);
 
-            let comments = t
+            let comments: Vec<ReviewComment> = t
                 .comments
                 .nodes
                 .into_iter()
@@ -661,14 +705,22 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                     author: crate::github::author_or_deleted(c.author.map(|a| a.login)),
                     body_markdown: c.body.unwrap_or_default(),
                     created_at: c.created_at,
+                    diff_hunk: c.diff_hunk,
                 })
                 .collect();
+
+            // Promote the first comment's diff hunk to the thread level so
+            // renderers can ignore the comments list when they only need the
+            // code context. All replies in a thread share the opener's hunk.
+            let diff_hunk = comments.first().and_then(|c| c.diff_hunk.clone());
 
             ReviewThread {
                 path: t.path,
                 line,
+                start_line,
                 is_resolved: t.is_resolved,
                 is_outdated: t.is_outdated,
+                diff_hunk,
                 comments,
             }
         })
