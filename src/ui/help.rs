@@ -73,7 +73,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         shortcut("# (Shift+3)", "Reviews section", key_style, desc_style),
         shortcut("$ (Shift+4)", "Files section", key_style, desc_style),
         shortcut("% (Shift+5)", "Comments section", key_style, desc_style),
-        shortcut("^ / ˆ (Shift+6)", "Commits section", key_style, desc_style),
+        shortcut("C / ^ / ˆ", "Commits section", key_style, desc_style),
         shortcut("z", "Hide / show outdated review threads", key_style, desc_style),
         shortcut("F (Shift+f)", "Jump to Files section", key_style, desc_style),
         shortcut(

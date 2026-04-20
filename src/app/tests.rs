@@ -1676,6 +1676,23 @@ fn modifier_circumflex_selects_commits_section() {
     assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
 }
 
+/// `^` is a dead key on some keyboard layouts, so Commits also needs a
+/// non-dead-key shortcut.
+#[test]
+fn capital_c_selects_commits_section() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('C'),
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Commits);
+}
+
 /// Some terminals deliver Shift+6 as the literal digit with extra modifier
 /// bits attached. The section picker should still treat that as Commits.
 #[test]

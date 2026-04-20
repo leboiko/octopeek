@@ -1,6 +1,6 @@
 [package]
 name = "octopeek"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Luis Eduardo Boiko <luiseduardo.boiko@gmail.com>"]

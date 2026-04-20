@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.7] — 2026-04-20
+
+Patch release for keyboard layouts where `^` is a dead key.
+
+### Fixed
+
+- Added `C` as the primary non-dead-key shortcut for the Commits section.
+  `^` / `ˆ` remain supported when the terminal sends them, but users no longer
+  need to press a dead-key caret twice to reach Commits.
+- Updated the status bar and help text to show `C` for Commits, avoiding hints
+  that encourage the problematic dead-key path.
+
+### Tests
+
+290 pass: added coverage for `C` selecting the Commits section while preserving
+the existing caret and Shift+6 shortcut paths.
+
 ## [0.2.6] — 2026-04-20
 
 Patch release for Commits shortcut tolerance and commit-diff warmup visibility.
@@ -717,7 +734,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/leboiko/octopeek/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/leboiko/octopeek/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/leboiko/octopeek/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/leboiko/octopeek/compare/v0.2.3...v0.2.4
