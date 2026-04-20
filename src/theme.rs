@@ -70,7 +70,7 @@ impl Theme {
 }
 
 /// Concrete color values for one theme, threaded through every renderer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub background: Color,
     pub foreground: Color,
@@ -124,366 +124,605 @@ pub struct Palette {
     pub muted: Color,
 }
 
-impl Palette {
-    /// Construct the color palette for the given theme.
+/// Source-of-truth colour tokens for one theme, from which the full
+/// [`Palette`] is derived.
+///
+/// The 7 "base" fields are always required. The remaining fields are optional
+/// override slots: `None` means "apply the standard derivation rule";
+/// `Some(c)` means "use this exact colour instead". Override slots are set
+/// only when the derivation rule would produce a wrong colour for a specific
+/// theme.
+///
+/// **Why so many override slots?** The existing themes were hand-authored
+/// independently, so several fields (e.g. `selection_fg`, `h2`, `link`) do
+/// not follow a single rule across all 8 palettes. Rather than forcing every
+/// theme through an incorrect derivation, we capture the exceptions precisely.
+/// A future palette design exercise could collapse more of these to direct
+/// derivations, but the parity gate in the test suite would catch any drift.
+///
+/// `ThemeTokens` is `Copy` — same rationale as [`Palette`]: pure-POD, no
+/// heap allocation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThemeTokens {
+    // ------------------------------------------------------------------
+    // Base tokens — always required.
+    // ------------------------------------------------------------------
+    /// Main background colour for the TUI surface.
+    pub background: Color,
+    /// Primary text colour.
+    pub foreground: Color,
+    /// De-emphasised / secondary text colour.
+    pub dim: Color,
+    /// Unfocused panel border colour.
+    pub border: Color,
+    /// Primary accent (focused borders, active elements).
+    pub accent: Color,
+    /// Secondary accent (list markers, task indicators).
+    pub accent_alt: Color,
+    /// Background of selected / highlighted rows.
+    pub selection_bg: Color,
+
+    // ------------------------------------------------------------------
+    // Override slots — `None` → apply the derivation rule documented in
+    // [`Palette::from_tokens`]; `Some(c)` → use `c` verbatim.
+    // ------------------------------------------------------------------
+    /// `Palette::selection_fg`. Default: `foreground`.
+    pub selection_fg: Option<Color>,
+    /// `Palette::on_accent_fg`. Default: `foreground`. GitHub Light overrides
+    /// to white because its `selection_fg` == `accent` (invisible on accent bg).
+    pub on_accent_fg: Option<Color>,
+    /// `Palette::title`. Default: `foreground`.
+    pub title: Option<Color>,
+    /// `Palette::h1`. Default: `accent`. Dracula overrides to pink.
+    pub h1: Option<Color>,
+    /// `Palette::h2`. Default: `accent`.
+    pub h2: Option<Color>,
+    /// `Palette::h3`. Default: `accent_alt`.
+    pub h3: Option<Color>,
+    /// `Palette::heading_other`. Default: `foreground`.
+    pub heading_other: Option<Color>,
+    /// `Palette::inline_code`. Default: `accent_alt`.
+    pub inline_code: Option<Color>,
+    /// `Palette::code_fg`. Default: `foreground`.
+    pub code_fg: Option<Color>,
+    /// `Palette::code_bg`. Required per theme — too variable for one rule.
+    pub code_bg: Option<Color>,
+    /// `Palette::link`. Default: `accent`.
+    pub link: Option<Color>,
+    /// `Palette::task_marker`. Default: `accent_alt`.
+    pub task_marker: Option<Color>,
+    /// `Palette::block_quote_fg`. Default: `dim`.
+    pub block_quote_fg: Option<Color>,
+    /// `Palette::block_quote_border`. Default: `dim`.
+    pub block_quote_border: Option<Color>,
+    /// `Palette::table_header`. Default: `accent`.
+    pub table_header: Option<Color>,
+    /// `Palette::border_focused`. Default: `accent`. `GruvboxDark` overrides to
+    /// orange because its `border_focused` is deliberately different from its
+    /// `accent` (yellow).
+    pub border_focused: Option<Color>,
+    /// `Palette::code_border`. Default: `dim`. Gruvbox themes and GitHub Light
+    /// use `border` instead of `dim` for their code-block borders.
+    pub code_border: Option<Color>,
+    /// `Palette::list_marker`. Default: `accent_alt`. Gruvbox themes use
+    /// `accent` (their primary yellow) rather than `accent_alt` (green).
+    pub list_marker: Option<Color>,
+    /// `Palette::search_match_bg`. Default: `accent_alt`. Gruvbox themes use
+    /// `accent`; GitHub Light uses a custom golden colour.
+    pub search_match_bg: Option<Color>,
+    /// `Palette::gutter`. Default: `dim`. `GruvboxDark` uses a third grey
+    /// colour (`Rgb(102, 92, 84)`) distinct from both `dim` and `border`.
+    pub gutter: Option<Color>,
+    /// `Palette::table_border`. Default: `border`.
+    pub table_border: Option<Color>,
+    /// `Palette::current_match_bg`. Default: `accent`.
+    pub current_match_bg: Option<Color>,
+    /// `Palette::match_fg`. Default: `background`.
+    pub match_fg: Option<Color>,
+    /// `Palette::status_bar_bg`. Default: `code_bg`.
+    pub status_bar_bg: Option<Color>,
+    /// `Palette::status_bar_fg`. Default: `dim`.
+    pub status_bar_fg: Option<Color>,
+    /// `Palette::help_bg`. Required per theme — light-theme specific.
+    pub help_bg: Option<Color>,
+    /// `Palette::success`. Required per theme (per-theme green hue).
+    pub success: Option<Color>,
+    /// `Palette::warning`. Required per theme (per-theme orange/yellow hue).
+    pub warning: Option<Color>,
+    /// `Palette::danger`. Required per theme (per-theme red hue).
+    pub danger: Option<Color>,
+    /// `Palette::git_new`. Default: `success`. `GruvboxLight` overrides to
+    /// `accent_alt` (green #98971a) because its `success` colour is a
+    /// different green not used for this field in the original palette.
+    pub git_new: Option<Color>,
+    /// `Palette::git_modified`. Default: `warning`. Some themes use a
+    /// slightly different colour for modified vs warning.
+    pub git_modified: Option<Color>,
+    /// `Palette::needs_action`. Default: `warning`.
+    pub needs_action: Option<Color>,
+}
+
+impl ThemeTokens {
+    /// Return the [`ThemeTokens`] for `theme`.
+    ///
+    /// The exhaustive `match` (no `_` wildcard) ensures the compiler forces an
+    /// update here whenever a new [`Theme`] variant is added.
     #[allow(clippy::too_many_lines)]
-    pub fn from_theme(theme: Theme) -> Self {
+    pub fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Default => Self {
                 background: Color::Rgb(20, 20, 30),
                 foreground: Color::Rgb(220, 220, 220),
                 dim: Color::DarkGray,
                 border: Color::DarkGray,
-                border_focused: Color::Cyan,
                 accent: Color::Cyan,
                 accent_alt: Color::Yellow,
                 selection_bg: Color::Rgb(0, 160, 80),
-                selection_fg: Color::Black,
-                on_accent_fg: Color::Black,
-                title: Color::Rgb(220, 220, 220),
-                h1: Color::Cyan,
-                h2: Color::Blue,
-                h3: Color::Magenta,
-                heading_other: Color::White,
-                inline_code: Color::Green,
-                code_fg: Color::Rgb(180, 200, 180),
-                code_bg: Color::Rgb(40, 40, 40),
-                code_border: Color::DarkGray,
-                link: Color::Blue,
-                list_marker: Color::Yellow,
-                task_marker: Color::Cyan,
-                block_quote_fg: Color::Gray,
-                block_quote_border: Color::DarkGray,
-                table_header: Color::Cyan,
-                table_border: Color::DarkGray,
-                search_match_bg: Color::Yellow,
-                current_match_bg: Color::Rgb(255, 120, 0),
-                match_fg: Color::Black,
-                gutter: Color::DarkGray,
-                status_bar_bg: Color::Rgb(30, 30, 30),
-                status_bar_fg: Color::Gray,
-                // Lifted ~10 per channel above `background` so help, repo picker,
-                // and confirm overlays are visibly distinct from the dashboard
-                // behind them. Matching `background` would make the overlay
-                // border the only visible cue — easily missed.
-                help_bg: Color::Rgb(32, 32, 45),
-                git_new: Color::Rgb(80, 200, 120),
-                git_modified: Color::Rgb(220, 180, 60),
-                needs_action: Color::Rgb(255, 200, 60),
-                success: Color::Rgb(80, 200, 120),
-                warning: Color::Rgb(220, 160, 40),
-                danger: Color::Rgb(220, 60, 60),
-                muted: Color::DarkGray,
+                // Default uses terminal colour names that differ from the RGB
+                // foreground, so every field that would otherwise derive from
+                // foreground/accent needs an explicit override.
+                selection_fg: Some(Color::Black),
+                on_accent_fg: Some(Color::Black),
+                title: None,
+                h1: None,
+                h2: Some(Color::Blue),
+                h3: Some(Color::Magenta),
+                heading_other: Some(Color::White),
+                inline_code: Some(Color::Green),
+                code_fg: Some(Color::Rgb(180, 200, 180)),
+                code_bg: Some(Color::Rgb(40, 40, 40)),
+                border_focused: None,
+                code_border: None,
+                link: Some(Color::Blue),
+                list_marker: None,
+                task_marker: Some(Color::Cyan),
+                block_quote_fg: Some(Color::Gray),
+                block_quote_border: None,
+                table_header: None,
+                table_border: None,
+                search_match_bg: None,
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(255, 120, 0)),
+                match_fg: Some(Color::Black),
+                // status_bar_bg differs from code_bg for the Default theme
+                status_bar_bg: Some(Color::Rgb(30, 30, 30)),
+                status_bar_fg: Some(Color::Gray),
+                help_bg: Some(Color::Rgb(32, 32, 45)),
+                success: Some(Color::Rgb(80, 200, 120)),
+                warning: Some(Color::Rgb(220, 160, 40)),
+                danger: Some(Color::Rgb(220, 60, 60)),
+                git_new: None,
+                git_modified: Some(Color::Rgb(220, 180, 60)),
+                needs_action: Some(Color::Rgb(255, 200, 60)),
             },
             Theme::Dracula => Self {
-                // Official Dracula palette: https://draculatheme.com/contribute
                 background: Color::Rgb(40, 42, 54),
                 foreground: Color::Rgb(248, 248, 242),
                 dim: Color::Rgb(98, 114, 164),
                 border: Color::Rgb(68, 71, 90),
-                border_focused: Color::Rgb(189, 147, 249),
                 accent: Color::Rgb(189, 147, 249),
                 accent_alt: Color::Rgb(241, 250, 140),
                 selection_bg: Color::Rgb(68, 71, 90),
-                selection_fg: Color::Rgb(248, 248, 242),
-                on_accent_fg: Color::Rgb(248, 248, 242),
-                title: Color::Rgb(248, 248, 242),
-                h1: Color::Rgb(255, 121, 198),
-                h2: Color::Rgb(189, 147, 249),
-                h3: Color::Rgb(80, 250, 123),
-                heading_other: Color::Rgb(248, 248, 242),
-                inline_code: Color::Rgb(80, 250, 123),
-                code_fg: Color::Rgb(248, 248, 242),
-                code_bg: Color::Rgb(40, 42, 54),
-                code_border: Color::Rgb(98, 114, 164),
-                link: Color::Rgb(139, 233, 253),
-                list_marker: Color::Rgb(241, 250, 140),
-                task_marker: Color::Rgb(80, 250, 123),
-                block_quote_fg: Color::Rgb(98, 114, 164),
-                block_quote_border: Color::Rgb(98, 114, 164),
-                table_header: Color::Rgb(255, 121, 198),
-                table_border: Color::Rgb(98, 114, 164),
-                search_match_bg: Color::Rgb(241, 250, 140),
-                current_match_bg: Color::Rgb(255, 121, 198),
-                match_fg: Color::Rgb(40, 42, 54),
-                gutter: Color::Rgb(98, 114, 164),
-                status_bar_bg: Color::Rgb(40, 42, 54),
-                status_bar_fg: Color::Rgb(98, 114, 164),
-                // Dracula's `current-line` color — brighter than the base
-                // background so overlays are clearly distinct from the
-                // dashboard behind them.
-                help_bg: Color::Rgb(68, 71, 90),
-                git_new: Color::Rgb(80, 250, 123),
-                git_modified: Color::Rgb(241, 250, 140),
-                needs_action: Color::Rgb(241, 250, 140),
-                success: Color::Rgb(80, 250, 123),
-                warning: Color::Rgb(255, 184, 108),
-                danger: Color::Rgb(255, 85, 85),
-                muted: Color::Rgb(98, 114, 164),
+                selection_fg: None,
+                on_accent_fg: None,
+                title: None,
+                // Dracula uses pink (#ff79c6) for H1, not the purple accent
+                h1: Some(Color::Rgb(255, 121, 198)),
+                h2: None,
+                // Dracula h3 = green (#50fa7b), not accent_alt (yellow)
+                h3: Some(Color::Rgb(80, 250, 123)),
+                heading_other: None,
+                // Dracula inline_code = green, not accent_alt (yellow)
+                inline_code: Some(Color::Rgb(80, 250, 123)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(40, 42, 54)),
+                border_focused: None,
+                code_border: None,
+                // Dracula link = cyan (#8be9fd), not accent (purple)
+                link: Some(Color::Rgb(139, 233, 253)),
+                list_marker: None,
+                // Dracula task_marker = green, not accent_alt (yellow)
+                task_marker: Some(Color::Rgb(80, 250, 123)),
+                block_quote_fg: None,
+                block_quote_border: None,
+                // Dracula table_header = pink, not accent (purple)
+                table_header: Some(Color::Rgb(255, 121, 198)),
+                // Dracula table_border = dim (same as default derivation)
+                table_border: Some(Color::Rgb(98, 114, 164)),
+                search_match_bg: None,
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(255, 121, 198)),
+                match_fg: None,
+                status_bar_bg: None,
+                status_bar_fg: None,
+                // Dracula "current-line" colour — distinct from background
+                help_bg: Some(Color::Rgb(68, 71, 90)),
+                success: Some(Color::Rgb(80, 250, 123)),
+                warning: Some(Color::Rgb(255, 184, 108)),
+                danger: Some(Color::Rgb(255, 85, 85)),
+                // Dracula uses accent_alt (yellow) for git_modified and
+                // needs_action, not the warning (orange) colour.
+                git_new: None,
+                git_modified: Some(Color::Rgb(241, 250, 140)),
+                needs_action: Some(Color::Rgb(241, 250, 140)),
             },
             Theme::SolarizedDark => Self {
-                // Ethan Schoonover's Solarized Dark: https://ethanschoonover.com/solarized/
                 background: Color::Rgb(0, 43, 54),
                 foreground: Color::Rgb(131, 148, 150),
                 dim: Color::Rgb(88, 110, 117),
                 border: Color::Rgb(88, 110, 117),
-                border_focused: Color::Rgb(38, 139, 210),
                 accent: Color::Rgb(38, 139, 210),
                 accent_alt: Color::Rgb(181, 137, 0),
                 selection_bg: Color::Rgb(7, 54, 66),
-                selection_fg: Color::Rgb(147, 161, 161),
-                on_accent_fg: Color::Rgb(147, 161, 161),
-                title: Color::Rgb(147, 161, 161),
-                h1: Color::Rgb(203, 75, 22),
-                h2: Color::Rgb(38, 139, 210),
-                h3: Color::Rgb(42, 161, 152),
-                heading_other: Color::Rgb(131, 148, 150),
-                inline_code: Color::Rgb(133, 153, 0),
-                code_fg: Color::Rgb(131, 148, 150),
-                code_bg: Color::Rgb(7, 54, 66),
-                code_border: Color::Rgb(88, 110, 117),
-                link: Color::Rgb(38, 139, 210),
-                list_marker: Color::Rgb(181, 137, 0),
-                task_marker: Color::Rgb(42, 161, 152),
-                block_quote_fg: Color::Rgb(88, 110, 117),
-                block_quote_border: Color::Rgb(88, 110, 117),
-                table_header: Color::Rgb(203, 75, 22),
-                table_border: Color::Rgb(88, 110, 117),
-                search_match_bg: Color::Rgb(181, 137, 0),
-                current_match_bg: Color::Rgb(203, 75, 22),
-                match_fg: Color::Rgb(0, 43, 54),
-                gutter: Color::Rgb(88, 110, 117),
-                status_bar_bg: Color::Rgb(7, 54, 66),
-                status_bar_fg: Color::Rgb(88, 110, 117),
-                help_bg: Color::Rgb(7, 54, 66),
-                git_new: Color::Rgb(133, 153, 0),
-                git_modified: Color::Rgb(181, 137, 0),
-                needs_action: Color::Rgb(181, 137, 0),
-                success: Color::Rgb(133, 153, 0),
-                warning: Color::Rgb(203, 75, 22),
-                danger: Color::Rgb(220, 50, 47),
-                muted: Color::Rgb(88, 110, 117),
+                selection_fg: Some(Color::Rgb(147, 161, 161)),
+                on_accent_fg: Some(Color::Rgb(147, 161, 161)),
+                title: Some(Color::Rgb(147, 161, 161)),
+                // Solarized uses orange (#cb4b16) for H1
+                h1: Some(Color::Rgb(203, 75, 22)),
+                h2: None,
+                // Solarized h3 = teal (#2aa198)
+                h3: Some(Color::Rgb(42, 161, 152)),
+                heading_other: None,
+                // Solarized inline_code = green (#859900)
+                inline_code: Some(Color::Rgb(133, 153, 0)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(7, 54, 66)),
+                border_focused: None,
+                code_border: None,
+                link: None,
+                list_marker: None,
+                // Solarized task_marker = teal
+                task_marker: Some(Color::Rgb(42, 161, 152)),
+                block_quote_fg: None,
+                block_quote_border: None,
+                // Solarized table_header = orange
+                table_header: Some(Color::Rgb(203, 75, 22)),
+                table_border: None,
+                search_match_bg: None,
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(203, 75, 22)),
+                match_fg: None,
+                status_bar_bg: None,
+                status_bar_fg: None,
+                help_bg: Some(Color::Rgb(7, 54, 66)),
+                success: Some(Color::Rgb(133, 153, 0)),
+                warning: Some(Color::Rgb(203, 75, 22)),
+                danger: Some(Color::Rgb(220, 50, 47)),
+                // Solarized uses accent_alt (yellow #b58900) for git_modified and
+                // needs_action, not the warning (orange #cb4b16) colour.
+                git_new: None,
+                git_modified: Some(Color::Rgb(181, 137, 0)),
+                needs_action: Some(Color::Rgb(181, 137, 0)),
             },
             Theme::SolarizedLight => Self {
-                // Ethan Schoonover's Solarized Light: https://ethanschoonover.com/solarized/
                 background: Color::Rgb(253, 246, 227),
                 foreground: Color::Rgb(101, 123, 131),
                 dim: Color::Rgb(147, 161, 161),
                 border: Color::Rgb(238, 232, 213),
-                border_focused: Color::Rgb(38, 139, 210),
                 accent: Color::Rgb(38, 139, 210),
                 accent_alt: Color::Rgb(181, 137, 0),
                 selection_bg: Color::Rgb(238, 232, 213),
-                selection_fg: Color::Rgb(88, 110, 117),
-                on_accent_fg: Color::Rgb(253, 246, 227),
-                title: Color::Rgb(88, 110, 117),
-                h1: Color::Rgb(203, 75, 22),
-                h2: Color::Rgb(38, 139, 210),
-                h3: Color::Rgb(42, 161, 152),
-                heading_other: Color::Rgb(88, 110, 117),
-                inline_code: Color::Rgb(133, 153, 0),
-                code_fg: Color::Rgb(101, 123, 131),
-                code_bg: Color::Rgb(238, 232, 213),
-                code_border: Color::Rgb(147, 161, 161),
-                link: Color::Rgb(38, 139, 210),
-                list_marker: Color::Rgb(181, 137, 0),
-                task_marker: Color::Rgb(42, 161, 152),
-                block_quote_fg: Color::Rgb(147, 161, 161),
-                block_quote_border: Color::Rgb(147, 161, 161),
-                table_header: Color::Rgb(203, 75, 22),
-                table_border: Color::Rgb(147, 161, 161),
-                search_match_bg: Color::Rgb(181, 137, 0),
-                current_match_bg: Color::Rgb(203, 75, 22),
-                match_fg: Color::Rgb(253, 246, 227),
-                gutter: Color::Rgb(147, 161, 161),
-                status_bar_bg: Color::Rgb(238, 232, 213),
-                status_bar_fg: Color::Rgb(101, 123, 131),
-                help_bg: Color::Rgb(238, 232, 213),
-                git_new: Color::Rgb(133, 153, 0),
-                git_modified: Color::Rgb(181, 137, 0),
-                needs_action: Color::Rgb(181, 137, 0),
-                success: Color::Rgb(133, 153, 0),
-                warning: Color::Rgb(203, 75, 22),
-                danger: Color::Rgb(220, 50, 47),
-                muted: Color::Rgb(147, 161, 161),
+                selection_fg: Some(Color::Rgb(88, 110, 117)),
+                on_accent_fg: Some(Color::Rgb(253, 246, 227)),
+                title: Some(Color::Rgb(88, 110, 117)),
+                h1: Some(Color::Rgb(203, 75, 22)),
+                h2: None,
+                h3: Some(Color::Rgb(42, 161, 152)),
+                heading_other: Some(Color::Rgb(88, 110, 117)),
+                inline_code: Some(Color::Rgb(133, 153, 0)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(238, 232, 213)),
+                border_focused: None,
+                // SolarizedLight code_border = dim (Rgb(147,161,161)), same as rule
+                code_border: None,
+                link: None,
+                list_marker: None,
+                task_marker: Some(Color::Rgb(42, 161, 152)),
+                block_quote_fg: None,
+                block_quote_border: None,
+                table_header: Some(Color::Rgb(203, 75, 22)),
+                table_border: Some(Color::Rgb(147, 161, 161)),
+                search_match_bg: None,
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(203, 75, 22)),
+                match_fg: None,
+                // SolarizedLight status_bar_fg = foreground (#657b83), not dim
+                status_bar_bg: None,
+                status_bar_fg: Some(Color::Rgb(101, 123, 131)),
+                help_bg: Some(Color::Rgb(238, 232, 213)),
+                success: Some(Color::Rgb(133, 153, 0)),
+                warning: Some(Color::Rgb(203, 75, 22)),
+                danger: Some(Color::Rgb(220, 50, 47)),
+                // Solarized uses accent_alt (yellow #b58900) for these fields.
+                git_new: None,
+                git_modified: Some(Color::Rgb(181, 137, 0)),
+                needs_action: Some(Color::Rgb(181, 137, 0)),
             },
             Theme::Nord => Self {
-                // Arctic, north-bluish color palette: https://www.nordtheme.com/docs/colors-and-palettes
                 background: Color::Rgb(46, 52, 64),
                 foreground: Color::Rgb(216, 222, 233),
                 dim: Color::Rgb(76, 86, 106),
                 border: Color::Rgb(67, 76, 94),
-                border_focused: Color::Rgb(136, 192, 208),
                 accent: Color::Rgb(136, 192, 208),
                 accent_alt: Color::Rgb(235, 203, 139),
                 selection_bg: Color::Rgb(67, 76, 94),
-                selection_fg: Color::Rgb(236, 239, 244),
-                on_accent_fg: Color::Rgb(46, 52, 64),
-                title: Color::Rgb(236, 239, 244),
-                h1: Color::Rgb(191, 97, 106),
-                h2: Color::Rgb(136, 192, 208),
-                h3: Color::Rgb(163, 190, 140),
-                heading_other: Color::Rgb(216, 222, 233),
-                inline_code: Color::Rgb(163, 190, 140),
-                code_fg: Color::Rgb(216, 222, 233),
-                code_bg: Color::Rgb(59, 66, 82),
-                code_border: Color::Rgb(76, 86, 106),
-                link: Color::Rgb(129, 161, 193),
-                list_marker: Color::Rgb(235, 203, 139),
-                task_marker: Color::Rgb(163, 190, 140),
-                block_quote_fg: Color::Rgb(76, 86, 106),
-                block_quote_border: Color::Rgb(76, 86, 106),
-                table_header: Color::Rgb(94, 129, 172),
-                table_border: Color::Rgb(76, 86, 106),
-                search_match_bg: Color::Rgb(235, 203, 139),
-                current_match_bg: Color::Rgb(191, 97, 106),
-                match_fg: Color::Rgb(46, 52, 64),
-                gutter: Color::Rgb(76, 86, 106),
-                status_bar_bg: Color::Rgb(59, 66, 82),
-                status_bar_fg: Color::Rgb(76, 86, 106),
-                help_bg: Color::Rgb(59, 66, 82),
-                git_new: Color::Rgb(163, 190, 140),
-                git_modified: Color::Rgb(235, 203, 139),
-                needs_action: Color::Rgb(235, 203, 139),
-                success: Color::Rgb(163, 190, 140),
-                warning: Color::Rgb(208, 135, 112),
-                danger: Color::Rgb(191, 97, 106),
-                muted: Color::Rgb(76, 86, 106),
+                selection_fg: Some(Color::Rgb(236, 239, 244)),
+                on_accent_fg: Some(Color::Rgb(46, 52, 64)),
+                title: Some(Color::Rgb(236, 239, 244)),
+                // Nord h1 = aurora red
+                h1: Some(Color::Rgb(191, 97, 106)),
+                h2: None,
+                // Nord h3 = aurora green
+                h3: Some(Color::Rgb(163, 190, 140)),
+                heading_other: None,
+                // Nord inline_code = aurora green
+                inline_code: Some(Color::Rgb(163, 190, 140)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(59, 66, 82)),
+                border_focused: None,
+                code_border: None,
+                // Nord link = frost blue (#81a1c1)
+                link: Some(Color::Rgb(129, 161, 193)),
+                list_marker: None,
+                // Nord task_marker = aurora green
+                task_marker: Some(Color::Rgb(163, 190, 140)),
+                block_quote_fg: None,
+                block_quote_border: None,
+                // Nord table_header = polar night blue (#5e81ac)
+                table_header: Some(Color::Rgb(94, 129, 172)),
+                // Nord table_border = dim
+                table_border: Some(Color::Rgb(76, 86, 106)),
+                search_match_bg: None,
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(191, 97, 106)),
+                match_fg: None,
+                status_bar_bg: None,
+                status_bar_fg: None,
+                help_bg: Some(Color::Rgb(59, 66, 82)),
+                success: Some(Color::Rgb(163, 190, 140)),
+                warning: Some(Color::Rgb(208, 135, 112)),
+                danger: Some(Color::Rgb(191, 97, 106)),
+                // Nord uses accent_alt (sand #ebcb8b) for git_modified and
+                // needs_action, not the warning (aurora orange) colour.
+                git_new: None,
+                git_modified: Some(Color::Rgb(235, 203, 139)),
+                needs_action: Some(Color::Rgb(235, 203, 139)),
             },
             Theme::GruvboxDark => Self {
-                // Gruvbox Dark: https://github.com/morhetz/gruvbox
                 background: Color::Rgb(40, 40, 40),
                 foreground: Color::Rgb(235, 219, 178),
                 dim: Color::Rgb(146, 131, 116),
                 border: Color::Rgb(80, 73, 69),
-                border_focused: Color::Rgb(214, 93, 14),
                 accent: Color::Rgb(250, 189, 47),
                 accent_alt: Color::Rgb(184, 187, 38),
                 selection_bg: Color::Rgb(80, 73, 69),
-                selection_fg: Color::Rgb(235, 219, 178),
-                on_accent_fg: Color::Rgb(40, 40, 40),
-                title: Color::Rgb(235, 219, 178),
-                h1: Color::Rgb(251, 73, 52),
-                h2: Color::Rgb(250, 189, 47),
-                h3: Color::Rgb(184, 187, 38),
-                heading_other: Color::Rgb(235, 219, 178),
-                inline_code: Color::Rgb(184, 187, 38),
-                code_fg: Color::Rgb(235, 219, 178),
-                code_bg: Color::Rgb(50, 48, 47),
-                code_border: Color::Rgb(80, 73, 69),
-                link: Color::Rgb(131, 165, 152),
-                list_marker: Color::Rgb(250, 189, 47),
-                task_marker: Color::Rgb(184, 187, 38),
-                block_quote_fg: Color::Rgb(146, 131, 116),
-                block_quote_border: Color::Rgb(146, 131, 116),
-                table_header: Color::Rgb(214, 93, 14),
-                table_border: Color::Rgb(80, 73, 69),
-                search_match_bg: Color::Rgb(250, 189, 47),
-                current_match_bg: Color::Rgb(251, 73, 52),
-                match_fg: Color::Rgb(40, 40, 40),
-                gutter: Color::Rgb(102, 92, 84),
-                status_bar_bg: Color::Rgb(50, 48, 47),
-                status_bar_fg: Color::Rgb(146, 131, 116),
-                help_bg: Color::Rgb(50, 48, 47),
-                git_new: Color::Rgb(184, 187, 38),
-                git_modified: Color::Rgb(250, 189, 47),
-                needs_action: Color::Rgb(250, 189, 47),
-                success: Color::Rgb(184, 187, 38),
-                warning: Color::Rgb(214, 93, 14),
-                danger: Color::Rgb(251, 73, 52),
-                muted: Color::Rgb(146, 131, 116),
+                selection_fg: None,
+                on_accent_fg: Some(Color::Rgb(40, 40, 40)),
+                title: None,
+                // Gruvbox h1 = bright red (#fb4934)
+                h1: Some(Color::Rgb(251, 73, 52)),
+                h2: None,
+                h3: None,
+                heading_other: None,
+                inline_code: None,
+                code_fg: None,
+                code_bg: Some(Color::Rgb(50, 48, 47)),
+                // GruvboxDark border_focused = orange (#d65d0e), not accent (yellow)
+                border_focused: Some(Color::Rgb(214, 93, 14)),
+                // GruvboxDark code_border = border (#504945), not dim
+                code_border: Some(Color::Rgb(80, 73, 69)),
+                // Gruvbox link = aqua (#83a598)
+                link: Some(Color::Rgb(131, 165, 152)),
+                // GruvboxDark list_marker = accent (yellow #fabd2f), not accent_alt (green)
+                list_marker: Some(Color::Rgb(250, 189, 47)),
+                task_marker: None,
+                block_quote_fg: None,
+                block_quote_border: None,
+                // Gruvbox table_header = orange (#d65d0e)
+                table_header: Some(Color::Rgb(214, 93, 14)),
+                // Gruvbox table_border = border (#504945)
+                table_border: Some(Color::Rgb(80, 73, 69)),
+                // GruvboxDark search_match_bg = accent (yellow), not accent_alt (green)
+                search_match_bg: Some(Color::Rgb(250, 189, 47)),
+                // GruvboxDark gutter = neutral dark grey (#665c54), not dim
+                gutter: Some(Color::Rgb(102, 92, 84)),
+                current_match_bg: Some(Color::Rgb(251, 73, 52)),
+                match_fg: None,
+                status_bar_bg: None,
+                status_bar_fg: None,
+                help_bg: Some(Color::Rgb(50, 48, 47)),
+                success: Some(Color::Rgb(184, 187, 38)),
+                warning: Some(Color::Rgb(214, 93, 14)),
+                danger: Some(Color::Rgb(251, 73, 52)),
+                // Gruvbox Dark uses accent (yellow #fabd2f) for git_modified and
+                // needs_action, not the warning (orange #d65d0e) colour.
+                git_new: None,
+                git_modified: Some(Color::Rgb(250, 189, 47)),
+                needs_action: Some(Color::Rgb(250, 189, 47)),
             },
             Theme::GruvboxLight => Self {
-                // Gruvbox Light: https://github.com/morhetz/gruvbox
                 background: Color::Rgb(251, 241, 199),
                 foreground: Color::Rgb(60, 56, 54),
                 dim: Color::Rgb(146, 131, 116),
                 border: Color::Rgb(213, 196, 161),
-                border_focused: Color::Rgb(214, 93, 14),
                 accent: Color::Rgb(215, 153, 33),
                 accent_alt: Color::Rgb(152, 151, 26),
                 selection_bg: Color::Rgb(235, 219, 178),
-                selection_fg: Color::Rgb(60, 56, 54),
-                on_accent_fg: Color::Rgb(60, 56, 54),
-                title: Color::Rgb(60, 56, 54),
-                h1: Color::Rgb(204, 36, 29),
-                h2: Color::Rgb(215, 153, 33),
-                h3: Color::Rgb(152, 151, 26),
-                heading_other: Color::Rgb(60, 56, 54),
-                inline_code: Color::Rgb(177, 98, 134),
-                code_fg: Color::Rgb(60, 56, 54),
-                code_bg: Color::Rgb(235, 219, 178),
-                code_border: Color::Rgb(213, 196, 161),
-                link: Color::Rgb(69, 133, 136),
-                list_marker: Color::Rgb(215, 153, 33),
-                task_marker: Color::Rgb(104, 157, 106),
-                block_quote_fg: Color::Rgb(146, 131, 116),
-                block_quote_border: Color::Rgb(213, 196, 161),
-                table_header: Color::Rgb(214, 93, 14),
-                table_border: Color::Rgb(213, 196, 161),
-                search_match_bg: Color::Rgb(215, 153, 33),
-                current_match_bg: Color::Rgb(214, 93, 14),
-                match_fg: Color::Rgb(251, 241, 199),
-                gutter: Color::Rgb(146, 131, 116),
-                status_bar_bg: Color::Rgb(235, 219, 178),
-                status_bar_fg: Color::Rgb(80, 73, 69),
-                help_bg: Color::Rgb(235, 219, 178),
-                git_new: Color::Rgb(152, 151, 26),
-                git_modified: Color::Rgb(215, 153, 33),
-                needs_action: Color::Rgb(215, 153, 33),
-                success: Color::Rgb(104, 157, 106),
-                warning: Color::Rgb(214, 93, 14),
-                danger: Color::Rgb(204, 36, 29),
-                muted: Color::Rgb(146, 131, 116),
+                selection_fg: None,
+                on_accent_fg: Some(Color::Rgb(60, 56, 54)),
+                title: None,
+                // Gruvbox Light h1 = neutral red (#cc241d)
+                h1: Some(Color::Rgb(204, 36, 29)),
+                h2: None,
+                h3: None,
+                heading_other: None,
+                // Gruvbox Light inline_code = neutral purple
+                inline_code: Some(Color::Rgb(177, 98, 134)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(235, 219, 178)),
+                // GruvboxLight border_focused = orange (#d65d0e), not accent (yellow)
+                border_focused: Some(Color::Rgb(214, 93, 14)),
+                // GruvboxLight code_border = border (#d5c4a1), not dim
+                code_border: Some(Color::Rgb(213, 196, 161)),
+                // Gruvbox Light link = neutral aqua (#427b58 → actually #458588)
+                link: Some(Color::Rgb(69, 133, 136)),
+                // GruvboxLight list_marker = accent (yellow #d79921), not accent_alt (green)
+                list_marker: Some(Color::Rgb(215, 153, 33)),
+                // Gruvbox Light task_marker = neutral green (#98971a → actually #689d6a)
+                task_marker: Some(Color::Rgb(104, 157, 106)),
+                block_quote_fg: None,
+                // Gruvbox Light block_quote_border = border (not dim)
+                block_quote_border: Some(Color::Rgb(213, 196, 161)),
+                // Gruvbox Light table_header = bright orange (#d65d0e)
+                table_header: Some(Color::Rgb(214, 93, 14)),
+                // Gruvbox Light table_border = border
+                table_border: Some(Color::Rgb(213, 196, 161)),
+                // GruvboxLight search_match_bg = accent (yellow #d79921), not accent_alt
+                search_match_bg: Some(Color::Rgb(215, 153, 33)),
+                gutter: None,
+                current_match_bg: Some(Color::Rgb(214, 93, 14)),
+                match_fg: None,
+                // GruvboxLight status_bar_bg = code_bg (same derivation — no override)
+                // GruvboxLight status_bar_fg = neutral dark (#504945) not dim
+                status_bar_bg: None,
+                status_bar_fg: Some(Color::Rgb(80, 73, 69)),
+                help_bg: Some(Color::Rgb(235, 219, 178)),
+                success: Some(Color::Rgb(104, 157, 106)),
+                warning: Some(Color::Rgb(214, 93, 14)),
+                danger: Some(Color::Rgb(204, 36, 29)),
+                // GruvboxLight git_new = accent_alt (green #98971a), not success
+                // (which is a different neutral green #689d6a used only for git diffs).
+                git_new: Some(Color::Rgb(152, 151, 26)),
+                // Gruvbox Light uses accent (yellow #d79921) for git_modified and
+                // needs_action, not the warning (orange #d65d0e) colour.
+                git_modified: Some(Color::Rgb(215, 153, 33)),
+                needs_action: Some(Color::Rgb(215, 153, 33)),
             },
             Theme::GithubLight => Self {
-                // GitHub Light: https://primer.style/primitives/colors
                 background: Color::Rgb(255, 255, 255),
                 foreground: Color::Rgb(31, 35, 40),
                 dim: Color::Rgb(101, 109, 118),
                 border: Color::Rgb(208, 215, 222),
-                border_focused: Color::Rgb(9, 105, 218),
                 accent: Color::Rgb(9, 105, 218),
                 accent_alt: Color::Rgb(154, 103, 0),
                 selection_bg: Color::Rgb(221, 244, 255),
-                selection_fg: Color::Rgb(9, 105, 218),
-                // White on the vivid blue — selection_fg is also #0969da which would
-                // produce invisible blue-on-blue text if used on an accent background.
-                on_accent_fg: Color::Rgb(255, 255, 255),
-                title: Color::Rgb(31, 35, 40),
-                h1: Color::Rgb(9, 105, 218),
-                h2: Color::Rgb(154, 103, 0),
-                h3: Color::Rgb(26, 127, 55),
-                heading_other: Color::Rgb(31, 35, 40),
-                inline_code: Color::Rgb(207, 34, 46),
-                code_fg: Color::Rgb(31, 35, 40),
-                code_bg: Color::Rgb(246, 248, 250),
-                code_border: Color::Rgb(208, 215, 222),
-                link: Color::Rgb(9, 105, 218),
-                list_marker: Color::Rgb(154, 103, 0),
-                task_marker: Color::Rgb(26, 127, 55),
-                block_quote_fg: Color::Rgb(101, 109, 118),
-                block_quote_border: Color::Rgb(208, 215, 222),
-                table_header: Color::Rgb(9, 105, 218),
-                table_border: Color::Rgb(208, 215, 222),
-                search_match_bg: Color::Rgb(255, 211, 61),
-                current_match_bg: Color::Rgb(255, 143, 0),
-                match_fg: Color::Rgb(31, 35, 40),
-                gutter: Color::Rgb(101, 109, 118),
-                status_bar_bg: Color::Rgb(246, 248, 250),
-                status_bar_fg: Color::Rgb(101, 109, 118),
-                help_bg: Color::Rgb(246, 248, 250),
-                git_new: Color::Rgb(26, 127, 55),
-                git_modified: Color::Rgb(154, 103, 0),
-                needs_action: Color::Rgb(154, 103, 0),
-                success: Color::Rgb(26, 127, 55),
-                warning: Color::Rgb(130, 80, 0),
-                danger: Color::Rgb(207, 34, 46),
-                muted: Color::Rgb(101, 109, 118),
+                // GitHub Light: selection_fg == accent (blue). Keep it but
+                // on_accent_fg must be white to avoid invisible text on accent bg.
+                selection_fg: Some(Color::Rgb(9, 105, 218)),
+                on_accent_fg: Some(Color::Rgb(255, 255, 255)),
+                title: None,
+                // GitHub Light H1 = accent (blue) — same as derivation rule
+                h1: None,
+                h2: Some(Color::Rgb(154, 103, 0)),
+                h3: Some(Color::Rgb(26, 127, 55)),
+                heading_other: None,
+                // GitHub Light inline_code = danger red (#cf222e)
+                inline_code: Some(Color::Rgb(207, 34, 46)),
+                code_fg: None,
+                code_bg: Some(Color::Rgb(246, 248, 250)),
+                border_focused: None,
+                // GitHub Light code_border = border (#d0d7de), not dim
+                code_border: Some(Color::Rgb(208, 215, 222)),
+                link: None,
+                list_marker: None,
+                task_marker: Some(Color::Rgb(26, 127, 55)),
+                block_quote_fg: None,
+                // GitHub Light block_quote_border = border (#d0d7de), not dim
+                block_quote_border: Some(Color::Rgb(208, 215, 222)),
+                table_header: None,
+                table_border: None,
+                // GitHub Light search_match_bg = golden (#ffd33d), not accent_alt
+                search_match_bg: Some(Color::Rgb(255, 211, 61)),
+                gutter: None,
+                // GitHub Light current search hit = amber (#ff8f00)
+                current_match_bg: Some(Color::Rgb(255, 143, 0)),
+                // GitHub Light match_fg = foreground (dark text), not background
+                match_fg: Some(Color::Rgb(31, 35, 40)),
+                status_bar_bg: None,
+                status_bar_fg: None,
+                help_bg: Some(Color::Rgb(246, 248, 250)),
+                success: Some(Color::Rgb(26, 127, 55)),
+                warning: Some(Color::Rgb(130, 80, 0)),
+                danger: Some(Color::Rgb(207, 34, 46)),
+                git_new: None,
+                // GitHub Light git_modified = accent_alt (#9a6700), not warning (#824b00)
+                git_modified: Some(Color::Rgb(154, 103, 0)),
+                needs_action: Some(Color::Rgb(154, 103, 0)),
             },
         }
     }
+}
 
+impl Palette {
+    /// Derive a full [`Palette`] from a compact set of [`ThemeTokens`].
+    ///
+    /// Fields with `None` in the override slot use the documented default
+    /// derivation rule. Fields with `Some(c)` use `c` verbatim.
+    pub fn from_tokens(tokens: ThemeTokens) -> Self {
+        // Resolve override-or-derive for each field. Fields used as inputs to
+        // other derivations are resolved first.
+        let success = tokens.success.unwrap_or(tokens.accent);
+        let warning = tokens.warning.unwrap_or(tokens.accent_alt);
+        let danger = tokens.danger.unwrap_or(tokens.accent);
+        let code_bg = tokens.code_bg.unwrap_or(tokens.background);
+
+        Self {
+            background: tokens.background,
+            foreground: tokens.foreground,
+            dim: tokens.dim,
+            border: tokens.border,
+            border_focused: tokens.border_focused.unwrap_or(tokens.accent),
+            accent: tokens.accent,
+            accent_alt: tokens.accent_alt,
+            selection_bg: tokens.selection_bg,
+            selection_fg: tokens.selection_fg.unwrap_or(tokens.foreground),
+            on_accent_fg: tokens.on_accent_fg.unwrap_or(tokens.foreground),
+            title: tokens.title.unwrap_or(tokens.foreground),
+            h1: tokens.h1.unwrap_or(tokens.accent),
+            h2: tokens.h2.unwrap_or(tokens.accent),
+            h3: tokens.h3.unwrap_or(tokens.accent_alt),
+            heading_other: tokens.heading_other.unwrap_or(tokens.foreground),
+            inline_code: tokens.inline_code.unwrap_or(tokens.accent_alt),
+            code_fg: tokens.code_fg.unwrap_or(tokens.foreground),
+            code_bg,
+            code_border: tokens.code_border.unwrap_or(tokens.dim),
+            link: tokens.link.unwrap_or(tokens.accent),
+            list_marker: tokens.list_marker.unwrap_or(tokens.accent_alt),
+            task_marker: tokens.task_marker.unwrap_or(tokens.accent_alt),
+            block_quote_fg: tokens.block_quote_fg.unwrap_or(tokens.dim),
+            block_quote_border: tokens.block_quote_border.unwrap_or(tokens.dim),
+            table_header: tokens.table_header.unwrap_or(tokens.accent),
+            table_border: tokens.table_border.unwrap_or(tokens.border),
+            search_match_bg: tokens.search_match_bg.unwrap_or(tokens.accent_alt),
+            current_match_bg: tokens.current_match_bg.unwrap_or(tokens.accent),
+            match_fg: tokens.match_fg.unwrap_or(tokens.background),
+            gutter: tokens.gutter.unwrap_or(tokens.dim),
+            status_bar_bg: tokens.status_bar_bg.unwrap_or(code_bg),
+            status_bar_fg: tokens.status_bar_fg.unwrap_or(tokens.dim),
+            help_bg: tokens.help_bg.unwrap_or(code_bg),
+            git_new: tokens.git_new.unwrap_or(success),
+            git_modified: tokens.git_modified.unwrap_or(warning),
+            needs_action: tokens.needs_action.unwrap_or(warning),
+            success,
+            warning,
+            danger,
+            muted: tokens.dim,
+        }
+    }
+}
+
+impl Palette {
+    /// Construct the color palette for the given theme.
+    ///
+    /// Delegates to [`ThemeTokens::for_theme`] + [`Palette::from_tokens`].
+    /// The parity test in `theme::tests` verifies that this produces
+    /// bit-identical output to the original hand-authored match.
+    pub fn from_theme(theme: Theme) -> Self {
+        Self::from_tokens(ThemeTokens::for_theme(theme))
+    }
+}
+
+impl Palette {
     /// Style for unfocused panel borders.
     pub fn border_style(self) -> Style {
         Style::new().fg(self.border)
@@ -581,6 +820,36 @@ mod tests {
             assert_ne!(
                 p.help_bg, p.background,
                 "Theme {theme:?}: help_bg == background — overlays will be invisible",
+            );
+        }
+    }
+
+    /// `from_tokens` must reproduce the exact same palette as the legacy
+    /// `from_theme` match for every theme. A failure here means a colour has
+    /// drifted between the two code paths — find the field, add or fix the
+    /// corresponding override slot in [`ThemeTokens::for_theme`].
+    #[test]
+    fn from_tokens_matches_from_theme_for_every_theme() {
+        for theme in Theme::ALL {
+            let via_tokens = Palette::from_tokens(ThemeTokens::for_theme(*theme));
+            let via_legacy = Palette::from_theme(*theme);
+            assert_eq!(
+                via_tokens, via_legacy,
+                "Palette drift detected for {theme:?} — the ThemeTokens derivation \
+                 rules are not reproducing the legacy colour output",
+            );
+        }
+    }
+
+    /// `border_focused` must differ from `border` for every theme so that
+    /// the focused panel is visually distinct from unfocused ones.
+    #[test]
+    fn border_focused_differs_from_border() {
+        for &theme in Theme::ALL {
+            let p = Palette::from_theme(theme);
+            assert_ne!(
+                p.border, p.border_focused,
+                "Theme {theme:?}: border == border_focused — focused panels indistinguishable",
             );
         }
     }

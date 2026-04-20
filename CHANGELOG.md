@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-04-20
+
+Pure internal refactor — no user-visible behaviour change. Zero
+colour drift verified by a parity test run against every theme
+before the legacy code was removed.
+
+### Internal
+
+- **`ThemeTokens` refactor of `src/theme.rs`.** Replace the single
+  350-line `match theme` in `Palette::from_theme` with a
+  `ThemeTokens` source-of-truth struct (7 direct colours + opt-out
+  `Option<Color>` overrides for per-theme specials) plus a
+  `Palette::from_tokens` that applies derivation rules and honours
+  overrides. `ThemeTokens::for_theme(Theme)` becomes the only place
+  each palette's identity lives. `Palette::from_theme` shrinks to
+  a 2-line shim.
+- **Parity gate.** Before the legacy code was removed, a new test
+  asserts `Palette::from_tokens(ThemeTokens::for_theme(t)) ==
+  Palette::from_theme(t)` for every `Theme` variant. This caught
+  several rules that didn't hold universally — documented in the
+  commit message — and every divergence was resolved by either
+  promoting the field to a direct token or adding an opt-out
+  override.
+- **Contrast sanity test.** Adds `assert_ne!(border,
+  border_focused)` across every theme, guarding against a future
+  derivation rule accidentally producing identical colours on the
+  focused-border hue. Locks in the memory-noted overlay-contrast
+  invariant at the theme level.
+- `Palette` gains `#[derive(PartialEq)]` (needed by the parity
+  gate). No runtime cost — all fields are `Color` / `Copy`.
+- Net: +~110 LoC on `src/theme.rs`. The refactor trades a 40-field
+  match arm per theme for an opt-out override struct; future palette
+  fields now only require editing the derivation rule or tagging
+  themes that need overrides, not every arm.
+
 ## [0.1.8] — 2026-04-20
 
 Phase B.2 — closes the review-thread UX story opened in 0.1.5.
@@ -354,7 +389,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/leboiko/octopeek/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/leboiko/octopeek/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/leboiko/octopeek/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/leboiko/octopeek/compare/v0.1.5...v0.1.6
