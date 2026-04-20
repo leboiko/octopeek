@@ -99,6 +99,13 @@ pub struct App {
     /// `true` when the comments section in the detail view is fully expanded.
     /// Shared between PR and issue detail — both views are mutually exclusive.
     pub detail_comments_expanded: bool,
+    /// Whether outdated review threads are rendered in the Comments section.
+    ///
+    /// Defaults to `true` (visible-but-muted, split under a dashed
+    /// `OUTDATED` divider). The user can toggle to hide them with `z` —
+    /// the disclosure row remains so the presence of outdated threads is
+    /// never silently dropped. Ephemeral; not persisted across sessions.
+    pub detail_show_outdated: bool,
     /// Currently selected section in the PR detail sidebar.
     pub pr_detail_selected_section: DetailSection,
     /// Index of the highlighted file in the sidebar files list.
@@ -233,6 +240,7 @@ impl App {
             pr_detail_diff_scroll: HashMap::new(),
             pr_detail_files_expanded: false,
             detail_comments_expanded: false,
+            detail_show_outdated: true,
             pr_detail_selected_section: DetailSection::default(),
             pr_detail_files_cursor: 0,
             pr_detail_files_show_diff: false,

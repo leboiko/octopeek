@@ -380,6 +380,14 @@ impl App {
                 self.detail_pending_g = false;
                 self.detail_comments_expanded = !self.detail_comments_expanded;
             }
+            KeyCode::Char('z') => {
+                // Toggle outdated-thread visibility in the Comments section.
+                // Default is visible-but-muted; pressing `z` collapses them
+                // into a single disclosure row so the list reads clean while
+                // still surfacing that outdated threads exist.
+                self.detail_pending_g = false;
+                self.detail_show_outdated = !self.detail_show_outdated;
+            }
             KeyCode::Char('o') => {
                 self.detail_pending_g = false;
                 if let Some(url) = self.active_detail_url() {

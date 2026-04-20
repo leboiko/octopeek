@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-04-20
+
+Second of three review-thread UX patches (Phase C — outdated
+treatment). Next up: 0.1.7 adds per-file comment indicators in the
+Files section and inline expansion of threads anchored to specific
+diff lines.
+
+### Added
+
+- **ACTIVE / OUTDATED split in the Comments section.** Review
+  threads are now partitioned under distinct dividers — a heavy
+  `━━━ ACTIVE (N) ━━━` rule in `border_focused` and a dashed
+  `╌╌╌ OUTDATED (N) ╌╌╌` rule in `muted`. Outdated threads still
+  render (silent-drop is a documented TUI anti-pattern flagged by
+  the research pass on octo.nvim) but every span inside them is
+  re-coloured to `palette.muted` so they read as clearly
+  subordinate to the active ones above.
+- **`[OUTDATED]` badge** on the thread header for outdated
+  threads, in `palette.danger` bold — so the state is visible at a
+  glance rather than only via the trailing muted status word.
+- **`z` keybind** toggles outdated-thread visibility. Default is
+  shown-but-muted; press `z` to collapse to a single disclosure
+  row `N outdated threads hidden · [z] show`. The divider stays
+  visible even when collapsed so the presence of outdated threads
+  is never hidden entirely. Help overlay documents the key.
+- `n` / `N` (next/previous unresolved thread) now skip outdated
+  threads entirely — navigation lands on open discussions, not
+  stale ones.
+
+### Internal
+
+- Refactor `comments_lines` to partition threads via
+  `Iterator::partition` and render each section through a shared
+  closure, so the active/outdated passes can't drift visually.
+- Extract `render_thread_body` (per-thread header + hunk + bodies)
+  and `mute_lines` (fg override) helpers. The mute pass is lossy
+  for syntax-highlighted outdated code blocks; documented as an
+  intentional tradeoff.
+- `App::detail_show_outdated: bool` (ephemeral, default `true`).
+
 ## [0.1.5] — 2026-04-20
 
 First of three related feature drops around review-thread display
@@ -215,7 +255,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/leboiko/octopeek/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/leboiko/octopeek/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/leboiko/octopeek/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/leboiko/octopeek/compare/v0.1.2...v0.1.3

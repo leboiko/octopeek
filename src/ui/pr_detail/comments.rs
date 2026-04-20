@@ -20,6 +20,138 @@ use super::files::push_alt_range;
 /// hunk dominating the Comments section on old comments with huge contexts.
 const DIFF_HUNK_EXCERPT_MAX_ROWS: usize = 12;
 
+/// Width, in columns, used when rendering section dividers. Chosen wide
+/// enough to look intentional on a 80-column terminal but not so wide that
+/// it wraps on 60-col narrow terminals.
+const DIVIDER_WIDTH: usize = 60;
+
+/// Render one review thread as a contiguous block of `Line`s — header,
+/// optional diff-hunk excerpt, then each comment's author line + body +
+/// per-comment truncation marker. Reused by the ACTIVE and OUTDATED passes
+/// in `comments_lines` so the two can't drift.
+fn render_thread_body(
+    thread: &crate::github::detail::ReviewThread,
+    expanded: bool,
+    gutter: &'static str,
+    reply_glyph: &'static str,
+    p: &Palette,
+    ascii: bool,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
+    out.push(thread_header_line(thread, p, ascii));
+
+    // Inline code excerpt from GitHub's `diffHunk`; empty when absent.
+    let hunk_lines = diff_hunk_excerpt(thread.diff_hunk.as_deref(), p);
+    if !hunk_lines.is_empty() {
+        out.extend(hunk_lines);
+        out.push(Line::from(""));
+    }
+
+    for (idx, comment) in thread.comments.iter().enumerate() {
+        let age = humanize_delta(&comment.created_at);
+        let is_reply = idx > 0;
+        let gutter_fg = if is_reply { p.accent_alt } else { p.block_quote_border };
+
+        let author_line = if is_reply {
+            Line::from(vec![
+                Span::styled(gutter, Style::default().fg(gutter_fg)),
+                Span::styled(
+                    reply_glyph,
+                    Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("@{}", comment.author),
+                    Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(gutter, Style::default().fg(gutter_fg)),
+                Span::styled(
+                    format!("@{}", comment.author),
+                    Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
+            ])
+        };
+        out.push(author_line);
+
+        let body = comment.body_markdown.trim();
+        let rendered = render_markdown(body, p);
+        let total_rendered = rendered.len();
+        let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
+            (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
+        } else {
+            (rendered, false)
+        };
+
+        let body_lines = if is_reply {
+            gutter_lines(indent_lines(visible_rendered, "  "), gutter_fg, ascii)
+        } else {
+            gutter_lines(visible_rendered, gutter_fg, ascii)
+        };
+        out.extend(body_lines);
+
+        if truncated {
+            out.push(Line::from(vec![
+                Span::styled(gutter, Style::default().fg(gutter_fg)),
+                Span::styled("[m] expand", Style::default().fg(p.dim)),
+            ]));
+        }
+
+        // Blank gutter line between comments within the same thread.
+        if idx + 1 < thread.comments.len() {
+            out.push(Line::from(vec![Span::styled(gutter, Style::default().fg(p.accent_alt))]));
+        }
+    }
+
+    out
+}
+
+/// Override the foreground colour of every span in every line to the
+/// supplied `muted` colour. Background, modifiers, and line layout are
+/// preserved. Used to visibly de-emphasise outdated threads without hiding
+/// them — the thread is still readable, just clearly subordinate to the
+/// active ones above. Lossy for syntax-highlighted code blocks inside
+/// outdated comment bodies; that's an acceptable tradeoff for "this
+/// discussion no longer applies to the current diff".
+fn mute_lines(lines: Vec<Line<'static>>, muted: ratatui::style::Color) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|mut line| {
+            for span in &mut line.spans {
+                span.style = span.style.fg(muted);
+            }
+            line
+        })
+        .collect()
+}
+
+/// Build a section divider line: `━━━━ LABEL (N) ━━━━` (or a dashed variant
+/// for outdated threads). Used to split the Comments section into ACTIVE
+/// and OUTDATED groups so outdated threads are visible but clearly
+/// de-emphasised rather than silently dropped.
+fn section_divider(
+    label: &str,
+    count: usize,
+    rule_glyph: char,
+    rule_color: ratatui::style::Color,
+    ascii: bool,
+) -> Line<'static> {
+    let rule = if ascii { '-' } else { rule_glyph };
+    let label_text = format!(" {label} ({count}) ");
+    let rule_width = DIVIDER_WIDTH.saturating_sub(label_text.chars().count()) / 2;
+    let rule_str: String = std::iter::repeat_n(rule, rule_width).collect();
+    Line::from(vec![
+        Span::styled(rule_str.clone(), Style::default().fg(rule_color)),
+        Span::styled(label_text, Style::default().fg(rule_color).add_modifier(Modifier::BOLD)),
+        Span::styled(rule_str, Style::default().fg(rule_color)),
+    ])
+}
+
 // ── Diff hunk excerpt ─────────────────────────────────────────────────────────
 
 /// Render the `diffHunk` string GitHub ships with each review comment as a
@@ -140,12 +272,24 @@ pub(super) fn thread_header_line(
     let count_str = format!("  \u{00B7}  {n} comment{}", if n == 1 { "" } else { "s" });
     let status_str = format!("  \u{00B7}  {status_text}");
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("  {glyph} "), Style::default().fg(glyph_color)),
         Span::styled(location, Style::default().fg(p.accent)),
         Span::styled(count_str, Style::default().fg(p.dim)),
-        Span::styled(status_str, Style::default().fg(p.dim)),
-    ])
+    ];
+    // Show a prominent `[OUTDATED]` badge in `danger` so the thread's state
+    // reads at a glance, not just via the muted status word at the end.
+    // GitHub's web UI renders a yellow chip for the same reason.
+    if thread.is_outdated {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "[OUTDATED]".to_owned(),
+            Style::default().fg(p.danger).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(status_str, Style::default().fg(p.dim)));
+
+    Line::from(spans)
 }
 
 // ── Comment section builder ───────────────────────────────────────────────────
@@ -159,12 +303,14 @@ pub(super) fn thread_header_line(
 pub(super) fn comments_lines(
     detail: &PrDetail,
     expanded: bool,
+    show_outdated: bool,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<u16>, Vec<(u16, u16)>) {
     let gutter = thread_gutter(ascii);
     let reply_glyph = if ascii { "> " } else { "\u{21b3} " };
-    let unresolved_count = detail.review_threads.iter().filter(|t| !t.is_resolved).count();
+    let unresolved_count =
+        detail.review_threads.iter().filter(|t| !t.is_resolved && !t.is_outdated).count();
     let total_threads = detail.review_threads.len();
     let total_comments = detail.issue_comments.len();
 
@@ -172,10 +318,15 @@ pub(super) fn comments_lines(
     let mut unresolved_offsets: Vec<u16> = Vec::new();
     let mut alt_bg_ranges: Vec<(u16, u16)> = Vec::new();
 
-    // Sort threads: unresolved first.
-    let mut threads: Vec<&crate::github::detail::ReviewThread> =
-        detail.review_threads.iter().collect();
-    threads.sort_by_key(|t| t.is_resolved);
+    // Partition active vs outdated. Within each, sort unresolved first so
+    // the next-unresolved-thread navigation key lands on the most-relevant
+    // thread at the top.
+    let (mut active, mut outdated): (
+        Vec<&crate::github::detail::ReviewThread>,
+        Vec<&crate::github::detail::ReviewThread>,
+    ) = detail.review_threads.iter().partition(|t| !t.is_outdated);
+    active.sort_by_key(|t| t.is_resolved);
+    outdated.sort_by_key(|t| t.is_resolved);
 
     // When collapsed, allow up to 10 total items (threads + issue comments).
     let max_items = if expanded { usize::MAX } else { 10 };
@@ -184,108 +335,88 @@ pub(super) fn comments_lines(
     // other conversation gets a subtle bg tint the user can group visually.
     let mut alt_on = false;
 
-    // ── Review threads ────────────────────────────────────────────────────────
-    for thread in &threads {
-        if items_shown >= max_items {
-            break;
+    // Render one section (active or outdated). Shared logic so the two
+    // passes can't drift. Returns `(items_consumed)` for budget tracking.
+    let render_section = |threads: &[&crate::github::detail::ReviewThread],
+                          is_outdated_section: bool,
+                          lines: &mut Vec<Line<'static>>,
+                          alt_bg_ranges: &mut Vec<(u16, u16)>,
+                          unresolved_offsets: &mut Vec<u16>,
+                          items_shown: &mut usize,
+                          alt_on: &mut bool| {
+        for thread in threads {
+            if *items_shown >= max_items {
+                break;
+            }
+
+            // Only include non-outdated unresolved threads in the `n`/`N`
+            // jumplist — outdated threads are informational and should not
+            // steal navigation focus from open discussions.
+            if !is_outdated_section && !thread.is_resolved {
+                #[allow(clippy::cast_possible_truncation)]
+                unresolved_offsets.push(lines.len() as u16);
+            }
+
+            let alt_start = lines.len();
+            let thread_body = render_thread_body(thread, expanded, gutter, reply_glyph, p, ascii);
+            // Outdated threads render at `palette.muted` so they're visibly
+            // subordinate to the ACTIVE section while still readable.
+            let thread_body =
+                if is_outdated_section { mute_lines(thread_body, p.muted) } else { thread_body };
+            lines.extend(thread_body);
+
+            push_alt_range(alt_bg_ranges, alt_start, lines.len(), *alt_on);
+            *alt_on = !*alt_on;
+
+            lines.push(Line::from("")); // blank separator between threads
+            *items_shown += 1;
         }
+    };
 
-        // Record the thread-header offset for unresolved threads so `n`/`N`
-        // navigation jumps to the right line.
-        if !thread.is_resolved {
-            #[allow(clippy::cast_possible_truncation)]
-            unresolved_offsets.push(lines.len() as u16);
-        }
+    // ── Active threads ────────────────────────────────────────────────────────
+    if !active.is_empty() {
+        lines.push(section_divider("ACTIVE", active.len(), '\u{2501}', p.border_focused, ascii));
+        render_section(
+            &active,
+            false,
+            &mut lines,
+            &mut alt_bg_ranges,
+            &mut unresolved_offsets,
+            &mut items_shown,
+            &mut alt_on,
+        );
+    }
 
-        let alt_start = lines.len();
-
-        // Thread header: `  ⚑ src/foo.rs:42  ·  2 comments  ·  unresolved`
-        lines.push(thread_header_line(thread, p, ascii));
-
-        // Inline code excerpt from GitHub's `diffHunk` (if present). Gives the
-        // reader the ±N lines of context the comment was anchored to without
-        // forcing a jump into the Files section. See `diff_hunk_excerpt` for
-        // the empty-input / parse-failure fallback.
-        let hunk_lines = diff_hunk_excerpt(thread.diff_hunk.as_deref(), p);
-        if !hunk_lines.is_empty() {
-            lines.extend(hunk_lines);
-            // Blank separator before the comment bodies so the excerpt reads
-            // as a distinct inset block, not part of the first comment.
+    // ── Outdated threads ──────────────────────────────────────────────────────
+    // Silent-drop is a documented TUI anti-pattern (see `octo.nvim`); we keep
+    // outdated threads visible-but-muted by default. `z` (the `show_outdated`
+    // toggle) lets the user collapse them when the list gets noisy.
+    if !outdated.is_empty() {
+        if show_outdated {
+            lines.push(section_divider("OUTDATED", outdated.len(), '\u{254C}', p.muted, ascii));
+            render_section(
+                &outdated,
+                true,
+                &mut lines,
+                &mut alt_bg_ranges,
+                &mut unresolved_offsets,
+                &mut items_shown,
+                &mut alt_on,
+            );
+        } else {
+            // Disclosure: keep the section split visible even when hidden so
+            // the user knows outdated threads exist and how to show them.
+            lines.push(section_divider("OUTDATED", outdated.len(), '\u{254C}', p.muted, ascii));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {} outdated thread{} hidden  \u{00B7}  [z] show",
+                    outdated.len(),
+                    if outdated.len() == 1 { "" } else { "s" }
+                ),
+                Style::default().fg(p.muted),
+            )));
             lines.push(Line::from(""));
         }
-
-        for (idx, comment) in thread.comments.iter().enumerate() {
-            let age = humanize_delta(&comment.created_at);
-
-            let is_reply = idx > 0;
-            let gutter_fg = if is_reply { p.accent_alt } else { p.block_quote_border };
-
-            let author_line = if is_reply {
-                Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(gutter_fg)),
-                    Span::styled(
-                        reply_glyph,
-                        Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("@{}", comment.author),
-                        Style::default().fg(p.accent_alt).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(gutter_fg)),
-                    Span::styled(
-                        format!("@{}", comment.author),
-                        Style::default().fg(p.foreground).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
-                ])
-            };
-            lines.push(author_line);
-
-            // Render the comment body as markdown, wrapped in the `│` gutter.
-            let body = comment.body_markdown.trim();
-            let rendered = render_markdown(body, p);
-            let total_rendered = rendered.len();
-
-            let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
-                (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
-            } else {
-                (rendered, false)
-            };
-
-            let body_lines = if is_reply {
-                gutter_lines(indent_lines(visible_rendered, "  "), gutter_fg, ascii)
-            } else {
-                gutter_lines(visible_rendered, gutter_fg, ascii)
-            };
-            lines.extend(body_lines);
-
-            if truncated {
-                lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(gutter_fg)),
-                    Span::styled("[m] expand", Style::default().fg(p.dim)),
-                ]));
-            }
-
-            // Blank gutter line between comments within the same thread.
-            if idx + 1 < thread.comments.len() {
-                lines.push(Line::from(vec![Span::styled(
-                    gutter,
-                    Style::default().fg(p.accent_alt),
-                )]));
-            }
-        }
-
-        // Close the alt-bg range BEFORE the trailing blank separator.
-        push_alt_range(&mut alt_bg_ranges, alt_start, lines.len(), alt_on);
-        alt_on = !alt_on;
-
-        // Blank line between threads (no gutter — clean visual separator).
-        lines.push(Line::from(""));
-        items_shown += 1;
     }
 
     // ── Issue comments ────────────────────────────────────────────────────────
@@ -360,6 +491,7 @@ pub(super) fn comments_lines(
 pub(super) fn build_comments(
     detail: &PrDetail,
     comments_expanded: bool,
+    show_outdated: bool,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -368,6 +500,6 @@ pub(super) fn build_comments(
         return (Vec::new(), Vec::new());
     }
     let (comment_lines, _unresolved, alt_ranges) =
-        comments_lines(detail, comments_expanded, p, ascii);
+        comments_lines(detail, comments_expanded, show_outdated, p, ascii);
     (comment_lines, alt_ranges)
 }

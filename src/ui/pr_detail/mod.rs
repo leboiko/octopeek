@@ -260,6 +260,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.pr_detail_files_cursor,
         app.pr_detail_files_show_diff,
         app.detail_comments_expanded,
+        app.detail_show_outdated,
         p,
         app.config.show_ascii_glyphs,
     );

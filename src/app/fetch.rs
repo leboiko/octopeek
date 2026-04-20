@@ -218,6 +218,7 @@ impl App {
                 self.pr_detail_files_cursor,
                 self.pr_detail_files_show_diff,
                 self.detail_comments_expanded,
+                self.detail_show_outdated,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );
