@@ -23,6 +23,7 @@
 
 mod checks;
 mod comments;
+mod commits;
 mod files;
 mod header;
 mod reviews;
@@ -52,7 +53,7 @@ pub use sections::build_section;
 
 // ── Section enum ──────────────────────────────────────────────────────────────
 
-/// The five switchable sections in the PR detail sidebar.
+/// The six switchable sections in the PR detail sidebar.
 ///
 /// `ALL` gives a stable iteration order; `label()` returns the display string
 /// shown in the sidebar.
@@ -69,16 +70,19 @@ pub enum DetailSection {
     Files,
     /// Review threads and issue comments.
     Comments,
+    /// Commit history (newest-first list).
+    Commits,
 }
 
 impl DetailSection {
     /// All sections in display order.
-    pub const ALL: [DetailSection; 5] = [
+    pub const ALL: [DetailSection; 6] = [
         DetailSection::Description,
         DetailSection::Checks,
         DetailSection::Reviews,
         DetailSection::Files,
         DetailSection::Comments,
+        DetailSection::Commits,
     ];
 
     /// Human-readable label used in the sidebar list and help text.
@@ -89,6 +93,7 @@ impl DetailSection {
             DetailSection::Reviews => "Reviews",
             DetailSection::Files => "Files",
             DetailSection::Comments => "Comments",
+            DetailSection::Commits => "Commits",
         }
     }
 
@@ -102,6 +107,7 @@ impl DetailSection {
             DetailSection::Comments => {
                 !detail.review_threads.is_empty() || !detail.issue_comments.is_empty()
             }
+            DetailSection::Commits => !detail.commits.is_empty(),
         }
     }
 }
@@ -181,7 +187,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
 
     // Sidebar sub-split: sections list (top) + files list (bottom).
-    let sidebar_sections_height: u16 = 7;
+    // Height = 1 "SECTIONS" header + 6 section labels.
+    let sidebar_sections_height: u16 = 8;
     let vsidebar = ratatui::layout::Layout::vertical([
         Constraint::Length(sidebar_sections_height.min(sidebar_area.height)),
         Constraint::Min(0),
@@ -322,7 +329,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // column-based reading. For Files we omit `.wrap(...)` so long lines
     // are clipped at the right edge and the gutter alignment is preserved;
     // horizontal scrolling is a follow-up.
-    let should_wrap = selected_section != DetailSection::Files;
+    // The Commits section is a fixed-column list — wrapping would break the
+    // column alignment just as it does for Files diffs.
+    let should_wrap =
+        selected_section != DetailSection::Files && selected_section != DetailSection::Commits;
     let mut widget = Paragraph::new(lines_to_render)
         .block(block)
         .style(Style::default().bg(p.background).fg(p.foreground))

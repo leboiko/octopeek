@@ -156,6 +156,33 @@ pub struct IssueComment {
     pub created_at: DateTime<Utc>,
 }
 
+// ── PrCommit ──────────────────────────────────────────────────────────────────
+
+/// A single commit on a pull request.
+///
+/// Populated from the `commits(last: 100)` GraphQL selection. The list on
+/// [`PrDetail`] is sorted **newest-first** (descending by `committed_at`) to
+/// match the ordering GitHub's own Commits tab uses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrCommit {
+    /// Full 40-character SHA-1 OID.
+    pub sha: String,
+    /// First 7 characters of `sha` — the conventional short form.
+    pub short_sha: String,
+    /// First line of the commit message.
+    pub headline: String,
+    /// `GitActor.name` (the configured Git name, not a GitHub login).
+    pub author: String,
+    /// When the commit was authored.
+    pub committed_at: DateTime<Utc>,
+    /// Lines added in this commit.
+    pub additions: u32,
+    /// Lines removed in this commit.
+    pub deletions: u32,
+    /// Number of files changed in this commit.
+    pub changed_files: u32,
+}
+
 // ── PrDetail ─────────────────────────────────────────────────────────────────
 
 /// Full detail for a single pull request, fetched on-demand.
@@ -204,6 +231,8 @@ pub struct PrDetail {
     pub review_threads: Vec<ReviewThread>,
     /// Top-level PR comments (up to 100).
     pub issue_comments: Vec<IssueComment>,
+    /// Commits on this PR (up to 100), sorted newest-first.
+    pub commits: Vec<PrCommit>,
 }
 
 // ── IssueDetail ───────────────────────────────────────────────────────────────
@@ -268,9 +297,18 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           changeType
         }
       }
-      commits(last: 1) {
+      commits(last: 100) {
         nodes {
           commit {
+            oid
+            messageHeadline
+            additions
+            deletions
+            changedFilesIfAvailable
+            author {
+              name
+              date
+            }
             statusCheckRollup {
               contexts(first: 50) {
                 nodes {
@@ -459,7 +497,28 @@ pub(super) struct RawDetailCommitNode {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawDetailCommit {
+    /// Full 40-character SHA-1.
+    pub oid: String,
+    /// First line of the commit message.
+    pub message_headline: String,
+    /// Lines added in this commit.
+    pub additions: u32,
+    /// Lines removed in this commit.
+    pub deletions: u32,
+    /// Number of changed files; nullable in the GraphQL schema.
+    pub changed_files_if_available: Option<u32>,
+    /// Authorship metadata (name + date).
+    pub author: Option<RawDetailCommitAuthor>,
     pub status_check_rollup: Option<RawDetailRollup>,
+}
+
+/// `GitActor` sub-selection: name and date only (no login — bots lack logins).
+#[derive(Debug, Deserialize)]
+pub(super) struct RawDetailCommitAuthor {
+    /// Configured Git author name (not a GitHub login).
+    pub name: Option<String>,
+    /// Author date in ISO-8601 format.
+    pub date: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -609,18 +668,21 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         })
         .collect();
 
-    // Dig into commits → last commit → statusCheckRollup → contexts.
-    let check_runs = raw
-        .commits
-        .nodes
-        .into_iter()
-        .next()
-        .and_then(|cn| cn.commit.status_check_rollup)
+    // Materialise the commit node list once so we can walk it twice: once to
+    // extract the last commit's CI rollup and once to build the commits list.
+    // GraphQL returns commits oldest-first; `last: 100` means the final element
+    // is the HEAD commit whose `statusCheckRollup` we use for the Checks section.
+    let commit_nodes: Vec<RawDetailCommitNode> = raw.commits.nodes;
+
+    // Dig into commits → last (HEAD) commit → statusCheckRollup → contexts.
+    let check_runs = commit_nodes
+        .last()
+        .and_then(|cn| cn.commit.status_check_rollup.as_ref())
         .map(|rollup| {
             rollup
                 .contexts
                 .nodes
-                .into_iter()
+                .iter()
                 .map(|ctx| match ctx {
                     RawDetailCheckContext::CheckRun(cr) => {
                         // Compute duration from the two nullable timestamps.
@@ -646,26 +708,53 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                             .map(|w| w.name.clone());
 
                         DetailedCheck {
-                            name: cr.name,
+                            name: cr.name.clone(),
                             workflow_name,
-                            status: cr.status,
-                            conclusion: cr.conclusion,
+                            status: cr.status.clone(),
+                            conclusion: cr.conclusion.clone(),
                             duration_seconds,
-                            details_url: cr.details_url,
+                            details_url: cr.details_url.clone(),
                         }
                     }
                     RawDetailCheckContext::StatusContext(sc) => DetailedCheck {
-                        name: sc.context,
+                        name: sc.context.clone(),
                         workflow_name: None,
                         status: "COMPLETED".to_owned(),
-                        conclusion: Some(sc.state),
+                        conclusion: Some(sc.state.clone()),
                         duration_seconds: None,
-                        details_url: sc.target_url,
+                        details_url: sc.target_url.clone(),
                     },
                 })
                 .collect()
         })
         .unwrap_or_default();
+
+    // Build the commits list. GraphQL returns oldest-first; we reverse to get
+    // newest-first, matching GitHub's own Commits tab ordering.
+    let mut commits: Vec<PrCommit> = commit_nodes
+        .into_iter()
+        .filter_map(|cn| {
+            let c = cn.commit;
+            // `author` and `author.date` can be null for pathological commits;
+            // skip those rather than surfacing a blank row in the UI.
+            let author_node = c.author?;
+            let committed_at = author_node.date?;
+            let author = author_node.name.unwrap_or_else(|| "unknown".to_owned());
+            let short_sha: String = c.oid.chars().take(7).collect();
+            Some(PrCommit {
+                sha: c.oid,
+                short_sha,
+                headline: c.message_headline,
+                author,
+                committed_at,
+                additions: c.additions,
+                deletions: c.deletions,
+                changed_files: c.changed_files_if_available.unwrap_or(0),
+            })
+        })
+        .collect();
+    // Sort descending by committed_at so newest commit is first (index 0).
+    commits.sort_unstable_by(|a, b| b.committed_at.cmp(&a.committed_at));
 
     let reviews = raw
         .reviews
@@ -749,6 +838,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         reviews,
         review_threads,
         issue_comments,
+        commits,
     }
 }
 
@@ -784,7 +874,7 @@ pub(super) fn raw_issue_to_detail(repo: String, raw: RawIssueDetail) -> IssueDet
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::too_many_lines)]
 mod tests {
     use super::*;
     use crate::github::query::GqlEnvelope;
@@ -833,6 +923,15 @@ mod tests {
                         "commits": {
                             "nodes": [{
                                 "commit": {
+                                    "oid": "abc1234567890abcdef1234567890abcdef123456",
+                                    "messageHeadline": "feat: add dark mode",
+                                    "additions": 150,
+                                    "deletions": 30,
+                                    "changedFilesIfAvailable": 5,
+                                    "author": {
+                                        "name": "Alice Dev",
+                                        "date": "2024-01-02T10:00:00Z"
+                                    },
                                     "statusCheckRollup": {
                                         "contexts": {
                                             "nodes": [{
@@ -1028,15 +1127,23 @@ mod tests {
             "author": null,
             "files": { "nodes": [] },
             "commits": { "nodes": [{
-                "commit": { "statusCheckRollup": { "contexts": { "nodes": [{
-                    "name": "build",
-                    "status": "IN_PROGRESS",
-                    "conclusion": null,
-                    "startedAt": "2024-01-01T00:00:00Z",
-                    "completedAt": null,
-                    "detailsUrl": null,
-                    "checkSuite": null
-                }] } } }
+                "commit": {
+                    "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "messageHeadline": "wip",
+                    "additions": 0,
+                    "deletions": 0,
+                    "changedFilesIfAvailable": null,
+                    "author": { "name": "dev", "date": "2024-01-01T00:00:00Z" },
+                    "statusCheckRollup": { "contexts": { "nodes": [{
+                        "name": "build",
+                        "status": "IN_PROGRESS",
+                        "conclusion": null,
+                        "startedAt": "2024-01-01T00:00:00Z",
+                        "completedAt": null,
+                        "detailsUrl": null,
+                        "checkSuite": null
+                    }] } }
+                }
             }] },
             "reviews": { "nodes": [] },
             "reviewThreads": { "nodes": [] },

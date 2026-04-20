@@ -14,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
 use crate::github::detail::{
-    DetailedCheck, DetailedReview, FileChange, FileChangeKind, IssueComment, PrDetail,
+    DetailedCheck, DetailedReview, FileChange, FileChangeKind, IssueComment, PrCommit, PrDetail,
     ReviewComment, ReviewThread,
 };
 use crate::github::types::ReviewState;
@@ -125,6 +125,7 @@ pub fn fixture_pr_detail(
             body_markdown: "Nice work!".to_owned(),
             created_at: now,
         }],
+        commits: vec![],
     }
 }
 
@@ -559,6 +560,7 @@ fn thread_comment_body_renders_as_markdown() {
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -697,6 +699,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         reviews: vec![],
         review_threads: vec![active, outdated],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -768,6 +771,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         reviews: vec![],
         review_threads: vec![outdated],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -842,6 +846,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -910,6 +915,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -988,6 +994,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
             ],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -1068,6 +1075,7 @@ fn unresolved_anchor_points_at_thread_header() {
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, unresolved, _) = comments_lines(&detail, true, true, &p, false);
@@ -1133,6 +1141,7 @@ fn replies_render_in_accent_alt() {
             ],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -1219,6 +1228,7 @@ fn collapsed_long_comment_shows_expand_hint() {
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -1268,6 +1278,7 @@ fn issue_comments_render_markdown_styles() {
             body_markdown: "**important** and `code_snippet`".to_owned(),
             created_at: now,
         }],
+        commits: vec![],
     };
 
     let (lines, _) = build_section(
@@ -1368,6 +1379,7 @@ fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetai
             }],
         }],
         issue_comments: vec![],
+        commits: vec![],
     }
 }
 
@@ -1523,6 +1535,7 @@ fn overflow_block_renders_outdated_and_file_level() {
             },
         ],
         issue_comments: vec![],
+        commits: vec![],
     };
 
     let index = ThreadIndex::build(&detail.review_threads);
@@ -1615,4 +1628,160 @@ fn toggle_keybind_round_trip() {
         collapsed_text.contains("[t] expand"),
         "after toggle-off the card must show '[t] expand'; got: {collapsed_text}"
     );
+}
+
+// ── 0.2.0: Commits section tests ──────────────────────────────────────────────
+
+/// Build a `PrDetail` populated with `n` commits having explicit dates so the
+/// sort behaviour can be verified without relying on wall-clock `Utc::now()`.
+fn fixture_pr_detail_with_commits(n: usize) -> PrDetail {
+    use chrono::TimeZone;
+
+    let now = Utc::now();
+    let commits = (0..n)
+        .map(|i| {
+            // Space commits 1 hour apart, oldest first in construction order.
+            // After `raw_pr_to_detail`-style sort (newest-first) index 0 is the
+            // commit with the largest timestamp, i.e. `i == n-1` construction order.
+            #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+            let committed_at =
+                Utc.timestamp_opt(1_700_000_000 + i as i64 * 3600, 0).single().unwrap_or(now);
+            let sha = format!("{i:040x}");
+            let short_sha: String = sha.chars().take(7).collect();
+            #[allow(clippy::cast_possible_truncation)]
+            let additions = (i as u32) * 10;
+            #[allow(clippy::cast_possible_truncation)]
+            let deletions = i as u32;
+            PrCommit {
+                sha,
+                short_sha,
+                headline: format!("commit message {i}"),
+                author: format!("author-{i}"),
+                committed_at,
+                additions,
+                deletions,
+                changed_files: 1,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut detail = fixture_pr_detail(0, 0, 0, 0);
+    detail.commits = commits;
+    detail
+}
+
+#[test]
+fn commits_section_renders_one_line_per_commit() {
+    // Header + blank spacer + 3 commit rows = at least 4 lines.
+    let detail = fixture_pr_detail_with_commits(3);
+    let p = Palette::default();
+
+    let (lines, alt_ranges) = build_section(
+        DetailSection::Commits,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        &p,
+        false,
+    );
+
+    assert!(
+        lines.len() >= 4,
+        "expected >= 4 lines (header + spacer + 3 rows), got {}",
+        lines.len()
+    );
+    assert!(alt_ranges.is_empty(), "Commits section must return no alt-bg ranges");
+
+    // Each commit row must contain its short SHA (first 7 chars of 40-char SHA).
+    for commit in &detail.commits {
+        let sha_found = lines.iter().any(|l| {
+            let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            t.contains(&commit.short_sha)
+        });
+        assert!(sha_found, "commit {} short SHA must appear in output", commit.short_sha);
+    }
+}
+
+#[test]
+fn commits_sorted_newest_first() {
+    // Construct 3 commits with explicit dates; newest has the highest timestamp.
+    use chrono::TimeZone;
+
+    let old_at = Utc.timestamp_opt(1_000_000, 0).unwrap();
+    let mid_at = Utc.timestamp_opt(2_000_000, 0).unwrap();
+    let new_at = Utc.timestamp_opt(3_000_000, 0).unwrap();
+
+    let commits_unsorted = vec![
+        PrCommit {
+            sha: "a".repeat(40),
+            short_sha: "aaaaaaa".to_owned(),
+            headline: "oldest".to_owned(),
+            author: "dev".to_owned(),
+            committed_at: old_at,
+            additions: 1,
+            deletions: 0,
+            changed_files: 1,
+        },
+        PrCommit {
+            sha: "b".repeat(40),
+            short_sha: "bbbbbbb".to_owned(),
+            headline: "newest".to_owned(),
+            author: "dev".to_owned(),
+            committed_at: new_at,
+            additions: 2,
+            deletions: 0,
+            changed_files: 1,
+        },
+        PrCommit {
+            sha: "c".repeat(40),
+            short_sha: "ccccccc".to_owned(),
+            headline: "middle".to_owned(),
+            author: "dev".to_owned(),
+            committed_at: mid_at,
+            additions: 3,
+            deletions: 0,
+            changed_files: 1,
+        },
+    ];
+
+    let mut detail = fixture_pr_detail(0, 0, 0, 0);
+    detail.commits = commits_unsorted;
+
+    // Apply the same sort that `raw_pr_to_detail` applies.
+    detail.commits.sort_unstable_by(|a, b| b.committed_at.cmp(&a.committed_at));
+
+    assert_eq!(
+        detail.commits[0].sha,
+        "b".repeat(40),
+        "index 0 must be the newest commit; got sha {}",
+        detail.commits[0].sha
+    );
+    assert_eq!(
+        detail.commits[2].sha,
+        "a".repeat(40),
+        "index 2 must be the oldest commit; got sha {}",
+        detail.commits[2].sha
+    );
+}
+
+#[test]
+fn commits_section_hidden_when_empty() {
+    let detail = fixture_pr_detail(0, 0, 0, 0); // commits: vec![]
+    assert!(detail.commits.is_empty(), "fixture must have no commits for this test");
+    assert!(
+        !DetailSection::Commits.has_content(&detail),
+        "has_content must return false when commits is empty"
+    );
+}
+
+#[test]
+fn commits_section_key_is_sixth() {
+    assert_eq!(DetailSection::ALL.len(), 6, "ALL must have exactly 6 sections");
+    assert_eq!(DetailSection::ALL[5], DetailSection::Commits, "index 5 (6th) must be Commits");
+    assert_eq!(DetailSection::Commits.label(), "Commits");
 }

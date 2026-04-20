@@ -13,6 +13,7 @@ use super::DetailSection;
 use super::ThreadIndex;
 use super::checks::checks_lines;
 use super::comments::build_comments;
+use super::commits::build_commits;
 use super::files::build_files;
 use super::reviews::reviews_lines;
 
@@ -117,5 +118,6 @@ pub fn build_section(
         DetailSection::Comments => {
             build_comments(detail, comments_expanded, comments_show_outdated, p, ascii)
         }
+        DetailSection::Commits => build_commits(detail, p),
     }
 }

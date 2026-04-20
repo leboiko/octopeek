@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-04-20
+
+First slice of a three-patch arc adding per-commit navigation to the
+PR detail view. This release ships the **Commits section as a
+read-only list**. Selection and commit-scoped Files (+ inline
+indicator, `H` return-to-HEAD) ship in 0.2.1; scoped Comments and
+per-commit CI ship in 0.2.2.
+
+Minor version bump because it adds a new visible section (and a
+field on `PrDetail`), not because it breaks anything. All existing
+keys, flows, and cached data continue to work unchanged.
+
+### Added
+
+- **Commits section** (6th entry alongside Description / Checks /
+  Reviews / Files / Comments). Lists the PR's most recent 100
+  commits, newest first. Each row shows: short SHA (`palette.muted`),
+  message headline (truncated), `@author` (`palette.dim`), relative
+  age (`palette.dim`), `+additions` (`palette.git_new`),
+  `−deletions` (`palette.danger`). Degrades gracefully at 60 cols.
+- **`^` (Shift+6) keybinding** jumps to the Commits section,
+  extending the existing `!@#$%` section sequence.
+- Section hidden automatically for PRs with zero commits (via the
+  existing `has_content()` predicate) and for every issue (issues
+  have no `commits` field).
+
+### Data layer
+
+- **GraphQL delta:** `PR_DETAIL_QUERY` now fetches `commits(last:
+  100)` with `oid`, `messageHeadline`, `author { name date }`,
+  `additions`, `deletions`, `changedFilesIfAvailable`. The nested
+  `statusCheckRollup` on the last commit is retained for the
+  existing Checks section. Per-commit `statusCheckRollup` surfaces
+  in 0.2.2.
+- **Domain model:** new `PrCommit { sha, short_sha, headline,
+  author, committed_at, additions, deletions, changed_files }`.
+  `PrDetail` grows a `commits: Vec<PrCommit>` field, populated in
+  `raw_pr_to_detail` and sorted descending by `committed_at` so
+  `commits[0]` is always HEAD.
+
+### Internal
+
+- New `src/ui/pr_detail/commits.rs` renderer.
+- `DetailSection::ALL` grows to length 6; `label()` and
+  `has_content()` updated. Sidebar entry is automatic.
+- `#![recursion_limit = "256"]` added to `src/main.rs` — the PR
+  detail fixture's `serde_json::json!` tree depth grew past the
+  default 128 once per-commit fields were added. No runtime impact.
+- Thirteen existing `PrDetail { … }` literals across tests and the
+  SWR cache gained a `commits: vec![]` stub to keep building.
+
+### Known limitations
+
+- No commit selection yet — that ships in 0.2.1.
+- PRs with >100 commits show only the latest 100; a "showing last
+  100" footer is deferred to 0.2.2.
+
 ## [0.1.11] — 2026-04-20
 
 ### Added
@@ -442,7 +499,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/leboiko/octopeek/compare/v0.1.11...v0.2.0
 [0.1.11]: https://github.com/leboiko/octopeek/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/leboiko/octopeek/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/leboiko/octopeek/compare/v0.1.8...v0.1.9

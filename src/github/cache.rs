@@ -139,6 +139,7 @@ mod tests {
             reviews: vec![],
             review_threads: vec![],
             issue_comments: vec![],
+            commits: vec![],
         }
     }
 

@@ -43,6 +43,10 @@
 //!
 //! [GitHub CLI]: https://cli.github.com/
 
+// The deeply-nested commit+statusCheckRollup JSON in the github::detail tests
+// pushes the default serde_json::json! macro recursion limit. Raise it once
+// at the crate root rather than per-module.
+#![recursion_limit = "256"]
 #![warn(missing_docs)]
 
 mod actions_util;

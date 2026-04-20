@@ -2017,6 +2017,7 @@ fn make_pr_detail_for_app(repo: &str, number: u32) -> crate::github::detail::PrD
         reviews: vec![],
         review_threads: vec![],
         issue_comments: vec![],
+        commits: vec![],
     }
 }
 

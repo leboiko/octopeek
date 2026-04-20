@@ -318,7 +318,7 @@ impl App {
             //
             // `n` / `N` are reserved for Phase 2 unresolved-thread cycling
             // and fall through to the wildcard no-op at the bottom.
-            KeyCode::Char(ch @ ('!' | '@' | '#' | '$' | '%')) => {
+            KeyCode::Char(ch @ ('!' | '@' | '#' | '$' | '%' | '^')) => {
                 self.detail_pending_g = false;
                 let idx = match ch {
                     '!' => 0,
@@ -326,6 +326,7 @@ impl App {
                     '#' => 2,
                     '$' => 3,
                     '%' => 4,
+                    '^' => 5,
                     _ => unreachable!(),
                 };
                 if let Some(&sec) = DetailSection::ALL.get(idx) {
@@ -334,6 +335,15 @@ impl App {
                     if sec == DetailSection::Files {
                         self.pr_detail_files_show_diff = false;
                     }
+                    self.copy_mode.h_scroll = 0;
+                }
+            }
+            // SHIFT+6 fallback for terminals that send the digit unshifted.
+            // Mirrors the SHIFT+1..=5 arm below for the new Commits section.
+            KeyCode::Char('6') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.detail_pending_g = false;
+                if let Some(&sec) = DetailSection::ALL.get(5) {
+                    self.pr_detail_selected_section = sec;
                     self.copy_mode.h_scroll = 0;
                 }
             }
