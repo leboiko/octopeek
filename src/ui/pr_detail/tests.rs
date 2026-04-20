@@ -1397,13 +1397,14 @@ fn inline_thread_card_collapsed_emits_single_summary_row() {
 
     assert!(text.contains("[t] expand"), "collapsed card must show '[t] expand' hint; got: {text}");
 
-    // Count consecutive card lines (those starting with the 13-space pad + glyph).
-    // In collapsed mode exactly one card line appears per thread anchor.
+    // Count cards by their unique leading 13-space pad (`CARD_PAD`). Filtering
+    // on `"[t] expand"` alone collides with the file-level `[t] expand at
+    // cursor` hint line introduced in 0.1.11 and would count both.
     let card_lines: Vec<_> = lines
         .iter()
         .filter(|l| {
             let t = l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
-            t.contains("[t] expand")
+            t.starts_with("             ") && t.contains("[t] expand")
         })
         .collect();
     assert_eq!(card_lines.len(), 1, "exactly one collapsed card line; got {}", card_lines.len());
@@ -1553,8 +1554,11 @@ fn overflow_block_renders_outdated_and_file_level() {
         "overflow block must come after the diff hunk; hunk_pos={hunk_pos}, overflow_pos={overflow_pos}"
     );
 
-    // Both threads produce collapsed cards in the overflow block.
-    let expand_hints = text.matches("[t] expand").count();
+    // Both threads produce collapsed cards in the overflow block. The
+    // file-level `[t] expand at cursor` hint introduced in 0.1.11 also
+    // contains `[t] expand`, so scope the count to text AFTER the overflow
+    // divider — cards only appear in that region.
+    let expand_hints = text[overflow_pos..].matches("[t] expand").count();
     assert_eq!(expand_hints, 2, "overflow block must render 2 collapsed cards; got {expand_hints}");
 }
 

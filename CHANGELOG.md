@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.11] — 2026-04-20
+
+### Added
+
+- **`t` / `T` in the help overlay.** The keybindings shipped in
+  0.1.8 for inline thread expansion were only documented inside
+  the collapsed cards themselves — dead text unless the user was
+  already scrolled to an anchored line. They now appear in the
+  `?` help overlay alongside `J`/`K` under the PR Detail section
+  entries.
+- **Thread hint line above the Files diff.** When the open file
+  has any review threads, the header block gains a second hint
+  line: `N threads · M unresolved  ·  [t] expand at cursor  ·
+  [T] collapse all`. Shown in `palette.warning` when unresolved
+  threads remain, `palette.muted` when all are resolved. Absent
+  entirely on files with no threads so it doesn't stack dead UI.
+
+Both fixes address a real 0.1.8 discoverability gap reported by
+the user: pressing `t` in the Comments section (where it's a
+no-op by design) with no hint anywhere that the key belonged to
+the Files diff.
+
 ## [0.1.10] — 2026-04-20
 
 Second pure internal refactor in a row — no user-visible change.
@@ -420,7 +442,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/leboiko/octopeek/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/leboiko/octopeek/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/leboiko/octopeek/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/leboiko/octopeek/compare/v0.1.7...v0.1.8

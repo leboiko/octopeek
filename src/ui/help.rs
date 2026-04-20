@@ -77,6 +77,18 @@ pub fn draw(f: &mut Frame, app: &App) {
         shortcut("F (Shift+f)", "Jump to Files section", key_style, desc_style),
         shortcut("J / K (in Files)", "Next / previous file in diff view", key_style, desc_style),
         shortcut(
+            "t (in Files diff)",
+            "Expand/collapse the review thread at the cursor line",
+            key_style,
+            desc_style,
+        ),
+        shortcut(
+            "T (in Files diff)",
+            "Collapse every expanded thread in the open file",
+            key_style,
+            desc_style,
+        ),
+        shortcut(
             "j / k / d / u / g / G",
             "Scroll right pane (per-section / per-file)",
             key_style,

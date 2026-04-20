@@ -206,14 +206,47 @@ pub(super) fn build_files_diff(
 
     // Navigation hint right under the header — exact keystrokes, not a
     // generic "see help" nudge, so the user doesn't have to leave the view.
-    let hint = if total > 1 {
-        "J / K: next / previous file   \u{00B7}   j / k: scroll diff   \u{00B7}   t: expand thread"
+    // The thread hint is only added when the current file actually has
+    // threads anchored in it; otherwise `t`/`T` would be dead text.
+    let base_hint = if total > 1 {
+        "J / K: next / previous file   \u{00B7}   j / k: scroll diff"
     } else {
-        "j / k: scroll diff   \u{00B7}   t: expand thread"
+        "j / k: scroll diff"
     };
-    let hint_line = Line::from(Span::styled(hint.to_owned(), Style::default().fg(p.dim)));
+    let nav_hint_line = Line::from(Span::styled(base_hint.to_owned(), Style::default().fg(p.dim)));
 
-    let mut lines = vec![header, hint_line, Line::from("")];
+    // Thread-aware hint: surface `t` / `T` only when threads exist for this
+    // file. The 0.1.8 keys were hard to discover because they were only
+    // documented inside the inline collapsed cards; this line makes them
+    // visible from the moment a file's diff opens. Count separates total
+    // from unresolved so the user sees both the scope and the attention
+    // signal ("5 threads · 2 unresolved").
+    let thread_hint_line = thread_index.and_then(|idx| {
+        let total_threads = idx.total_for(&file.path);
+        if total_threads == 0 {
+            return None;
+        }
+        let unresolved = idx.unresolved_for(&file.path);
+        let count_label = if unresolved > 0 {
+            format!("{total_threads} threads \u{00B7} {unresolved} unresolved")
+        } else {
+            format!("{total_threads} threads")
+        };
+        let count_color = if unresolved > 0 { p.warning } else { p.muted };
+        Some(Line::from(vec![
+            Span::styled(count_label, Style::default().fg(count_color)),
+            Span::styled(
+                "   \u{00B7}   [t] expand at cursor   \u{00B7}   [T] collapse all".to_owned(),
+                Style::default().fg(p.dim),
+            ),
+        ]))
+    });
+
+    let mut lines = vec![header, nav_hint_line];
+    if let Some(line) = thread_hint_line {
+        lines.push(line);
+    }
+    lines.push(Line::from(""));
 
     // Body: either the parsed+rendered diff (with optional thread splicing),
     // or a placeholder for binary / too-large / unavailable patches.
