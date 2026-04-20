@@ -126,22 +126,23 @@ fn build_section_non_empty_sections_have_lines() {
     let p = Palette::default();
 
     let (desc, _) =
-        build_section(DetailSection::Description, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Description, &detail, 0, false, false, true, None, &p, false);
     assert!(!desc.is_empty(), "Description must produce lines when body is non-empty");
 
     let (checks, _) =
-        build_section(DetailSection::Checks, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Checks, &detail, 0, false, false, true, None, &p, false);
     assert!(!checks.is_empty(), "Checks must produce lines when check_runs is non-empty");
 
     let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Reviews, &detail, 0, false, false, true, None, &p, false);
     assert!(!reviews.is_empty(), "Reviews must produce lines when reviews is non-empty");
 
-    let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, true, &p, false);
+    let (files, _) =
+        build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
     assert!(!files.is_empty(), "Files must produce lines when files is non-empty");
 
     let (comments, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
     assert!(!comments.is_empty(), "Comments must produce lines when threads are present");
 }
 
@@ -151,14 +152,15 @@ fn build_section_empty_sections_have_no_lines() {
     let p = Palette::default();
 
     let (checks, _) =
-        build_section(DetailSection::Checks, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Checks, &detail, 0, false, false, true, None, &p, false);
     assert!(checks.is_empty(), "Checks must be empty when no check_runs");
 
     let (reviews, _) =
-        build_section(DetailSection::Reviews, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Reviews, &detail, 0, false, false, true, None, &p, false);
     assert!(reviews.is_empty(), "Reviews must be empty when no reviews");
 
-    let (files, _) = build_section(DetailSection::Files, &detail, 0, false, false, true, &p, false);
+    let (files, _) =
+        build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
     let text: String =
         files.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("No files"), "Files placeholder must explain emptiness, got: {text:?}");
@@ -206,7 +208,7 @@ fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
     let detail = fixture_pr_detail(0, 0, 0, 3);
     let p = Palette::default();
     let (lines, alt_ranges) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
 
     assert_eq!(
         alt_ranges.len(),
@@ -233,7 +235,7 @@ fn alt_bg_empty_when_single_comment() {
     let detail = fixture_pr_detail(0, 0, 0, 0);
     let p = Palette::default();
     let (_, alt_ranges) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
     assert!(alt_ranges.is_empty(), "first top-level item should not be tinted, got {alt_ranges:?}");
 }
 
@@ -318,12 +320,14 @@ fn files_section_renders_cursor_pointed_file_header() {
     let detail = fixture_pr_detail(0, 0, 5, 0);
     let p = Palette::default();
 
-    let (lines, _) = build_section(DetailSection::Files, &detail, 0, true, false, true, &p, false);
+    let (lines, _) =
+        build_section(DetailSection::Files, &detail, 0, true, false, true, None, &p, false);
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("src/file-0.rs"), "files_cursor=0 must show first file path: {text:?}");
 
-    let (lines, _) = build_section(DetailSection::Files, &detail, 2, true, false, true, &p, false);
+    let (lines, _) =
+        build_section(DetailSection::Files, &detail, 2, true, false, true, None, &p, false);
     let text: String =
         lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
     assert!(text.contains("src/file-2.rs"), "files_cursor=2 must show third file path: {text:?}");
@@ -336,7 +340,7 @@ fn build_files_overview_produces_one_line_per_file() {
     for num_files in [1usize, 3, 7] {
         let detail = fixture_pr_detail(0, 0, num_files, 0);
         let (lines, _) =
-            build_section(DetailSection::Files, &detail, 0, false, false, true, &p, false);
+            build_section(DetailSection::Files, &detail, 0, false, false, true, None, &p, false);
 
         assert_eq!(
             lines.len(),
@@ -402,7 +406,7 @@ fn thread_comment_body_renders_as_markdown() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
 
     let styled_count = lines
         .iter()
@@ -411,6 +415,63 @@ fn thread_comment_body_renders_as_markdown() {
         .count();
 
     assert!(styled_count >= 2, "expected >= 2 styled spans (heading + code), got {styled_count}");
+}
+
+#[test]
+fn files_overview_shows_thread_badge_when_index_reports_threads() {
+    // A file with one unresolved, non-outdated thread must show `⚑ 1`
+    // somewhere on its overview row. Guards Feature B / 0.1.7.
+    use crate::ui::pr_detail::build_thread_index;
+
+    let mut detail = fixture_pr_detail(0, 0, 3, 0);
+    // fixture_pr_detail creates files "src/file-0.rs", ..., "src/file-2.rs".
+    // Attach one unresolved thread to file-1 and clear the fixture's defaults.
+    let now = Utc::now();
+    detail.review_threads = vec![ReviewThread {
+        path: "src/file-1.rs".to_owned(),
+        line: Some(3),
+        start_line: None,
+        is_resolved: false,
+        is_outdated: false,
+        diff_hunk: None,
+        comments: vec![ReviewComment {
+            author: "alice".to_owned(),
+            body_markdown: "please fix".to_owned(),
+            created_at: now,
+            diff_hunk: None,
+        }],
+    }];
+    let idx = build_thread_index(&detail);
+    let p = Palette::default();
+
+    let (lines, _) = super::files::build_files_overview(&detail, 0, Some(&idx), &p);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(text.contains("\u{2691} 1"), "overview must show `⚑ 1` for file-1; got: {text}");
+}
+
+#[test]
+fn files_overview_without_threads_renders_no_badge() {
+    // Regression guard: passing `thread_index = None` (the path used when
+    // a session-cached PrDetail lacks threads entirely) must not inject
+    // spurious glyphs.
+    let detail = fixture_pr_detail(0, 0, 2, 0);
+    let p = Palette::default();
+    let (lines, _) = super::files::build_files_overview(&detail, 0, None, &p);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(!text.contains("\u{2691}"), "no threads → no flag glyph; got: {text}");
+    assert!(!text.contains("\u{2713}"), "no threads → no check glyph; got: {text}");
 }
 
 #[test]
@@ -472,7 +533,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -532,7 +593,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, false, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, false, None, &p, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -595,7 +656,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -652,7 +713,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -719,7 +780,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
 
     let reply_glyph = "\u{21b3} ";
     let has_reply_prefix =
@@ -853,7 +914,7 @@ fn replies_render_in_accent_alt() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
 
     let reply_author = lines
         .iter()
@@ -928,7 +989,7 @@ fn collapsed_long_comment_shows_expand_hint() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, false, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, false, true, None, &p, false);
 
     let has_expand_hint = lines.iter().any(|l| line_text(l).contains("[m] expand"));
     assert!(has_expand_hint, "collapsed long comment must show [m] expand hint");
@@ -966,7 +1027,7 @@ fn issue_comments_render_markdown_styles() {
     };
 
     let (lines, _) =
-        build_section(DetailSection::Comments, &detail, 0, false, true, true, &p, false);
+        build_section(DetailSection::Comments, &detail, 0, false, true, true, None, &p, false);
 
     let has_bold = lines
         .iter()

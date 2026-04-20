@@ -45,6 +45,7 @@ pub(super) fn build_files(
     detail: &PrDetail,
     files_cursor: usize,
     show_diff: bool,
+    thread_index: Option<&super::ThreadIndex>,
     p: &Palette,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     if detail.files.is_empty() {
@@ -58,7 +59,7 @@ pub(super) fn build_files(
     }
 
     if !show_diff {
-        return build_files_overview(detail, files_cursor, p);
+        return build_files_overview(detail, files_cursor, thread_index, p);
     }
 
     build_files_diff(detail, files_cursor, p)
@@ -68,6 +69,7 @@ pub(super) fn build_files(
 pub(super) fn build_files_overview(
     detail: &PrDetail,
     files_cursor: usize,
+    thread_index: Option<&super::ThreadIndex>,
     p: &Palette,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
     // Sort by magnitude descending — same order as the sidebar files list.
@@ -96,15 +98,35 @@ pub(super) fn build_files_overview(
             Style::default()
         };
 
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
             Span::styled(file.path.clone(), row_bg_style.fg(p.foreground)),
             Span::styled("  ".to_owned(), row_bg_style),
             Span::styled(format!("+{}", file.additions), row_bg_style.fg(p.git_new)),
             Span::styled(" ".to_owned(), row_bg_style),
             Span::styled(format!("\u{2212}{}", file.deletions), row_bg_style.fg(p.danger)),
-        ]);
-        lines.push(line);
+        ];
+
+        // Thread-count badge: `⚑ N` in `palette.warning` when the file has
+        // any unresolved (non-outdated) thread, `✓ N` in `palette.muted`
+        // when every thread on that file is resolved or outdated. Omitted
+        // entirely when the file has no threads at all. Renders after the
+        // `+add/-del` stats so the stats column stays aligned across rows.
+        if let Some(idx) = thread_index {
+            let total = idx.total_for(&file.path);
+            if total > 0 {
+                let unresolved = idx.unresolved_for(&file.path);
+                let (glyph, fg) = if unresolved > 0 {
+                    ("\u{2691}", p.warning) // ⚑
+                } else {
+                    ("\u{2713}", p.muted) // ✓
+                };
+                spans.push(Span::styled("  ".to_owned(), row_bg_style));
+                spans.push(Span::styled(format!("{glyph} {total}"), row_bg_style.fg(fg)));
+            }
+        }
+
+        lines.push(Line::from(spans));
     }
 
     // Footer hint — one line, always visible.
@@ -183,6 +205,7 @@ pub(super) fn sidebar_file_lines(
     files_cursor: usize,
     selected_is_files: bool,
     sidebar_inner_width: usize,
+    thread_index: Option<&super::ThreadIndex>,
     p: &Palette,
 ) -> Vec<Line<'static>> {
     let mut sorted_files: Vec<&crate::github::detail::FileChange> = detail.files.iter().collect();
@@ -199,7 +222,24 @@ pub(super) fn sidebar_file_lines(
             FileChangeKind::Renamed => p.accent,
             FileChangeKind::Copied | FileChangeKind::Changed => p.muted,
         };
-        let path_budget = sidebar_inner_width.saturating_sub(2); // 2 = glyph + space
+
+        // Thread badge (sidebar variant): omit the count to save columns,
+        // show just `⚑` in warning when any thread is unresolved or `✓`
+        // when all are resolved/outdated. Budget the path accordingly so
+        // long paths still truncate cleanly.
+        let thread_badge: Option<(&'static str, ratatui::style::Color)> =
+            thread_index.and_then(|idx| {
+                let total = idx.total_for(&file.path);
+                if total == 0 {
+                    None
+                } else if idx.unresolved_for(&file.path) > 0 {
+                    Some(("\u{2691}", p.warning))
+                } else {
+                    Some(("\u{2713}", p.muted))
+                }
+            });
+        let badge_cols = if thread_badge.is_some() { 2 } else { 0 }; // " ⚑"
+        let path_budget = sidebar_inner_width.saturating_sub(2).saturating_sub(badge_cols);
         let path = truncate(&file.path, path_budget);
 
         let is_active_file = selected_is_files && idx == files_cursor;
@@ -208,10 +248,15 @@ pub(super) fn sidebar_file_lines(
         } else {
             Style::default()
         };
-        lines.push(Line::from(vec![
+
+        let mut spans = vec![
             Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)),
             Span::styled(path, line_style.fg(p.foreground)),
-        ]));
+        ];
+        if let Some((glyph, fg)) = thread_badge {
+            spans.push(Span::styled(format!(" {glyph}"), line_style.fg(fg)));
+        }
+        lines.push(Line::from(spans));
     }
 
     lines

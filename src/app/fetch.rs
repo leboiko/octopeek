@@ -219,6 +219,7 @@ impl App {
                 self.pr_detail_files_show_diff,
                 self.detail_comments_expanded,
                 self.detail_show_outdated,
+                self.thread_index.as_ref(),
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );

@@ -150,7 +150,12 @@ impl App {
                 let foreground_cold_miss =
                     self.pr_detail.is_none() && self.focus == Focus::Detail && self.detail_fetching;
                 if self.focus == Focus::Detail && (active_pr_matches || foreground_cold_miss) {
-                    self.pr_detail = Some(*detail.clone());
+                    let pr_detail = *detail.clone();
+                    // Rebuild the thread index alongside every new PrDetail so
+                    // the Files overview + future inline-expansion path have
+                    // O(1) `(path, line)` lookups on the current thread set.
+                    self.thread_index = Some(crate::ui::pr_detail::build_thread_index(&pr_detail));
+                    self.pr_detail = Some(pr_detail);
                 }
                 self.clear_detail_loading_markers(&detail.repo, detail.number);
             }

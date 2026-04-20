@@ -87,6 +87,7 @@ pub fn build_section(
     files_show_diff: bool,
     comments_expanded: bool,
     comments_show_outdated: bool,
+    thread_index: Option<&super::ThreadIndex>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -94,7 +95,7 @@ pub fn build_section(
         DetailSection::Description => build_description(detail, p),
         DetailSection::Checks => build_checks(detail, p),
         DetailSection::Reviews => build_reviews(detail, p),
-        DetailSection::Files => build_files(detail, files_cursor, files_show_diff, p),
+        DetailSection::Files => build_files(detail, files_cursor, files_show_diff, thread_index, p),
         DetailSection::Comments => {
             build_comments(detail, comments_expanded, comments_show_outdated, p, ascii)
         }

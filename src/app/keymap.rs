@@ -975,5 +975,10 @@ impl App {
         self.detail_error = None;
         self.pr_detail_scroll.clear();
         self.pr_detail_diff_scroll.clear();
+        // Critical: invalidate the thread index together with `pr_detail`.
+        // If we didn't, a brief race between `r` and the refetch would let
+        // the Files overview read a stale index keyed to the old PR's
+        // threads.
+        self.thread_index = None;
     }
 }

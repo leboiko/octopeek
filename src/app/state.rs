@@ -99,6 +99,11 @@ pub struct App {
     /// `true` when the comments section in the detail view is fully expanded.
     /// Shared between PR and issue detail — both views are mutually exclusive.
     pub detail_comments_expanded: bool,
+    /// Lookup table mapping `(file, line)` to the review threads anchored
+    /// there. Rebuilt whenever a new `PrDetail` arrives; cleared alongside
+    /// `pr_detail` in `clear_detail_state` so stale indices can't race
+    /// with fresh fetches. `None` when no PR detail is loaded.
+    pub thread_index: Option<crate::ui::pr_detail::ThreadIndex>,
     /// Whether outdated review threads are rendered in the Comments section.
     ///
     /// Defaults to `true` (visible-but-muted, split under a dashed
@@ -241,6 +246,7 @@ impl App {
             pr_detail_files_expanded: false,
             detail_comments_expanded: false,
             detail_show_outdated: true,
+            thread_index: None,
             pr_detail_selected_section: DetailSection::default(),
             pr_detail_files_cursor: 0,
             pr_detail_files_show_diff: false,

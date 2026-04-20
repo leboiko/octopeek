@@ -27,6 +27,9 @@ mod files;
 mod header;
 mod reviews;
 mod sections;
+mod thread_index;
+
+pub(crate) use thread_index::{ThreadIndex, build_for as build_thread_index};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -238,6 +241,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             files_cursor,
             selected_is_files,
             sidebar_inner_width,
+            app.thread_index.as_ref(),
             p,
         ));
 
@@ -261,6 +265,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.pr_detail_files_show_diff,
         app.detail_comments_expanded,
         app.detail_show_outdated,
+        app.thread_index.as_ref(),
         p,
         app.config.show_ascii_glyphs,
     );

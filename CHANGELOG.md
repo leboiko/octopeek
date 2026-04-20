@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-04-20
+
+Third of the review-thread UX patches (Phase B.1 — per-file
+indicators). Phase B.2 (inline thread expansion in the diff) ships
+in 0.1.8.
+
+### Added
+
+- **Per-file thread badges** in the Files overview and sidebar. Any
+  file with review threads now carries a small indicator:
+  `⚑ N` in `palette.warning` when the file has any unresolved
+  non-outdated thread, `✓ N` in `palette.muted` when every thread
+  is resolved or outdated. Sidebar variant omits the count to save
+  columns and shows just the glyph. Files with zero threads stay
+  unchanged, so the overview doesn't suddenly grow a column of
+  check marks on PRs without review activity.
+- New `ThreadIndex` in `src/ui/pr_detail/thread_index.rs`: a
+  once-per-`PrDetail` lookup table keyed on `(path, line)` for
+  the active-line bucket and `path` for the file-level / outdated
+  overflow bucket. Per-file `total_for` and `unresolved_for`
+  counters drive the badges. `active_at` and `overflow` accessors
+  are present but unused until 0.1.8 (flagged `#[allow(dead_code)]`
+  with a landing-commit note).
+
+### Internal
+
+- `App::thread_index: Option<ThreadIndex>` — rebuilt alongside
+  `pr_detail` on every detail-loaded action; cleared in
+  `clear_detail_state` so a brief race between a manual `r`
+  refresh and the refetch can't leak a stale index.
+- `build_section`, `build_files`, `build_files_overview`, and
+  `sidebar_file_lines` all grow an `Option<&ThreadIndex>` parameter,
+  plumbed through from `App::thread_index.as_ref()` at the render
+  site. No behaviour change when the option is `None` — critical
+  for PRs on older cached payloads.
+
 ## [0.1.6] — 2026-04-20
 
 Second of three review-thread UX patches (Phase C — outdated
@@ -255,7 +291,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/leboiko/octopeek/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/leboiko/octopeek/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/leboiko/octopeek/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/leboiko/octopeek/compare/v0.1.3...v0.1.4
