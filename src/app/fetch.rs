@@ -404,12 +404,14 @@ impl App {
             DetailKind::Pr => self.detail_cache.get_pr(&repo, number).map(|c| {
                 let fresh = c.is_fresh();
                 let data = c.data.clone();
+                self.thread_index = Some(crate::ui::pr_detail::build_thread_index(&data));
                 self.pr_detail = Some(data);
                 fresh
             }),
             DetailKind::Issue => self.detail_cache.get_issue(&repo, number).map(|c| {
                 let fresh = c.is_fresh();
                 let data = c.data.clone();
+                self.thread_index = None;
                 self.issue_detail = Some(data);
                 fresh
             }),
@@ -454,6 +456,7 @@ impl App {
         // repo's header.
         self.pr_detail = None;
         self.issue_detail = None;
+        self.thread_index = None;
         self.detail_error = None;
         self.detail_fetching = false;
 

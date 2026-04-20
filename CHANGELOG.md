@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-04-20
+
+Patch release for PR-detail keyboard regressions found after the
+commit-scope work.
+
+### Fixed
+
+- Detail section shortcuts (`!`, `@`, `#`, `$`, `%`, `^`) now run before the
+  Ctrl/Alt modifier filter. This keeps section switching working on terminals
+  and keyboard layouts that emit typed punctuation with AltGr/Option modifiers.
+- Restoring a cached PR detail now rebuilds the review-thread index, so `t`
+  can expand inline file comments after cache-backed navigation instead of
+  becoming a silent no-op.
+- Pressing `t` in a file diff now refreshes the render-derived thread cursor
+  before toggling, and flashes when there is no review thread at the current
+  diff position.
+
+### Changed
+
+- Help and status-bar hints now include `^` for the Commits section plus the
+  `Enter`/`H` commit-scope flow.
+
+### Tests
+
+281 pass (was 279, +2 new): `modified_punctuation_still_selects_sections`,
+`restored_pr_cache_rebuilds_thread_index_for_file_thread_shortcut`.
+
 ## [0.2.2] — 2026-04-20
 
 Final slice of the three-patch Commits feature arc. Scoping a
@@ -620,7 +647,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/leboiko/octopeek/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/leboiko/octopeek/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/leboiko/octopeek/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/leboiko/octopeek/compare/v0.1.11...v0.2.0
@@ -636,4 +664,3 @@ First public release on crates.io. Install with `cargo install octopeek`.
 [0.1.2]: https://github.com/leboiko/octopeek/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/leboiko/octopeek/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/leboiko/octopeek/releases/tag/v0.1.0
-

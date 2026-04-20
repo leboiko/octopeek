@@ -9,6 +9,24 @@ use super::actions::Action;
 use super::state::App;
 use super::types::{DetailKind, Focus, RepoPickerMode};
 
+fn detail_section_shortcut(key: crossterm::event::KeyEvent) -> Option<(DetailSection, bool)> {
+    let section = match key.code {
+        KeyCode::Char('!') => DetailSection::Description,
+        KeyCode::Char('@') => DetailSection::Checks,
+        KeyCode::Char('#') => DetailSection::Reviews,
+        KeyCode::Char('$') => DetailSection::Files,
+        KeyCode::Char('%') => DetailSection::Comments,
+        KeyCode::Char('^') => DetailSection::Commits,
+        KeyCode::Char(ch @ '1'..='6') if key.modifiers == KeyModifiers::SHIFT => {
+            let idx = (ch as usize) - ('1' as usize);
+            DetailSection::ALL[idx]
+        }
+        _ => return None,
+    };
+
+    Some((section, section == DetailSection::Files))
+}
+
 impl App {
     /// Translate a raw key event into an [`Action`] based on current focus.
     pub(super) fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
@@ -245,6 +263,20 @@ impl App {
             return;
         }
 
+        // Section picker: `!@#$%^` for Description/Checks/Reviews/Files/
+        // Comments/Commits. Match the final character before filtering
+        // modifiers because non-US layouts often emit symbols like `@` or
+        // `#` with AltGr/Option modifiers attached.
+        if let Some((sec, files_overview)) = detail_section_shortcut(key) {
+            self.detail_pending_g = false;
+            self.pr_detail_selected_section = sec;
+            if files_overview {
+                self.pr_detail_files_show_diff = false;
+            }
+            self.copy_mode.h_scroll = 0;
+            return;
+        }
+
         // Allow SHIFT so the section-picker keys (`F`, and `!@#$%` on US
         // keyboards / SHIFT+digit on those that send it unshifted) reach
         // the match arms. Reject Ctrl / Alt / Super as before.
@@ -388,55 +420,6 @@ impl App {
                 self.selected_commit = None;
                 self.show_flash("Returned to HEAD", std::time::Duration::from_millis(1500));
             }
-            // Section picker: `!@#$%` for Description/Checks/Reviews/Files/
-            // Comments (SHIFT+1..5 on US keyboards). Terminals that deliver
-            // SHIFT+digit without translating to punctuation are covered by
-            // the second arm below. `F` is an additional shortcut to the
-            // Files section that matches typical muscle memory.
-            //
-            // `n` / `N` are reserved for Phase 2 unresolved-thread cycling
-            // and fall through to the wildcard no-op at the bottom.
-            KeyCode::Char(ch @ ('!' | '@' | '#' | '$' | '%' | '^')) => {
-                self.detail_pending_g = false;
-                let idx = match ch {
-                    '!' => 0,
-                    '@' => 1,
-                    '#' => 2,
-                    '$' => 3,
-                    '%' => 4,
-                    '^' => 5,
-                    _ => unreachable!(),
-                };
-                if let Some(&sec) = DetailSection::ALL.get(idx) {
-                    self.pr_detail_selected_section = sec;
-                    // `$` (index 3 = Files) enters overview mode.
-                    if sec == DetailSection::Files {
-                        self.pr_detail_files_show_diff = false;
-                    }
-                    self.copy_mode.h_scroll = 0;
-                }
-            }
-            // SHIFT+6 fallback for terminals that send the digit unshifted.
-            // Mirrors the SHIFT+1..=5 arm below for the new Commits section.
-            KeyCode::Char('6') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.detail_pending_g = false;
-                if let Some(&sec) = DetailSection::ALL.get(5) {
-                    self.pr_detail_selected_section = sec;
-                    self.copy_mode.h_scroll = 0;
-                }
-            }
-            KeyCode::Char(ch @ '1'..='5') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.detail_pending_g = false;
-                let idx = (ch as usize) - ('1' as usize);
-                if let Some(&sec) = DetailSection::ALL.get(idx) {
-                    self.pr_detail_selected_section = sec;
-                    // SHIFT+4 enters Files overview mode.
-                    if sec == DetailSection::Files {
-                        self.pr_detail_files_show_diff = false;
-                    }
-                    self.copy_mode.h_scroll = 0;
-                }
-            }
             KeyCode::Char('F') => {
                 // `F` jumps to Files in diff mode (drill-in gesture).
                 self.detail_pending_g = false;
@@ -513,6 +496,11 @@ impl App {
                     && self.pr_detail_files_show_diff =>
             {
                 self.detail_pending_g = false;
+                // Rebuild the current section's line buffer before reading
+                // the render-owned cursor. This makes `t` work immediately
+                // after a cached detail restore or programmatic file jump,
+                // before the next frame has had a chance to redraw.
+                let _ = self.current_detail_lines();
                 // `borrow()` is safe here — no other borrow is live across
                 // this synchronous path.
                 let cursor = self.pr_detail_diff_cursor.borrow().clone();
@@ -522,6 +510,11 @@ impl App {
                     } else {
                         self.pr_detail_expanded_threads.insert(anchor);
                     }
+                } else {
+                    self.show_flash(
+                        "No review thread at the current diff position",
+                        std::time::Duration::from_secs(2),
+                    );
                 }
             }
             // Collapse all expanded thread cards at once (does NOT reset scroll).

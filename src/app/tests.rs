@@ -1651,6 +1651,29 @@ fn shift_digit_variants_select_sections() {
     }
 }
 
+/// Some terminals/layouts emit typed punctuation such as `@` or `#` with
+/// Alt/AltGr modifiers attached. The detail section picker should honor the
+/// character that arrived instead of swallowing it in the modifier filter.
+#[test]
+fn modified_punctuation_still_selects_sections() {
+    let config = crate::config::Config::default();
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+    app.focus = Focus::Detail;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('@'),
+        crossterm::event::KeyModifiers::ALT,
+    ));
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Checks);
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('#'),
+        crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+    ));
+    assert_eq!(app.pr_detail_selected_section, DetailSection::Reviews);
+}
+
 /// Terminals that deliver SHIFT+digit without translating to punctuation
 /// must still hit the section picker via the `Char('1'..='5')` + SHIFT arm.
 #[test]
@@ -2093,6 +2116,63 @@ fn restore_from_fresh_cache_populates_detail_without_flipping_fetching() {
     assert!(app.pr_detail.is_some(), "pr_detail must be populated from cache");
     assert!(!app.detail_fetching, "no spinner for a cache hit");
     assert!(app.detail_refreshing.is_none(), "no SWR kick for a fresh entry");
+}
+
+/// Restoring a PR from cache must rebuild the review-thread index. Without
+/// that, Files diff rendering still shows the file but `t` has no thread
+/// anchor to toggle.
+#[test]
+fn restored_pr_cache_rebuilds_thread_index_for_file_thread_shortcut() {
+    let config = crate::config::Config { repos: vec!["o/r".to_owned()], ..Default::default() };
+    let session = crate::state::AppSession::default();
+    let mut app = App::new(config, session);
+
+    let now = Utc::now();
+    let mut detail = make_pr_detail_for_app("o/r", 1);
+    detail.files = vec![crate::github::detail::FileChange {
+        path: "src/lib.rs".to_owned(),
+        additions: 1,
+        deletions: 0,
+        change_kind: crate::github::detail::FileChangeKind::Modified,
+        patch: Some("@@ -1,2 +1,2 @@\n line one\n line two".to_owned()),
+    }];
+    detail.review_threads = vec![crate::github::detail::ReviewThread {
+        path: "src/lib.rs".to_owned(),
+        line: Some(2),
+        start_line: None,
+        is_resolved: false,
+        is_outdated: false,
+        diff_hunk: None,
+        comments: vec![crate::github::detail::ReviewComment {
+            author: "reviewer".to_owned(),
+            body_markdown: "please check".to_owned(),
+            created_at: now,
+            diff_hunk: None,
+            original_commit_id: None,
+        }],
+    }];
+
+    app.detail_cache.insert_pr(detail);
+    app.per_tab_state.insert(
+        "o/r".to_owned(),
+        PerTabState {
+            detail_ref: Some(DetailRef { repo: "o/r".to_owned(), number: 1, kind: DetailKind::Pr }),
+        },
+    );
+
+    app.restore_active_tab_state();
+    app.pr_detail_selected_section = DetailSection::Files;
+    app.pr_detail_files_show_diff = true;
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('t'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    assert!(
+        app.pr_detail_expanded_threads.contains(&("src/lib.rs".to_owned(), 2)),
+        "`t` must expand the inline thread after restoring detail from cache"
+    );
 }
 
 /// Switching to a tab whose cache entry is stale must populate `pr_detail`
