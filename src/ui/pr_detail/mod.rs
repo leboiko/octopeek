@@ -312,6 +312,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
+    // When a commit is selected, scope the Comments section to threads that
+    // originated on that commit's SHA. `scoped_commit` was already resolved
+    // above for the indicator strip.
+    let comments_scope_sha: Option<&str> = scoped_commit.map(|c| c.sha.as_str());
+
     let (content_lines, alt_bg_ranges) = build_section(
         selected_section,
         detail,
@@ -324,6 +329,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         &app.pr_detail_diff_cursor,
         scoped_patches,
         app.commits_cursor,
+        comments_scope_sha,
         p,
         app.config.show_ascii_glyphs,
     );

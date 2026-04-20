@@ -302,19 +302,41 @@ pub(super) fn thread_header_line(
 /// Returns `(lines, unresolved_thread_relative_offsets, alt_bg_ranges)`.
 /// Offsets are relative to the start of the comment block (0 = first line
 /// of the block header). Callers add the header's absolute Y to get global anchors.
+///
+/// # Arguments
+///
+/// * `detail` - The loaded PR detail.
+/// * `expanded` - Whether comments/threads are expanded.
+/// * `show_outdated` - Whether outdated threads are shown.
+/// * `scope` - When `Some(sha)`, filter review threads to those whose first
+///   comment's `original_commit_id` matches `sha`. Issue comments are always
+///   shown regardless of scope.
+/// * `p` - Active colour palette.
+/// * `ascii` - Use ASCII glyphs instead of Unicode.
 #[allow(clippy::too_many_lines)]
 pub(super) fn comments_lines(
     detail: &PrDetail,
     expanded: bool,
     show_outdated: bool,
+    scope: Option<&str>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<u16>, Vec<(u16, u16)>) {
     let gutter = thread_gutter(ascii);
     let reply_glyph = if ascii { "> " } else { "\u{21b3} " };
-    let unresolved_count =
-        detail.review_threads.iter().filter(|t| !t.is_resolved && !t.is_outdated).count();
+
+    // When scoped, filter review threads to those originating on the given commit.
+    // Issue comments are PR-level and are never filtered by commit scope.
     let total_threads = detail.review_threads.len();
+    let scoped_threads: Vec<&crate::github::detail::ReviewThread> = if let Some(sha) = scope {
+        detail.review_threads.iter().filter(|t| t.originating_commit_sha() == Some(sha)).collect()
+    } else {
+        detail.review_threads.iter().collect()
+    };
+    let scoped_thread_count = scoped_threads.len();
+
+    let unresolved_count =
+        scoped_threads.iter().filter(|t| !t.is_resolved && !t.is_outdated).count();
     let total_comments = detail.issue_comments.len();
 
     let mut lines = Vec::new();
@@ -327,7 +349,7 @@ pub(super) fn comments_lines(
     let (mut active, mut outdated): (
         Vec<&crate::github::detail::ReviewThread>,
         Vec<&crate::github::detail::ReviewThread>,
-    ) = detail.review_threads.iter().partition(|t| !t.is_outdated);
+    ) = scoped_threads.into_iter().partition(|t| !t.is_outdated);
     active.sort_by_key(|t| t.is_resolved);
     outdated.sort_by_key(|t| t.is_resolved);
 
@@ -463,6 +485,19 @@ pub(super) fn comments_lines(
         items_shown += 1;
     }
 
+    // When scoped but the filtered thread set is empty, emit a muted notice
+    // so the user knows why no threads appear (it's not a bug; this commit
+    // simply has no review threads originating on it).
+    if scope.is_some() && scoped_thread_count == 0 {
+        lines.insert(
+            0,
+            Line::from(Span::styled(
+                "  No review threads originated on this commit \u{00B7} issue comments still shown below",
+                Style::default().fg(p.muted),
+            )),
+        );
+    }
+
     let total_items = total_threads + total_comments;
     if !expanded && total_items > 10 {
         lines.push(Line::from(Span::styled(
@@ -477,13 +512,35 @@ pub(super) fn comments_lines(
         p,
     );
 
+    // Scope hint: emitted just below the section title when a commit SHA is
+    // active. Shows "◈ Scoped to <7-char sha> · showing N of M threads · H returns to HEAD".
+    // Using `palette.warning` fg so it visually matches the indicator strip.
+    let scope_hint: Option<Line<'static>> = scope.map(|sha| {
+        let short = sha.chars().take(7).collect::<String>();
+        let glyph = if ascii { "@" } else { "\u{25c8}" }; // ◈
+        Line::from(Span::styled(
+            format!(
+                "  {glyph} Scoped to {short} \u{00B7} showing {scoped_thread_count} of {total_threads} threads \u{00B7} H returns to HEAD"
+            ),
+            Style::default().fg(p.warning),
+        ))
+    });
+
+    // The offset shift below accounts for: 1 header line + optional 1 scope
+    // hint line + optional 1 empty-scope notice (already inserted above into `lines`).
+    let prefix_count = 1 + scope_hint.as_ref().map_or(0usize, |_| 1);
+
     let mut all_lines = vec![header];
+    if let Some(hint) = scope_hint {
+        all_lines.push(hint);
+    }
     all_lines.extend(lines);
 
-    // Shift unresolved offsets by 1 to account for the header line we prepended.
-    let shifted_offsets = unresolved_offsets.iter().map(|&o| o + 1).collect();
+    #[allow(clippy::cast_possible_truncation)]
+    let shift = prefix_count as u16;
+    let shifted_offsets = unresolved_offsets.iter().map(|&o| o + shift).collect();
     let shifted_alt_ranges: Vec<(u16, u16)> =
-        alt_bg_ranges.into_iter().map(|(a, b)| (a + 1, b + 1)).collect();
+        alt_bg_ranges.into_iter().map(|(a, b)| (a + shift, b + shift)).collect();
 
     (all_lines, shifted_offsets, shifted_alt_ranges)
 }
@@ -491,10 +548,16 @@ pub(super) fn comments_lines(
 /// Build lines for the Comments section.
 ///
 /// Returns `(lines, alt_bg_ranges)`.
+///
+/// # Arguments
+///
+/// * `scope` - When `Some(sha)`, filter review threads to those that originated
+///   on the given commit SHA. Issue comments are always shown. `None` = full PR view.
 pub(super) fn build_comments(
     detail: &PrDetail,
     comments_expanded: bool,
     show_outdated: bool,
+    scope: Option<&str>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -503,6 +566,6 @@ pub(super) fn build_comments(
         return (Vec::new(), Vec::new());
     }
     let (comment_lines, _unresolved, alt_ranges) =
-        comments_lines(detail, comments_expanded, show_outdated, p, ascii);
+        comments_lines(detail, comments_expanded, show_outdated, scope, p, ascii);
     (comment_lines, alt_ranges)
 }

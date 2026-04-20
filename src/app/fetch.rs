@@ -222,6 +222,11 @@ impl App {
                             .map(|cached| &cached.data)
                     })
                 });
+            // Resolve the commit-scope SHA for the Comments section, mirroring
+            // the same logic in `pr_detail::draw`.
+            let comments_scope_sha: Option<&str> = self
+                .selected_commit
+                .and_then(|idx| detail.commits.get(idx).map(|c| c.sha.as_str()));
             let (lines, _) = crate::ui::pr_detail::build_section(
                 self.pr_detail_selected_section,
                 detail,
@@ -234,6 +239,7 @@ impl App {
                 &self.pr_detail_diff_cursor,
                 scoped_patches,
                 self.commits_cursor,
+                comments_scope_sha,
                 &self.palette,
                 self.config.show_ascii_glyphs,
             );

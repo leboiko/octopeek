@@ -121,6 +121,7 @@ mod tests {
                 body_markdown: "c".to_owned(),
                 created_at: Utc::now(),
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }
     }

@@ -101,6 +101,13 @@ pub struct ReviewComment {
     /// field's addition to the query.
     #[serde(default)]
     pub diff_hunk: Option<String>,
+    /// The OID of the commit this comment was originally made on.
+    ///
+    /// Used to scope the Comments section to threads that originated on a
+    /// selected commit. `None` for older cached payloads that predate the
+    /// field's addition to the query (`originalCommit { oid }`).
+    #[serde(default)]
+    pub original_commit_id: Option<String>,
 }
 
 /// A thread of inline review comments anchored to a file location.
@@ -143,6 +150,18 @@ pub struct ReviewThread {
     pub comments: Vec<ReviewComment>,
 }
 
+impl ReviewThread {
+    /// Return the OID of the commit on which this thread was originally opened.
+    ///
+    /// Delegates to the first comment's `original_commit_id`, which matches
+    /// the same promotion pattern used for `diff_hunk`: the thread opener's
+    /// field speaks for the whole thread. Returns `None` when the field is
+    /// absent (old cached payloads) or the thread has no comments.
+    pub fn originating_commit_sha(&self) -> Option<&str> {
+        self.comments.first()?.original_commit_id.as_deref()
+    }
+}
+
 // ── IssueComment ──────────────────────────────────────────────────────────────
 
 /// A top-level comment on a pull request or issue (not an inline review comment).
@@ -181,6 +200,11 @@ pub struct PrCommit {
     pub deletions: u32,
     /// Number of files changed in this commit.
     pub changed_files: u32,
+    /// Aggregate CI check state for this commit from `statusCheckRollup.state`.
+    ///
+    /// `None` when the commit has no CI configured (no `statusCheckRollup`).
+    #[serde(default)]
+    pub check_state: Option<crate::github::types::CheckState>,
 }
 
 // ── PrDetail ─────────────────────────────────────────────────────────────────
@@ -310,6 +334,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
               date
             }
             statusCheckRollup {
+              state
               contexts(first: 50) {
                 nodes {
                   ... on CheckRun {
@@ -359,6 +384,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
               body
               createdAt
               diffHunk
+              originalCommit { oid }
             }
           }
         }
@@ -523,6 +549,8 @@ pub(super) struct RawDetailCommitAuthor {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct RawDetailRollup {
+    /// Aggregate state across all check contexts for this commit.
+    pub state: crate::github::types::CheckState,
     pub contexts: RawNodeList<RawDetailCheckContext>,
 }
 
@@ -598,6 +626,11 @@ pub(super) struct RawReviewThreadNode {
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct RawDetailOriginalCommit {
+    pub oid: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawCommentNode {
     pub author: Option<RawDetailActor>,
@@ -610,6 +643,11 @@ pub(super) struct RawCommentNode {
     /// shape but don't expose `diffHunk` in the query.
     #[serde(default)]
     pub diff_hunk: Option<String>,
+    /// The commit on which this comment was originally made.
+    ///
+    /// Present on review-thread comments; absent on issue-level comments.
+    #[serde(default)]
+    pub original_commit: Option<RawDetailOriginalCommit>,
 }
 
 /// Convert a raw GraphQL comment node into the public [`IssueComment`] type.
@@ -741,6 +779,11 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
             let committed_at = author_node.date?;
             let author = author_node.name.unwrap_or_else(|| "unknown".to_owned());
             let short_sha: String = c.oid.chars().take(7).collect();
+            // Extract the aggregate CI state from the commit's rollup.
+            // The `contexts` sub-selection is only used for the HEAD commit's
+            // Checks section; for all other commits we only need the top-level
+            // `state` scalar.
+            let check_state = c.status_check_rollup.map(|r| r.state);
             Some(PrCommit {
                 sha: c.oid,
                 short_sha,
@@ -750,6 +793,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                 additions: c.additions,
                 deletions: c.deletions,
                 changed_files: c.changed_files_if_available.unwrap_or(0),
+                check_state,
             })
         })
         .collect();
@@ -795,6 +839,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
                     body_markdown: c.body.unwrap_or_default(),
                     created_at: c.created_at,
                     diff_hunk: c.diff_hunk,
+                    original_commit_id: c.original_commit.map(|oc| oc.oid),
                 })
                 .collect();
 
@@ -933,6 +978,7 @@ mod tests {
                                         "date": "2024-01-02T10:00:00Z"
                                     },
                                     "statusCheckRollup": {
+                                        "state": "SUCCESS",
                                         "contexts": {
                                             "nodes": [{
                                                 "name": "ci / build",
@@ -1134,7 +1180,7 @@ mod tests {
                     "deletions": 0,
                     "changedFilesIfAvailable": null,
                     "author": { "name": "dev", "date": "2024-01-01T00:00:00Z" },
-                    "statusCheckRollup": { "contexts": { "nodes": [{
+                    "statusCheckRollup": { "state": "PENDING", "contexts": { "nodes": [{
                         "name": "build",
                         "status": "IN_PROGRESS",
                         "conclusion": null,

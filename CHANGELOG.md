@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-04-20
+
+Final slice of the three-patch Commits feature arc. Scoping a
+commit now also filters the Comments section and annotates the
+commit list rows with CI state.
+
+### Added
+
+- **Scoped Comments.** When `selected_commit.is_some()`, the
+  Comments section filters review threads to those whose opening
+  comment carries the selected commit's `originalCommit.oid`. A
+  hint row `◈ Scoped to a3f7b2c · showing N of M threads · H
+  returns to HEAD` in `palette.warning` makes the scope unmissable.
+  Issue-level comments (PR-wide, never commit-scoped) still render
+  under their own separator. Empty scopes render a muted "No
+  review threads originated on this commit" notice so the user
+  doesn't mistake an empty list for a bug.
+- **Per-commit CI glyph** in the Commits list. Each row gains a
+  CI-state glyph next to the author (via the same
+  `glyphs::ci_glyph` + `palette.color_for(role)` helpers the
+  Dashboard uses), so the user sees at a glance which commits
+  passed, failed, or are still pending before they `Enter` to
+  scope. Column drops first on 60-col narrow terminals.
+- **"Showing last 100 commits" footer** on the Commits list when
+  the PR has ≥100 commits. Resolves the "Known limitations" note
+  from 0.2.0. Older commits still require a pagination system —
+  deferred.
+
+### Data layer
+
+- **GraphQL delta**: each comment node on `reviewThreads` gains
+  `originalCommit { oid }`; each commit node gains a minimal
+  `statusCheckRollup { state }` (the HEAD commit's full rollup with
+  `contexts` is unchanged — the Checks section still works as
+  today). Cost: one scalar per comment (2000 for max-size PR),
+  one scalar per commit (100 max). Negligible budget hit.
+- `ReviewComment` gains `original_commit_id: Option<String>`.
+- `ReviewThread` gains a `originating_commit_sha() -> Option<&str>`
+  helper that returns the first comment's origin — the same
+  promotion pattern used for `diff_hunk` in 0.1.5.
+- `PrCommit` gains `check_state: Option<CheckState>` — reusing
+  the existing enum from `crate::github::types`.
+
+### Known limitations / non-goals
+
+- The Checks **section** (the PR-wide context list) is NOT scoped
+  per commit — it continues to show HEAD's rollup regardless of
+  `selected_commit`. Scoping the full section would require a
+  clear indicator AND answers to retry/rerun semantics that
+  aren't needed today.
+- No commit-list pagination beyond the "last 100" cap.
+
+### Tests
+
+279 pass (was 275, +4 new): `scoped_comments_filter_by_origin_commit`,
+`scoped_comments_show_scope_hint`, `scoped_comments_empty_scope_shows_notice`,
+`per_commit_ci_glyph_rendered_in_list`.
+
 ## [0.2.1] — 2026-04-20
 
 Second slice of the three-patch Commits feature arc. The Commits
@@ -562,7 +620,8 @@ First public release on crates.io. Install with `cargo install octopeek`.
 - GraphQL raw types downgraded from `pub` to `pub(super)` / `pub(crate)` —
   the crate is a binary and should not expose implementation details.
 
-[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/leboiko/octopeek/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/leboiko/octopeek/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/leboiko/octopeek/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/leboiko/octopeek/compare/v0.1.11...v0.2.0
 [0.1.11]: https://github.com/leboiko/octopeek/compare/v0.1.10...v0.1.11

@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::github::detail::PrDetail;
 use crate::theme::Palette;
+use crate::ui::glyphs;
 use crate::ui::util::{humanize_delta, section_header, truncate};
 
 // ── Column widths ─────────────────────────────────────────────────────────────
@@ -44,8 +45,15 @@ const DELS_COLS: usize = 5;
 /// Fixed width reserved for the cursor indicator (`▶ ` or `  ` = 2 chars).
 const CURSOR_COLS: usize = 2;
 
+/// Fixed width for the CI glyph column (1 char + 1 space = 2 chars).
+const CI_COLS: usize = 2;
+
 /// Minimum terminal width below which we start dropping optional columns.
 const DROP_STATS_BELOW: usize = 60;
+
+/// Minimum terminal width below which we drop the CI glyph column as well.
+/// At very narrow terminals the glyph would crowd the headline too much.
+const DROP_CI_BELOW: usize = 60;
 
 /// Minimum terminal width below which we drop the age column as well.
 const DROP_AGE_BELOW: usize = 50;
@@ -79,10 +87,14 @@ pub(super) fn build_commits(
     let avail: usize = 80;
 
     let show_stats = avail >= DROP_STATS_BELOW;
+    let show_ci = avail >= DROP_CI_BELOW;
     let show_age = avail >= DROP_AGE_BELOW;
 
     // Compute the budget for the headline column.
     let mut fixed = CURSOR_COLS + SHA_COLS + AUTHOR_COLS;
+    if show_ci {
+        fixed += CI_COLS;
+    }
     if show_age {
         fixed += AGE_COLS;
     }
@@ -125,13 +137,21 @@ pub(super) fn build_commits(
         let author_trunc = truncate(&commit.author, 11);
         spans.push(Span::styled(format!("@{author_trunc:<11} "), Style::default().fg(p.dim)));
 
-        // Column 4 (optional): relative age.
+        // Column 4 (optional): CI state glyph — same helper used by the dashboard.
+        // Dropped at narrow terminals (< DROP_CI_BELOW cols) to keep headline readable.
+        if show_ci {
+            let (glyph_char, role) = glyphs::ci_glyph(commit.check_state, false);
+            let color = p.color_for(role);
+            spans.push(Span::styled(format!("{glyph_char} "), Style::default().fg(color)));
+        }
+
+        // Column 5 (optional): relative age.
         if show_age {
             let age = humanize_delta(&commit.committed_at);
             spans.push(Span::styled(format!("{age:<8} "), Style::default().fg(p.dim)));
         }
 
-        // Columns 5-6 (optional): `+N -M` diff stats.
+        // Columns 6-7 (optional): `+N -M` diff stats.
         if show_stats {
             spans.push(Span::styled(
                 format!("+{:<5}", commit.additions),
@@ -144,6 +164,16 @@ pub(super) fn build_commits(
         }
 
         lines.push(Line::from(spans));
+    }
+
+    // Footer: when the list is capped at 100 commits, disclose that older
+    // commits were not loaded. Promised in 0.2.0's "Known limitations" note.
+    if count >= 100 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Showing last 100 commits \u{2014} older commits not loaded",
+            Style::default().fg(p.muted),
+        )));
     }
 
     (lines, Vec::new())

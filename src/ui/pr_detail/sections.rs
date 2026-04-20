@@ -84,6 +84,9 @@ pub(super) fn build_reviews(
 ///   patch map (commit-scope mode). `None` = cumulative HEAD view.
 /// * `commits_cursor` - Index of the highlighted row in the Commits list (for
 ///   the `▶` indicator). Only used when `section == Commits`.
+/// * `comments_scope_sha` - When `Some`, restricts the Comments section to threads
+///   that originated on the given commit SHA. Issue comments are always shown.
+///   Derived from `App::selected_commit` at the call site.
 /// * `p` - Current colour palette.
 /// * `ascii` - Use ASCII glyphs instead of Unicode box-drawing.
 //
@@ -104,6 +107,7 @@ pub fn build_section(
     diff_cursor: &RefCell<Option<(String, u32)>>,
     scoped_patches: Option<&HashMap<String, Option<String>>>,
     commits_cursor: usize,
+    comments_scope_sha: Option<&str>,
     p: &Palette,
     ascii: bool,
 ) -> (Vec<Line<'static>>, Vec<(u16, u16)>) {
@@ -132,11 +136,14 @@ pub fn build_section(
                 ascii,
             )
         }
-        DetailSection::Comments => {
-            // Comment filtering by commit lands in 0.2.2. For now, always
-            // show the full PR-level comment list regardless of scope.
-            build_comments(detail, comments_expanded, comments_show_outdated, p, ascii)
-        }
+        DetailSection::Comments => build_comments(
+            detail,
+            comments_expanded,
+            comments_show_outdated,
+            comments_scope_sha,
+            p,
+            ascii,
+        ),
         DetailSection::Commits => build_commits(detail, p, Some(commits_cursor)),
     }
 }

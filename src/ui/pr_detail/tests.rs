@@ -95,6 +95,7 @@ pub fn fixture_pr_detail(
                 body_markdown: format!("Comment {i}"),
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         })
         .collect();
@@ -151,6 +152,7 @@ fn build_section_non_empty_sections_have_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -168,6 +170,7 @@ fn build_section_non_empty_sections_have_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -185,6 +188,7 @@ fn build_section_non_empty_sections_have_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -202,6 +206,7 @@ fn build_section_non_empty_sections_have_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -219,6 +224,7 @@ fn build_section_non_empty_sections_have_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -242,6 +248,7 @@ fn build_section_empty_sections_have_no_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -259,6 +266,7 @@ fn build_section_empty_sections_have_no_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -276,6 +284,7 @@ fn build_section_empty_sections_have_no_lines() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -337,6 +346,7 @@ fn alt_bg_ranges_alternate_and_stay_within_comments_section() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -377,6 +387,7 @@ fn alt_bg_empty_when_single_comment() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -476,6 +487,7 @@ fn files_section_renders_cursor_pointed_file_header() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -495,6 +507,7 @@ fn files_section_renders_cursor_pointed_file_header() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -521,6 +534,7 @@ fn build_files_overview_produces_one_line_per_file() {
             &no_cursor(),
             None,
             0,
+            None,
             &p,
             false,
         );
@@ -583,6 +597,7 @@ fn thread_comment_body_renders_as_markdown() {
                 body_markdown: "# Heading\n\n**bold** text\n\n```rust\nfn f() {}\n```".to_owned(),
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
@@ -601,6 +616,7 @@ fn thread_comment_body_renders_as_markdown() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -636,6 +652,7 @@ fn files_overview_shows_thread_badge_when_index_reports_threads() {
             body_markdown: "please fix".to_owned(),
             created_at: now,
             diff_hunk: None,
+            original_commit_id: None,
         }],
     }];
     let idx = build_thread_index(&detail);
@@ -690,6 +707,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
             body_markdown: "still open".to_owned(),
             created_at: now,
             diff_hunk: None,
+            original_commit_id: None,
         }],
     };
     let outdated = ReviewThread {
@@ -704,6 +722,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
             body_markdown: "already fixed".to_owned(),
             created_at: now,
             diff_hunk: None,
+            original_commit_id: None,
         }],
     };
     let detail = PrDetail {
@@ -742,6 +761,7 @@ fn outdated_threads_render_in_a_separate_section_with_badge() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -778,6 +798,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
             body_markdown: "confidential gossip".to_owned(),
             created_at: now,
             diff_hunk: None,
+            original_commit_id: None,
         }],
     };
     let detail = PrDetail {
@@ -816,6 +837,7 @@ fn outdated_threads_hidden_when_show_outdated_false() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -875,6 +897,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
                 body_markdown: "Looks good.".to_owned(),
                 created_at: now,
                 diff_hunk: None,
+            original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
@@ -893,6 +916,7 @@ fn diff_hunk_excerpt_renders_under_thread_header() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -946,6 +970,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
                 body_markdown: "No hunk.".to_owned(),
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
@@ -964,6 +989,7 @@ fn thread_without_diff_hunk_renders_cleanly() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1014,18 +1040,21 @@ fn thread_reply_prefix_only_on_non_first_comments() {
                     body_markdown: "First comment".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 },
                 ReviewComment {
                     author: "bob".to_owned(),
                     body_markdown: "Second comment".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 },
                 ReviewComment {
                     author: "carol".to_owned(),
                     body_markdown: "Third comment".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 },
             ],
         }],
@@ -1045,6 +1074,7 @@ fn thread_reply_prefix_only_on_non_first_comments() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1110,13 +1140,14 @@ fn unresolved_anchor_points_at_thread_header() {
                 body_markdown: "Needs refactor.".to_owned(),
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
         commits: vec![],
     };
 
-    let (lines, unresolved, _) = comments_lines(&detail, true, true, &p, false);
+    let (lines, unresolved, _) = comments_lines(&detail, true, true, None, &p, false);
 
     assert_eq!(unresolved.len(), 1, "expected exactly 1 unresolved anchor");
     let anchor = unresolved[0] as usize;
@@ -1169,12 +1200,14 @@ fn replies_render_in_accent_alt() {
                     body_markdown: "Opening thought.".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 },
                 ReviewComment {
                     author: "replier".to_owned(),
                     body_markdown: "Counter-point.".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 },
             ],
         }],
@@ -1194,6 +1227,7 @@ fn replies_render_in_accent_alt() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1265,6 +1299,7 @@ fn collapsed_long_comment_shows_expand_hint() {
                 body_markdown: long_body,
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
@@ -1283,6 +1318,7 @@ fn collapsed_long_comment_shows_expand_hint() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1335,6 +1371,7 @@ fn issue_comments_render_markdown_styles() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1420,6 +1457,7 @@ fn fixture_diff_detail_with_thread(line: Option<u32>, outdated: bool) -> PrDetai
                 body_markdown: "thread body text".to_owned(),
                 created_at: now,
                 diff_hunk: None,
+                original_commit_id: None,
             }],
         }],
         issue_comments: vec![],
@@ -1562,6 +1600,7 @@ fn overflow_block_renders_outdated_and_file_level() {
                     body_markdown: "file-level comment".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 }],
             },
             // Outdated thread: line == Some(5) but is_outdated == true
@@ -1577,6 +1616,7 @@ fn overflow_block_renders_outdated_and_file_level() {
                     body_markdown: "outdated comment".to_owned(),
                     created_at: now,
                     diff_hunk: None,
+                    original_commit_id: None,
                 }],
             },
         ],
@@ -1708,6 +1748,7 @@ pub fn fixture_pr_detail_with_commits(n: usize) -> PrDetail {
                 additions,
                 deletions,
                 changed_files: 1,
+                check_state: Some(crate::github::types::CheckState::Success),
             }
         })
         .collect::<Vec<_>>();
@@ -1735,6 +1776,7 @@ fn commits_section_renders_one_line_per_commit() {
         &no_cursor(),
         None,
         0,
+        None,
         &p,
         false,
     );
@@ -1775,6 +1817,7 @@ fn commits_sorted_newest_first() {
             additions: 1,
             deletions: 0,
             changed_files: 1,
+            check_state: None,
         },
         PrCommit {
             sha: "b".repeat(40),
@@ -1785,6 +1828,7 @@ fn commits_sorted_newest_first() {
             additions: 2,
             deletions: 0,
             changed_files: 1,
+            check_state: None,
         },
         PrCommit {
             sha: "c".repeat(40),
@@ -1795,6 +1839,7 @@ fn commits_sorted_newest_first() {
             additions: 3,
             deletions: 0,
             changed_files: 1,
+            check_state: None,
         },
     ];
 
@@ -1833,4 +1878,227 @@ fn commits_section_key_is_sixth() {
     assert_eq!(DetailSection::ALL.len(), 6, "ALL must have exactly 6 sections");
     assert_eq!(DetailSection::ALL[5], DetailSection::Commits, "index 5 (6th) must be Commits");
     assert_eq!(DetailSection::Commits.label(), "Commits");
+}
+
+// ── 0.2.2: Scoped Comments + per-commit CI ───────────────────────────────────
+
+/// Helper: build a `ReviewComment` with an explicit `original_commit_id`.
+fn make_review_comment(author: &str, body: &str, commit_oid: Option<&str>) -> ReviewComment {
+    ReviewComment {
+        author: author.to_owned(),
+        body_markdown: body.to_owned(),
+        created_at: Utc::now(),
+        diff_hunk: None,
+        original_commit_id: commit_oid.map(str::to_owned),
+    }
+}
+
+/// Helper: build a minimal `ReviewThread` with one comment originating on
+/// the given SHA (or `None` for old cached payloads).
+fn make_thread(path: &str, author: &str, body: &str, commit_oid: Option<&str>) -> ReviewThread {
+    ReviewThread {
+        path: path.to_owned(),
+        line: Some(1),
+        start_line: None,
+        is_resolved: false,
+        is_outdated: false,
+        diff_hunk: None,
+        comments: vec![make_review_comment(author, body, commit_oid)],
+    }
+}
+
+#[test]
+fn scoped_comments_filter_by_origin_commit() {
+    // Two threads on different SHAs; scope to sha_a — only alice's thread
+    // should render, not bob's.  Issue comments (carol) always appear.
+    let now = Utc::now();
+    let p = Palette::default();
+
+    let detail = PrDetail {
+        repo: "r".to_owned(),
+        number: 1,
+        title: "T".to_owned(),
+        url: "u".to_owned(),
+        author: "a".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files_count: 0,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![
+            make_thread("src/a.rs", "alice", "alice thread body", Some("aaaaaaa_sha")),
+            make_thread("src/b.rs", "bob", "bob thread body", Some("bbbbbbb_sha")),
+        ],
+        issue_comments: vec![IssueComment {
+            author: "carol".to_owned(),
+            body_markdown: "carol issue comment".to_owned(),
+            created_at: now,
+        }],
+        commits: vec![],
+    };
+
+    let (lines, _, _) = comments_lines(&detail, true, true, Some("aaaaaaa_sha"), &p, false);
+    let text: String =
+        lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+
+    assert!(
+        text.contains("alice thread body"),
+        "alice's thread must appear when scoped to her SHA"
+    );
+    assert!(!text.contains("bob thread body"), "bob's thread must NOT appear in alice's scope");
+    assert!(
+        text.contains("carol issue comment"),
+        "issue comments always appear regardless of scope"
+    );
+}
+
+#[test]
+fn scoped_comments_show_scope_hint() {
+    // When a scope SHA is set, the ◈ hint row must appear in the output.
+    let now = Utc::now();
+    let p = Palette::default();
+
+    let sha = "a3f7b2caabbcc";
+    let detail = PrDetail {
+        repo: "r".to_owned(),
+        number: 1,
+        title: "T".to_owned(),
+        url: "u".to_owned(),
+        author: "a".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files_count: 0,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![],
+        check_runs: vec![],
+        reviews: vec![],
+        review_threads: vec![make_thread("src/a.rs", "alice", "thread body", Some(sha))],
+        issue_comments: vec![],
+        commits: vec![],
+    };
+
+    let (lines, _, _) = comments_lines(&detail, true, true, Some(sha), &p, false);
+    let text: String =
+        lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+
+    // The hint must contain "Scoped to" and the first 7 chars of the SHA.
+    assert!(text.contains("Scoped to"), "scope hint must contain 'Scoped to'; got: {text}");
+    assert!(text.contains(&sha[..7]), "scope hint must contain the 7-char short SHA; got: {text}");
+    assert!(text.contains("H returns to HEAD"), "scope hint must mention H key; got: {text}");
+}
+
+#[test]
+fn scoped_comments_empty_scope_shows_notice() {
+    // When no threads originate on the scoped SHA, a muted notice must appear.
+    let now = Utc::now();
+    let p = Palette::default();
+
+    let detail = PrDetail {
+        repo: "r".to_owned(),
+        number: 1,
+        title: "T".to_owned(),
+        url: "u".to_owned(),
+        author: "a".to_owned(),
+        body_markdown: String::new(),
+        base_ref: "main".to_owned(),
+        head_ref: "feat".to_owned(),
+        is_draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files_count: 0,
+        updated_at: now,
+        created_at: now,
+        merged: false,
+        files: vec![],
+        check_runs: vec![],
+        reviews: vec![],
+        // Thread on a different SHA — the scope will miss.
+        review_threads: vec![make_thread("src/a.rs", "alice", "thread body", Some("other_sha"))],
+        issue_comments: vec![IssueComment {
+            author: "dave".to_owned(),
+            body_markdown: "some issue comment".to_owned(),
+            created_at: now,
+        }],
+        commits: vec![],
+    };
+
+    let (lines, _, _) = comments_lines(&detail, true, true, Some("nonexistent_sha"), &p, false);
+    let text: String =
+        lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+
+    assert!(
+        text.contains("No review threads originated on this commit"),
+        "empty-scope notice must appear; got: {text}"
+    );
+    // Issue comments still render below the notice.
+    assert!(text.contains("some issue comment"), "issue comments must still appear; got: {text}");
+}
+
+#[test]
+fn per_commit_ci_glyph_rendered_in_list() {
+    // A commit with `check_state: Some(CheckState::Failure)` must produce a
+    // rendered row containing the failure CI glyph character.
+    use crate::github::types::CheckState;
+    use crate::ui::glyphs;
+    use chrono::TimeZone;
+
+    let now = Utc.timestamp_opt(1_700_000_000, 0).single().unwrap_or_else(Utc::now);
+    let failure_commit = PrCommit {
+        sha: "f".repeat(40),
+        short_sha: "fffffff".to_owned(),
+        headline: "failing commit".to_owned(),
+        author: "dev".to_owned(),
+        committed_at: now,
+        additions: 5,
+        deletions: 2,
+        changed_files: 1,
+        check_state: Some(CheckState::Failure),
+    };
+
+    let mut detail = fixture_pr_detail(0, 0, 0, 0);
+    detail.commits = vec![failure_commit];
+
+    let p = Palette::default();
+    let (lines, _) = build_section(
+        DetailSection::Commits,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        None,
+        0,
+        None,
+        &p,
+        false,
+    );
+
+    // The failure glyph (non-ASCII mode).
+    let (expected_glyph, _) = glyphs::ci_glyph(Some(CheckState::Failure), false);
+    let glyph_str = expected_glyph.to_string();
+
+    let rendered_text: String =
+        lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+
+    assert!(
+        rendered_text.contains(&glyph_str),
+        "failure CI glyph '{expected_glyph}' must appear in commit list row; got: {rendered_text}"
+    );
 }

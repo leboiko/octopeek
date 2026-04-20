@@ -2378,6 +2378,7 @@ fn force_push_evicts_stale_commit_patches() {
         additions: 1,
         deletions: 0,
         changed_files: 1,
+        check_state: None,
     }];
     // Pre-load a stub with matching repo/number so `active_pr_matches` is true.
     // This puts the handler on the code path that resets `selected_commit`.
