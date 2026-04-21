@@ -823,7 +823,7 @@ pub(super) fn raw_pr_to_detail(repo: String, raw: RawPrDetail) -> PrDetail {
         })
         .collect();
     // Sort descending by committed_at so newest commit is first (index 0).
-    commits.sort_unstable_by(|a, b| b.committed_at.cmp(&a.committed_at));
+    commits.sort_unstable_by_key(|commit| std::cmp::Reverse(commit.committed_at));
 
     let reviews = raw
         .reviews

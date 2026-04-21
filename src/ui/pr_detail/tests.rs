@@ -1990,7 +1990,7 @@ fn commits_sorted_newest_first() {
     detail.commits = commits_unsorted;
 
     // Apply the same sort that `raw_pr_to_detail` applies.
-    detail.commits.sort_unstable_by(|a, b| b.committed_at.cmp(&a.committed_at));
+    detail.commits.sort_unstable_by_key(|commit| std::cmp::Reverse(commit.committed_at));
 
     assert_eq!(
         detail.commits[0].sha,
