@@ -14,8 +14,8 @@
 //!   gutter — these are flat top-level comments with nothing to tether.
 //! - Blank line between comments.
 //!
-//! When `comments_expanded == false`, each comment body is capped at 6 rendered
-//! lines and a `[m] expand` hint line is appended.
+//! When `comments_expanded == false`, each comment body is rendered from a
+//! bounded preview and a `[m] expand` hint line is appended when truncated.
 
 use ratatui::{
     Frame,
@@ -27,7 +27,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::github::detail::IssueDetail;
-use crate::ui::markdown::render_markdown;
+use crate::ui::markdown::{render_comment_markdown, render_markdown};
 use crate::ui::util::{humanize_delta, render_detail_header, section_header};
 
 /// Short state label + color for the issue header's top line.
@@ -142,17 +142,10 @@ pub fn build_content(
                 Span::styled(format!("  {age}"), Style::default().fg(p.dim)),
             ]));
 
-            // Body rendered as full GFM markdown, indented by two spaces.
-            // When collapsed, cap at 6 rendered lines and show expand hint.
+            // Body rendered as GFM markdown, indented by two spaces. Collapsed
+            // mode uses a bounded preview so very large comments stay responsive.
             let body = comment.body_markdown.trim();
-            let rendered = render_markdown(body, p);
-            let total_rendered = rendered.len();
-
-            let (visible_rendered, truncated) = if !comments_expanded && total_rendered > 6 {
-                (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
-            } else {
-                (rendered, false)
-            };
+            let (visible_rendered, truncated) = render_comment_markdown(body, p, comments_expanded);
 
             // Prepend a `"  "` indent to each body line (no gutter — flat comments).
             for mut line in visible_rendered {
@@ -289,6 +282,7 @@ mod tests {
         let now = Utc::now();
         let comments = (0..num_comments)
             .map(|i| IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: format!("user-{i}"),
                 body_markdown: format!("Comment body {i}"),
                 created_at: now,
@@ -296,6 +290,7 @@ mod tests {
             .collect();
 
         IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 7,
             title: "Test Issue".to_owned(),
@@ -366,6 +361,7 @@ mod tests {
         let now = Utc::now();
         let p = Palette::default();
         let detail = IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 1,
             title: "Issue".to_owned(),
@@ -378,6 +374,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             comments: vec![IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "eve".to_owned(),
                 // Bold + inline code in the body.
                 body_markdown: "**critical** and `fix_it()`".to_owned(),
@@ -410,6 +407,7 @@ mod tests {
         let long_body = (0..10).map(|i| format!("Para {i}.")).collect::<Vec<_>>().join("\n\n");
 
         let detail = IssueDetail {
+            node_id: "ISSUE_node".to_owned(),
             repo: "owner/repo".to_owned(),
             number: 1,
             title: "Issue".to_owned(),
@@ -422,6 +420,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             comments: vec![IssueComment {
+                node_id: "COMMENT_node".to_owned(),
                 author: "frank".to_owned(),
                 body_markdown: long_body,
                 created_at: now,

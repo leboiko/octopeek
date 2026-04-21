@@ -5,6 +5,7 @@ pub(crate) mod cache;
 pub(crate) mod client;
 pub(crate) mod detail;
 pub(crate) mod flags;
+pub(crate) mod mutations;
 pub(crate) mod query;
 pub(crate) mod types;
 

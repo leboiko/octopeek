@@ -37,6 +37,16 @@ static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_
 /// Syntect built-in theme set loaded once at first use.
 static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
+/// Above this size, fenced code blocks render with plain code styling instead
+/// of syntect highlighting. Large pasted logs and generated code snippets are
+/// common in review comments; highlighting them synchronously can stall the UI.
+const MAX_SYNTAX_HIGHLIGHT_BYTES: usize = 24 * 1024;
+
+/// Collapsed comment bodies render from this bounded source preview.
+const COMMENT_PREVIEW_SOURCE_LINES: usize = 40;
+const COMMENT_PREVIEW_SOURCE_CHARS: usize = 4_000;
+const COMMENT_PREVIEW_RENDERED_LINES: usize = 6;
+
 // ── Internal builder types ────────────────────────────────────────────────────
 
 /// Determines where an `Event::Text` payload should be routed.
@@ -636,8 +646,9 @@ fn resolve_syntax<'a>(
 /// 2. First-line sniffing (shebangs, distinctive opening lines).
 /// 3. Plain Text fallback so the code background still applies uniformly.
 ///
-/// Returns `None` only when syntect's theme cannot be resolved, so the
-/// caller can fall back to plain-colour rendering.
+/// Returns `None` when the block should use plain-colour rendering, either
+/// because syntect cannot resolve the theme or because the source is too large
+/// to highlight synchronously without risking an input/render stall.
 fn try_highlight_code(
     source: &str,
     lang: &str,
@@ -645,6 +656,10 @@ fn try_highlight_code(
     ss: &SyntaxSet,
     ts: &ThemeSet,
 ) -> Option<Vec<Line<'static>>> {
+    if source.len() > MAX_SYNTAX_HIGHLIGHT_BYTES {
+        return None;
+    }
+
     let syntax = resolve_syntax(ss, lang)
         .or_else(|| ss.find_syntax_by_first_line(first_non_blank_line(source)))
         .unwrap_or_else(|| ss.find_syntax_plain_text());
@@ -669,6 +684,58 @@ fn try_highlight_code(
     }
 
     Some(result)
+}
+
+// ── Bounded comment rendering ─────────────────────────────────────────────────
+
+/// Render a review/issue comment body.
+///
+/// Expanded comments render the complete Markdown body. Collapsed comments
+/// render from a bounded source preview and then cap the rendered rows. This
+/// keeps section switching and scroll clamping responsive even when a comment
+/// contains a very large log, diff, table, or fenced code block.
+pub(crate) fn render_comment_markdown(
+    src: &str,
+    palette: &Palette,
+    expanded: bool,
+) -> (Vec<Line<'static>>, bool) {
+    if expanded {
+        return (render_markdown(src, palette), false);
+    }
+
+    let (preview, source_truncated) =
+        bounded_markdown_source(src, COMMENT_PREVIEW_SOURCE_LINES, COMMENT_PREVIEW_SOURCE_CHARS);
+    let rendered = render_markdown(&preview, palette);
+    let rendered_truncated = rendered.len() > COMMENT_PREVIEW_RENDERED_LINES;
+    let visible = rendered.into_iter().take(COMMENT_PREVIEW_RENDERED_LINES).collect();
+
+    (visible, source_truncated || rendered_truncated)
+}
+
+/// Copy at most `max_lines` source lines and `max_chars` Unicode scalar values.
+///
+/// The returned preview always ends at a valid UTF-8 boundary. Line limiting is
+/// intentionally based on source lines rather than rendered rows, so large
+/// fenced blocks are bounded before pulldown-cmark and syntect see them.
+fn bounded_markdown_source(src: &str, max_lines: usize, max_chars: usize) -> (String, bool) {
+    let mut out = String::new();
+    let mut chars_used = 0usize;
+
+    for (line_index, line) in src.split_inclusive('\n').enumerate() {
+        if line_index >= max_lines {
+            return (out, true);
+        }
+
+        for ch in line.chars() {
+            if chars_used >= max_chars {
+                return (out, true);
+            }
+            out.push(ch);
+            chars_used += 1;
+        }
+    }
+
+    (out, false)
 }
 
 // ── Event dispatcher ──────────────────────────────────────────────────────────
@@ -1045,6 +1112,44 @@ mod tests {
             !next.starts_with('\u{2500}') && !next.starts_with('\u{2501}'),
             "h3 must not be followed by a rule; got {next:?}"
         );
+    }
+
+    #[test]
+    fn collapsed_comment_markdown_bounds_source_preview() {
+        let hidden = "HIDDEN_AFTER_PREVIEW_CAP";
+        let repeated =
+            (0..100).map(|i| format!("let value_{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let src = format!("```rust\n{repeated}\n```\n\n{hidden}");
+
+        let (lines, truncated) = render_comment_markdown(&src, &palette(), false);
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+        assert!(truncated, "collapsed large comment must report truncation");
+        assert!(
+            lines.len() <= COMMENT_PREVIEW_RENDERED_LINES,
+            "collapsed comment preview must cap rendered rows"
+        );
+        assert!(
+            !joined.contains(hidden),
+            "collapsed preview must not render content beyond the source cap"
+        );
+    }
+
+    #[test]
+    fn large_code_block_uses_plain_code_style() {
+        let p = palette();
+        let repeated = "let value = 1;\n".repeat((MAX_SYNTAX_HIGHLIGHT_BYTES / 14) + 8);
+        let src = format!("```rust\n{repeated}```");
+
+        let lines = render_markdown(&src, &p);
+        let code_span = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains("let value"))
+            .expect("large code block line");
+
+        assert_eq!(code_span.style.fg, Some(p.code_fg));
+        assert_eq!(code_span.style.bg, Some(p.code_bg));
     }
 
     #[test]
