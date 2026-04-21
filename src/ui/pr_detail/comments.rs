@@ -8,7 +8,7 @@ use ratatui::{
 use crate::github::detail::PrDetail;
 use crate::theme::Palette;
 use crate::ui::diff::{parse_unified_diff, render_diff};
-use crate::ui::markdown::render_markdown;
+use crate::ui::markdown::render_comment_markdown;
 use crate::ui::util::humanize_delta;
 use crate::ui::util::section_header;
 
@@ -83,13 +83,7 @@ pub(super) fn render_thread_body(
         out.push(author_line);
 
         let body = comment.body_markdown.trim();
-        let rendered = render_markdown(body, p);
-        let total_rendered = rendered.len();
-        let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
-            (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
-        } else {
-            (rendered, false)
-        };
+        let (visible_rendered, truncated) = render_comment_markdown(body, p, expanded);
 
         let body_lines = if is_reply {
             gutter_lines(indent_lines(visible_rendered, "  "), gutter_fg, ascii)
@@ -463,14 +457,7 @@ pub(super) fn comments_lines(
 
         // Body rendered as markdown, indented by two spaces (no gutter).
         let body = comment.body_markdown.trim();
-        let rendered = render_markdown(body, p);
-        let total_rendered = rendered.len();
-
-        let (visible_rendered, truncated) = if !expanded && total_rendered > 6 {
-            (rendered.into_iter().take(6).collect::<Vec<_>>(), true)
-        } else {
-            (rendered, false)
-        };
+        let (visible_rendered, truncated) = render_comment_markdown(body, p, expanded);
 
         lines.extend(indent_lines(visible_rendered, "  "));
 

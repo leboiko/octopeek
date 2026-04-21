@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Fixed
 
+- Collapsed PR and issue comments now render from a bounded markdown preview,
+  preventing large pasted logs or code blocks from freezing the TUI when
+  opening the Comments section.
 - `Esc` / `b` from an unscoped Files diff now returns to the Files overview
   instead of leaving the detail view. Commit-scoped diffs still return to the
   Commits list.

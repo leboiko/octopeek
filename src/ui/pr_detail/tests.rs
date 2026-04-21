@@ -1376,6 +1376,41 @@ fn collapsed_long_comment_shows_expand_hint() {
 }
 
 #[test]
+fn collapsed_comment_does_not_render_content_past_preview_cap() {
+    let p = Palette::default();
+    let hidden = "HIDDEN_AFTER_COMMENT_PREVIEW";
+    let repeated = (0..160).map(|i| format!("log line {i}")).collect::<Vec<_>>().join("\n");
+    let mut detail = fixture_pr_detail(0, 0, 0, 1);
+    detail.review_threads[0].comments[0].body_markdown =
+        format!("```text\n{repeated}\n```\n\n{hidden}");
+
+    let (lines, _) = build_section(
+        DetailSection::Comments,
+        &detail,
+        0,
+        false,
+        false,
+        true,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        None,
+        0,
+        None,
+        &p,
+        false,
+    );
+
+    let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+    assert!(text.contains("[m] expand"), "collapsed large comment must show expand hint");
+    assert!(
+        !text.contains(hidden),
+        "collapsed comment must not render content beyond the bounded preview"
+    );
+}
+
+#[test]
 fn issue_comments_render_markdown_styles() {
     let now = Utc::now();
     let p = Palette::default();
