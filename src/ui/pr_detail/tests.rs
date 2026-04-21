@@ -700,6 +700,53 @@ fn files_overview_without_threads_renders_no_badge() {
 }
 
 #[test]
+fn files_row_count_matches_rendered_diff_without_threads() {
+    let mut detail = fixture_pr_detail(0, 0, 1, 0);
+    detail.files[0].patch =
+        Some("@@ -1,2 +1,3 @@\n context\n+added\n-removed\n second\n".to_owned());
+    let p = Palette::default();
+
+    let (lines, _) = super::files::build_files_diff(
+        &detail,
+        0,
+        None,
+        &no_expanded(),
+        &no_cursor(),
+        None,
+        &p,
+        false,
+    );
+    let counted = super::files::files_row_count(&detail, 0, true, None, &no_expanded(), None);
+
+    assert_eq!(counted, lines.len(), "cheap diff row count must match rendered rows");
+}
+
+#[test]
+fn files_row_count_matches_rendered_diff_with_collapsed_thread() {
+    use super::thread_index::ThreadIndex;
+
+    let detail = fixture_diff_detail_with_thread(Some(10), false);
+    let index = ThreadIndex::build(&detail.review_threads);
+    let expanded = HashSet::new();
+    let cursor = RefCell::new(None);
+    let p = Palette::default();
+
+    let (lines, _) = super::files::build_files_diff(
+        &detail,
+        0,
+        Some(&index),
+        &expanded,
+        &cursor,
+        None,
+        &p,
+        false,
+    );
+    let counted = super::files::files_row_count(&detail, 0, true, Some(&index), &expanded, None);
+
+    assert_eq!(counted, lines.len(), "cheap threaded diff row count must match rendered rows");
+}
+
+#[test]
 fn outdated_threads_render_in_a_separate_section_with_badge() {
     // A PR with one active + one outdated thread must render both under
     // distinct dividers, and the outdated thread must carry a prominent

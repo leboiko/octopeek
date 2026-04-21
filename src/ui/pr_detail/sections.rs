@@ -147,3 +147,42 @@ pub fn build_section(
         DetailSection::Commits => build_commits(detail, p, Some(commits_cursor)),
     }
 }
+
+/// Count rows for sections that have a cheap non-rendering count path.
+///
+/// Returns `None` for prose sections where the wrapped row count depends on
+/// ratatui's paragraph layout. The Files section is non-wrapping, so its row
+/// count can be computed directly from patch text without allocating styled
+/// lines.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+pub fn cheap_section_row_count(
+    section: DetailSection,
+    detail: &PrDetail,
+    files_cursor: usize,
+    files_show_diff: bool,
+    thread_index: Option<&ThreadIndex>,
+    expanded_threads: &HashSet<(String, u32)>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
+) -> Option<usize> {
+    match section {
+        DetailSection::Files => Some(super::files::files_row_count(
+            detail,
+            files_cursor,
+            files_show_diff,
+            thread_index,
+            expanded_threads,
+            scoped_patches,
+        )),
+        DetailSection::Commits => {
+            if detail.commits.is_empty() {
+                Some(0)
+            } else {
+                Some(detail.commits.len() + 2 + usize::from(detail.commits.len() >= 100) * 2)
+            }
+        }
+        DetailSection::Description
+        | DetailSection::Checks
+        | DetailSection::Reviews
+        | DetailSection::Comments => None,
+    }
+}

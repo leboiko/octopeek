@@ -49,7 +49,7 @@ use crate::github::detail::PrDetail;
 use crate::ui::util::render_detail_header;
 
 pub use header::build_header;
-pub use sections::build_section;
+pub use sections::{build_section, cheap_section_row_count};
 
 // ── Section enum ──────────────────────────────────────────────────────────────
 

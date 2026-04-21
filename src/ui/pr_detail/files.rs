@@ -10,11 +10,14 @@ use ratatui::{
 
 use crate::github::detail::{FileChange, FileChangeKind, PrDetail, ReviewThread};
 use crate::theme::Palette;
-use crate::ui::diff::{DiffFile, DiffLineKind};
+use crate::ui::diff::{DiffFile, DiffLineKind, parse_hunk_header};
 use crate::ui::util::truncate;
 
 use super::ThreadIndex;
 use super::thread_card::render_thread_card;
+
+/// Keep row-count estimates aligned with `comments::diff_hunk_excerpt`.
+const DIFF_HUNK_EXCERPT_ROW_CAP: usize = 12;
 
 /// Glyph for a file change kind.
 pub(super) fn file_kind_glyph(kind: FileChangeKind) -> &'static str {
@@ -114,6 +117,36 @@ pub(super) fn build_files(
     )
 }
 
+/// Count rows for the Files section without allocating rendered diff lines.
+///
+/// Scroll clamping calls this on every movement key. Reusing the full renderer
+/// there made large diffs expensive twice per scroll event: once for clamping
+/// and once for drawing. This mirrors `build_files` layout closely enough for
+/// clamping while only scanning raw patch text.
+pub(super) fn files_row_count(
+    detail: &PrDetail,
+    files_cursor: usize,
+    show_diff: bool,
+    thread_index: Option<&ThreadIndex>,
+    expanded: &HashSet<(String, u32)>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
+) -> usize {
+    let effective_empty = scoped_patches.map_or(detail.files.is_empty(), |patches| {
+        !detail.files.iter().any(|f| patches.contains_key(&f.path))
+    });
+    if effective_empty {
+        return 1;
+    }
+
+    if !show_diff {
+        let visible_files =
+            detail.files.iter().filter(|f| scoped_patches.is_none_or(|p| p.contains_key(&f.path)));
+        return visible_files.count() + 1;
+    }
+
+    files_diff_row_count(detail, files_cursor, thread_index, expanded, scoped_patches)
+}
+
 /// Files overview: one row per file sorted by magnitude descending.
 ///
 /// `scoped_patches` optionally restricts the file list to paths present in the
@@ -194,6 +227,177 @@ pub(super) fn build_files_overview_scoped(
     )));
 
     (lines, Vec::new())
+}
+
+fn files_diff_row_count(
+    detail: &PrDetail,
+    files_cursor: usize,
+    thread_index: Option<&ThreadIndex>,
+    expanded: &HashSet<(String, u32)>,
+    scoped_patches: Option<&HashMap<String, Option<String>>>,
+) -> usize {
+    let effective_files: Vec<&FileChange> = detail
+        .files
+        .iter()
+        .filter(|f| scoped_patches.is_none_or(|patches| patches.contains_key(&f.path)))
+        .collect();
+
+    if effective_files.is_empty() {
+        return 1;
+    }
+
+    let idx = files_cursor.min(effective_files.len() - 1);
+    let file = effective_files[idx];
+    let effective_patch: Option<&str> = if let Some(patches) = scoped_patches {
+        patches.get(&file.path).and_then(|p| p.as_deref())
+    } else {
+        file.patch.as_deref()
+    };
+
+    let thread_hint_rows = if scoped_patches.is_none() {
+        usize::from(thread_index.is_some_and(|tidx| tidx.total_for(&file.path) > 0))
+    } else {
+        0
+    };
+    let header_rows = 2 + thread_hint_rows + 1;
+
+    let body_rows = match effective_patch {
+        Some(patch) => {
+            if let Some(index) = thread_index.filter(|_| scoped_patches.is_none()) {
+                diff_patch_row_count_with_threads(
+                    patch,
+                    index,
+                    expanded,
+                    &file.path,
+                    &detail.review_threads,
+                )
+            } else {
+                diff_patch_row_count(patch)
+            }
+        }
+        None => 1,
+    };
+
+    header_rows + body_rows
+}
+
+fn diff_patch_row_count(patch: &str) -> usize {
+    let mut rows = 0usize;
+    let mut hunk_count = 0usize;
+    let mut in_hunk = false;
+
+    for raw_line in patch.lines() {
+        if parse_hunk_header(raw_line).is_some() {
+            if hunk_count > 0 {
+                rows += 1; // blank separator between hunks
+            }
+            rows += 1; // hunk header
+            hunk_count += 1;
+            in_hunk = true;
+            continue;
+        }
+
+        if in_hunk {
+            rows += 1;
+        }
+    }
+
+    rows.max(1)
+}
+
+fn diff_patch_row_count_with_threads(
+    patch: &str,
+    index: &ThreadIndex,
+    expanded: &HashSet<(String, u32)>,
+    file_path: &str,
+    all_threads: &[ReviewThread],
+) -> usize {
+    let mut rows = 0usize;
+    let mut hunk_count = 0usize;
+    let mut new_cursor = 0u32;
+    let mut in_hunk = false;
+
+    for raw_line in patch.lines() {
+        if let Some((_old_start, _old_count, new_start, _new_count, _section)) =
+            parse_hunk_header(raw_line)
+        {
+            if hunk_count > 0 {
+                rows += 1;
+            }
+            rows += 1;
+            hunk_count += 1;
+            new_cursor = new_start;
+            in_hunk = true;
+            continue;
+        }
+
+        if !in_hunk {
+            continue;
+        }
+
+        rows += 1;
+
+        let prefix = raw_line.chars().next();
+        let new_lineno = match prefix {
+            Some(' ' | '+') => {
+                let lineno = Some(new_cursor);
+                new_cursor += 1;
+                lineno
+            }
+            Some('-' | '\\') => None,
+            _ => Some(new_cursor),
+        };
+
+        let Some(lineno) = new_lineno else {
+            continue;
+        };
+
+        let thread_indices = index.active_at(file_path, lineno);
+        if thread_indices.is_empty() {
+            continue;
+        }
+
+        if expanded.contains(&(file_path.to_owned(), lineno)) {
+            let threads: Vec<&ReviewThread> =
+                thread_indices.iter().filter_map(|&i| all_threads.get(i)).collect();
+            rows += expanded_thread_cards_row_count(&threads);
+        } else {
+            rows += 1;
+        }
+    }
+
+    let overflow_count = index.overflow(file_path).len();
+    if overflow_count > 0 {
+        rows += 2 + overflow_count; // blank, divider, collapsed cards
+    }
+
+    rows.max(1)
+}
+
+fn expanded_thread_cards_row_count(threads: &[&ReviewThread]) -> usize {
+    threads
+        .iter()
+        .enumerate()
+        .map(|(idx, thread)| usize::from(idx > 0) + expanded_thread_body_row_count(thread))
+        .sum()
+}
+
+fn expanded_thread_body_row_count(thread: &ReviewThread) -> usize {
+    let hunk_rows = thread.diff_hunk.as_deref().map_or(0, |hunk| {
+        let rows = diff_patch_row_count(hunk).min(DIFF_HUNK_EXCERPT_ROW_CAP);
+        if rows == 0 { 0 } else { rows + 1 }
+    });
+    let comment_rows: usize = thread
+        .comments
+        .iter()
+        .enumerate()
+        .map(|(idx, comment)| {
+            let body_rows = comment.body_markdown.trim().lines().count().max(1);
+            usize::from(idx > 0) + 1 + body_rows
+        })
+        .sum();
+
+    1 + hunk_rows + comment_rows
 }
 
 /// Files diff: unified diff for the currently-cursor file, with banner + hint.

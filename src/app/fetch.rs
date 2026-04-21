@@ -290,22 +290,25 @@ impl App {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let lines = self.current_detail_lines();
-        // Mirror the renderer's wrap decision: prose sections
-        // (Description / Checks / Reviews / Comments) wrap, so count the
-        // wrapped rows; the Files section does NOT wrap (see the comment
-        // in `pr_detail::draw`), so its rendered row count is just
-        // `lines.len()`. Counting wrapped rows for a non-wrapping section
-        // would over-estimate and leave a big empty tail when the user
-        // scrolls to the bottom of a diff.
-        let wraps = self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Files
-            && self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Commits;
-        let rendered_rows = if wraps {
-            let probe = ratatui::widgets::Paragraph::new(lines)
-                .wrap(ratatui::widgets::Wrap { trim: false });
-            u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX)
+        let rendered_rows = if let Some(rows) = self.cheap_detail_row_count() {
+            u16::try_from(rows).unwrap_or(u16::MAX)
         } else {
-            u16::try_from(lines.len()).unwrap_or(u16::MAX)
+            let lines = self.current_detail_lines();
+            // Mirror the renderer's wrap decision: prose sections
+            // (Description / Checks / Reviews / Comments) wrap, so count the
+            // wrapped rows; non-wrapping sections use their line count. Files
+            // usually take the cheap path above so large diffs are not fully
+            // rendered merely to clamp a scroll offset.
+            let wraps = self.pr_detail_selected_section
+                != crate::ui::pr_detail::DetailSection::Files
+                && self.pr_detail_selected_section != crate::ui::pr_detail::DetailSection::Commits;
+            if wraps {
+                let probe = ratatui::widgets::Paragraph::new(lines)
+                    .wrap(ratatui::widgets::Wrap { trim: false });
+                u16::try_from(probe.line_count(area.width)).unwrap_or(u16::MAX)
+            } else {
+                u16::try_from(lines.len()).unwrap_or(u16::MAX)
+            }
         };
         let max_scroll = rendered_rows.saturating_sub(area.height);
         // Route through `right_pane_scroll_mut` so we clamp whichever map
@@ -317,6 +320,35 @@ impl App {
         if *scroll > max_scroll {
             *scroll = max_scroll;
         }
+    }
+
+    fn cheap_detail_row_count(&self) -> Option<usize> {
+        let detail = self.pr_detail.as_ref()?;
+        let scoped_patches: Option<&std::collections::HashMap<String, Option<String>>> =
+            self.selected_commit.and_then(|idx| {
+                detail.commits.get(idx).and_then(|c| {
+                    self.detail_cache
+                        .get_commit_patches(&detail.repo, &c.sha)
+                        .map(|cached| &cached.data)
+                })
+            });
+
+        if self.pr_detail_selected_section == crate::ui::pr_detail::DetailSection::Files
+            && self.selected_commit.is_some()
+            && scoped_patches.is_none()
+        {
+            return Some(1);
+        }
+
+        crate::ui::pr_detail::cheap_section_row_count(
+            self.pr_detail_selected_section,
+            detail,
+            self.pr_detail_files_cursor,
+            self.pr_detail_files_show_diff,
+            self.thread_index.as_ref(),
+            &self.pr_detail_expanded_threads,
+            scoped_patches,
+        )
     }
 
     /// Adjust the active section's scroll offset and `copy_mode.h_scroll` so

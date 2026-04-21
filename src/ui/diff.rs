@@ -16,6 +16,14 @@ use ratatui::{
 
 use crate::theme::Palette;
 
+/// Maximum raw characters from a changed line rendered into the terminal.
+///
+/// Unified diffs can contain generated/minified lines that are hundreds of
+/// thousands of characters long. Rendering those as a single span can stall the
+/// TUI when the line scrolls into view. The raw patch remains in memory; this
+/// only caps the display representation.
+const MAX_RENDERED_DIFF_CONTENT_CHARS: usize = 4_000;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A parsed unified-diff file: an ordered sequence of change hunks.
@@ -355,8 +363,28 @@ pub(crate) fn render_diff_line(diff_line: &DiffLine, palette: &Palette) -> Line<
         Span::styled(" ", lineno_style),
         Span::styled(prefix_char.to_string(), content_style),
         Span::raw(" "),
-        Span::styled(diff_line.content.clone(), content_style),
+        Span::styled(truncate_diff_content(&diff_line.content), content_style),
     ])
+}
+
+/// Truncate a single diff content line without first counting the whole string.
+fn truncate_diff_content(content: &str) -> String {
+    let mut out = String::new();
+    let mut chars = content.chars();
+
+    for _ in 0..MAX_RENDERED_DIFF_CONTENT_CHARS {
+        let Some(ch) = chars.next() else {
+            return content.to_owned();
+        };
+        out.push(ch);
+    }
+
+    if chars.next().is_some() {
+        out.push('\u{2026}');
+        out.push_str(" [line truncated]");
+    }
+
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -589,6 +617,27 @@ index abc123..def456 100644
         assert!(
             section_span.content.contains("fn example()"),
             "section text not found in header spans"
+        );
+    }
+
+    #[test]
+    fn render_diff_line_truncates_huge_content() {
+        let palette = default_palette();
+        let line = DiffLine {
+            kind: DiffLineKind::Added,
+            content: "x".repeat(MAX_RENDERED_DIFF_CONTENT_CHARS + 100),
+            old_lineno: None,
+            new_lineno: Some(1),
+        };
+
+        let rendered = render_diff_line(&line, &palette);
+        let content = rendered.spans.last().expect("content span").content.as_ref();
+
+        assert!(content.ends_with("[line truncated]"));
+        assert!(
+            content.chars().count() < MAX_RENDERED_DIFF_CONTENT_CHARS + 30,
+            "rendered content should be capped, got {} chars",
+            content.chars().count()
         );
     }
 
