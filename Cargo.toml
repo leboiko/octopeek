@@ -42,7 +42,7 @@ pulldown-cmark = "0.13.3"
 # stable; only the exact function signature is subject to change.
 ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 # Phase 2 GitHub GraphQL client; `rustls` keeps the build OpenSSL-free.
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
