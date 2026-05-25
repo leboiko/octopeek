@@ -33,7 +33,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "6.0.0"
 open = "5.3.3"
-pulldown-cmark = "0.13.3"
+pulldown-cmark = "0.13.4"
 # `unstable-rendered-line-info` exposes `Paragraph::line_count(width)`, the
 # only API that returns wrapped-row counts. Needed by the PR detail scroll
 # clamp so the user can always scroll the last line into view, regardless of
